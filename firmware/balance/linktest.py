@@ -19,6 +19,7 @@ import argparse
 import glob
 import json
 import os
+import random
 import select
 import socket
 import statistics
@@ -88,7 +89,10 @@ def run(link, seconds):
     best_ack = 0
     tel_count = 0
     no_ack_field = False
-    seq = 0
+    # Start at a random number: the robot keeps the last seq it saw from an earlier run, and that
+    # stale ack must not count as this run's.
+    seq = random.randint(1_000_000, 2_000_000_000)
+    first = seq + 1
     period = 1.0 / RATE_HZ
     end = time.time() + seconds
     next_send = time.time()
@@ -108,11 +112,13 @@ def run(link, seconds):
                 no_ack_field = True
                 continue
             ack = int(tel["ack"])
+            if ack not in sent:      # from an earlier run, or a late packet: not ours
+                continue
             if ack > best_ack:
                 if ack in sent:
                     lags.append(time.time() - sent[ack])
                 best_ack = ack
-    return seq, best_ack, tel_count, lags, no_ack_field
+    return seq - first + 1, best_ack - first + 1 if best_ack else 0, tel_count, lags, no_ack_field
 
 
 def main():
@@ -146,7 +152,7 @@ def main():
         print("FAIL: telemetry has no \"ack\". The robot runs firmware from before seq/ack; upload the current balance.ino.")
         return 1
     if best_ack == 0:
-        print("FAIL: telemetry arrives but ack stays 0. Commands are not reaching the robot.")
+        print("FAIL: telemetry arrives but never acknowledges this run's commands. They are not reaching the robot.")
         return 1
     print(f"  last ack {best_ack} of {sent} sent; {len(lags)} different acks seen")
     if lags:
