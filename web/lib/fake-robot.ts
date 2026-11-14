@@ -42,6 +42,8 @@ export class FakeRobot {
   private lean = 0;
   private batt = 12.4;
   private estop = false;
+  private x = 0;
+  private yaw = 0;
   private readonly random: () => number;
 
   constructor(seed = 1) {
@@ -84,16 +86,20 @@ export class FakeRobot {
     this.batt = Math.max(10.8, this.batt - 0.0004 * dt);
     const moving = Math.abs(this.vl) + Math.abs(this.vr) > 0.01;
 
-    // Modeled in degrees for readability; sent in radians like the real robot.
+    this.x += ((this.vl + this.vr) / 2) * dt;
+    this.yaw += (((this.vr - this.vl) / TRACK_WIDTH_M) * 180 / Math.PI) * dt;
+    // Degrees, like the real robot (contract v1).
     return {
       t: "tel",
-      pitch: round(((this.pitch + noise) * Math.PI) / 180, 4),
-      rate: round((rate * Math.PI) / 180, 4),
+      pitch: round(5.6 + this.pitch + noise, 2),
+      rate: round(rate, 1),
       vl: round(this.vl, 3),
       vr: round(this.vr, 3),
       batt: round(this.batt, 2),
       state: moving ? "drive" : "balance",
       fault: null,
+      x: round(this.x, 3),
+      yaw: round(this.yaw, 1),
     };
   }
 }

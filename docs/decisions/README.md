@@ -56,3 +56,5 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0048](0048-anyone-merges.md) | Anyone can merge to main; Alex's agent organizes | Issue #6 |
 | [0050](0050-server-skeleton.md) | The server skeleton is #22; Grant builds on it | PR #22 |
 | [0051](0051-contract-v1.md) | Contract v1 is what the firmware speaks today | Issue #23 |
+| [0053](0053-controls-on-control-page.md) | The phone page is the robot's eye; every control is on the control page | Issue #39 |
+| [0054](0054-start-from-control-page.md) | Start balancing from the control page, on this laptop only | Issue #42 |
