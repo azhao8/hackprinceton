@@ -6,8 +6,9 @@
 
 - Hacking started 8 pm ET, Fri Nov 13. The submission deadline is 8 am ET, Sun Nov 15.
 - The robot is built and works (Sat noon): it balances hands-off with the phone mounted, drives over USB and follows a yellow object. The firmware and bench tools are in `firmware/`; start with `firmware/README.md`. The tethered-balance milestone is met.
-- Current focus: four lanes working in parallel (hardware, motion + integration, vision + understanding, misc), each against the mock robot or a desk rig until the robot is ready (see `01-build-plan.md`).
-- Next milestone: the message contract and mock robot (overdue), then the first end-to-end slice at Sat 4 am (T+8).
+- Architecture: one Python server on the laptop is the hub. The phone page and the dashboard feed it; it runs vision, the agent and skills, and steers the robot over Wi-Fi. The robot balances and enforces its own safety (see `03-software.md`).
+- Current focus: the server skeleton, contract v1 and the mock robot (overdue), so all lanes build against them (see `01-build-plan.md`).
+- Next milestone: the first end-to-end slice, moved to Sat 6 pm. The use case and main track were due at noon and are still open.
 
 ## Decided
 
@@ -20,12 +21,12 @@ The full list is in `decisions/` (one file each). In short:
 - **Autonomy:** the human says what; the robot works out how.
 - **Product:** remembers things while it's running (world memory is in the build); a companion panel if it's not too much effort; trust features (stop gesture always works, says what it's about to do, camera-on indicator); favors low tasks (floor, seated people, kids).
 - **Arm:** nothing attached yet; gestures only (wave, point) unless an attachment is ready after balancing works. The laptop drives it on the desk; the ESP32 drives it on the robot. Pitched as modular, with concept modules in the demo.
-- **Team:** John on hardware. Vision + understanding and motion are equal priority, one person each; the motion person also writes the firmware and tunes balancing. Lanes and owners are in `01-build-plan.md`.
-- **Build:** everything is built on the desk or against the mock robot first. Balancing goes simulation, then desk rig, then the real robot.
+- **Team:** John on hardware. Vision + understanding and motion are equal priority, one person each. John wrote and tuned the firmware; who owns it from here is open (W-5). Lanes and owners are in `01-build-plan.md`.
+- **Build:** everything is built on the desk or against the mock robot first, then on the real robot. Every PR runs CI; firmware changes also pass a bench check, with `fw-known-good` as the way back.
 - **LLM:** Claude, behind a thin layer so Gemini can be swapped in.
 - **Head:** an iPhone 18 Pro or similar (has LiDAR).
 - **Prizes:** aim to win 1-2 tracks for sure; enter only tracks that fit naturally. Tracks aren't chosen yet.
-- **Code:** Python server, Next.js web app (dashboard and phone page), ESP32 firmware on PlatformIO. Folders: `contract/`, `firmware/`, `server/`, `web/`, `sim/`, `docs/`.
+- **Code:** Python server, Next.js web app (dashboard and phone page), ESP32 firmware built with arduino-cli (T-5). Folders: `contract/`, `firmware/`, `server/`, `web/`, `docs/`.
 - **Workflow:** tasks are GitHub Issues with a lane label; anyone merges to main when their human asks; Alex's agent is the master agent and organizes the work. Questions and blockers go in issue and PR comments. Agents ask instead of guessing on anything that affects the product, and the team decides together. Rules are in `CLAUDE.md`; `AGENTS.md` points Cursor and Codex users to it.
 
 ## Open

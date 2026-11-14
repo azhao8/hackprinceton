@@ -63,12 +63,27 @@ The bench tools talk to the robot directly. They're for testing and tuning only.
    - Knobs: `--distance` (bigger = stops closer, default 0.35) and `--speed` (default 0.4).
    - The camera is John's iPhone, on his Apple ID, with Wi-Fi and Bluetooth on.
    - A person has to start `follow` in Terminal. macOS gives the camera only to programs a person starts, so a copy launched by an agent gets "Camera access denied".
+   - **If it says no iPhone camera:** make sure no older `follow` is still running, and Ctrl+C any you find. A stale one can keep the camera busy, and then the page's Follow card says "follow program not running". `follow` waits up to 20 s for the phone. If that fails, open FaceTime, pick the iPhone under Video, quit FaceTime, and run it again.
+   - **If it only prints "no yellow in view" with the object right in front, or stops printing:** look at `follow/follow_view.jpg`. If it's solid black, no video is getting through. On Nov 14 the cause was the Mac's peer-to-peer Wi-Fi link being off: `ifconfig awdl0` showed no `UP` flag, and `sudo ifconfig awdl0 up` fixed it at once. Also check that the phone is locked and not paused, and keep hands off it while following.
 
 ## Build and upload
 - **Toolchain:** `arduino-cli` with the `esp32:esp32` core **3.3.12** (`arduino-cli core install esp32:esp32@3.3.12`). Not PlatformIO yet (see the open questions).
 - **Stop `drive.py` first.** Only one program can hold the USB port.
 - **Upload:** `cd firmware/balance && arduino-cli compile --upload --fqbn esp32:esp32:esp32s3 -p <port> .` (`arduino-cli board list` shows the port).
 - **After every upload or reboot,** keep the robot still for 3 s. It calibrates the gyro at boot.
+
+## Before merging a firmware change
+- **Leave the balance loop alone** unless the change is about balancing. Change the command handling and telemetry around it.
+- **Keep the USB status line exactly as it is.** `drive.py` reads it.
+- **CI compiles every PR** (`.github/workflows/ci.yml`). A PR that doesn't compile doesn't merge.
+- **Bench check after every upload,** about five minutes, with someone at the robot:
+  1. Keep it still for 3 s at boot (gyro calibration).
+  2. `g`: balances hands-off for 30 s.
+  3. `drive.py`: forward, back, left, right; Space stops and holds.
+  4. `L` / `R`: 90° turns.
+  5. `P` parks on the kickstand; `X` turns the motors off.
+  6. Write the result in the PR.
+- **If something regresses, go back to the last known-good firmware:** `git checkout fw-known-good -- firmware/balance/balance.ino`, then upload. The tag `fw-known-good` points at John's firmware that balances with the phone on (Sat noon). Move the tag only after a change passes the bench check.
 
 ## The link it speaks today
 It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `balancebot.local`).
@@ -94,7 +109,7 @@ It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `
   - End every scripted test with `x`, even when it fails.
   - Once, a script without a final `x` let the robot chase across the floor for 2.4 m.
 - **Press X or P before anyone touches it.** Past 30° of tilt, the motors cut by themselves.
-- **One `g` run lasts 5 minutes** (`RUN_MS`). Then the motors cut and it tips over, so park or re-arm before then.
+- **One `g` run lasts 30 minutes** (`RUN_MS`), then it parks itself on the kickstand.
 - **No self stand-up (`G`) with the phone on.** It failed 3 of 5 times, so drive.py and teleop.py block it.
 - **Keep the USB cable slack.** A tug reboots the ESP32. After a reboot, keep it still for 3 s, then restart drive.py. It doesn't reconnect by itself.
 - **Re-check the trim whenever anything is added** (the arm, a tray). A few mm of center-of-mass shift moves the balance point by degrees. Use the locked-wheel test in `bringup/HARDWARE-NOTES.md`.
@@ -107,7 +122,7 @@ It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `
   - KV 3.0
   - KX 2.0
   - KI 0.77 (only while holding still)
-- **Trim and lean:** trim −1.25°, FF_RR 0.5°, FF_CREEP 0.6°.
+- **Trim and lean:** trim **+5.6°** with the phone tilted up for person-follow (it was −1.25° untilted), FF_RR 0.5°, FF_CREEP 0.6°.
 - **Tilt estimate:** complementary filter 0.99 with a/g compensation, gyro-only during hard moves. Accelerometer at ±4 g.
 - **Timing:** 200 Hz loop, 40 kHz step interrupt.
 
@@ -135,6 +150,7 @@ It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `
     - speed proportional to how far off the target is (0.35 m/s when it's twice as far as wanted), with a 0.08 dead zone, from −0.15 to +0.4 m/s
     - 0.6/0.4 smoothing
     - stop after 0.5 s without the target
+  - **Wide view (0.5x):** Continuity Camera can't do it. macOS doesn't let apps pick the iPhone's lens: `videoZoomFactor` is iOS-only, and the Mac SDK marks it unavailable. Center Stage does use the ultra-wide camera, but it crops and pans toward people, which would break the steering math. A phone web page can pick "Back Ultra Wide Camera" through `getUserMedia` (the phone-page route in open question T-4).
 - **Misc (Nick):**
   - The dashboard can show the real telemetry fields above.
   - Material for the demo and the backup video: the yellow follow, the push test, the square drive.
