@@ -26,8 +26,8 @@ The fast, safety-critical balance loop stays on the ESP32, so a Wi-Fi hiccup can
 
 Starting point, from John's brief: newline-delimited JSON over UDP, on a phone or laptop hotspot (not venue Wi-Fi).
 
-- **Laptop to robot, 20-50 times a second:** `{"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}`. `v` = forward speed (m/s), `w` = turn rate (rad/s), `mode` = idle | balance | drive | kickstand.
-- **Robot to laptop, about 50 times a second:** `{"t":"tel","pitch":1.2,"rate":-0.4,"vl":0.28,"vr":0.31,"batt":11.6,"state":"balance","fault":null}`.
+- **Laptop to robot, 20-50 times a second:** `{"t":"cmd","seq":812,"v":0.3,"w":0.0,"mode":"drive"}`. `seq` is a counter the laptop raises on every command. `v` = forward speed (m/s), `w` = turn rate (rad/s), `mode` = idle | balance | drive | kickstand.
+- **Robot to laptop, about 50 times a second:** `{"t":"tel","pitch":1.2,"rate":-0.4,"vl":0.28,"vr":0.31,"batt":11.6,"state":"balance","fault":null,"ack":812}`. `ack` echoes the last `seq` received, so the laptop knows its commands are arriving and can measure lag.
 - **Arm:** add one message, for example a named pose ("wave").
 - **Safety on the robot:** if no command arrives for 300 ms, it holds position; past a set tilt angle, it cuts the motors.
 - **E-stop:** zero speed and turn while it keeps balancing; "motors off" (mode idle) is separate (decision 0043).

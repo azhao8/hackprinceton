@@ -28,6 +28,7 @@ _Updated Sat Nov 14, around noon ET, by John (hardware) and his Claude. Everythi
 | `balance/secrets.example.h` | Copy to `balance/secrets.h` (git-ignored) and type in the hotspot name and password yourself. Without it, the firmware builds with Wi-Fi off |
 | `balance/drive.py` | Bench tool: hold-to-drive keyboard page at http://localhost:8765, over USB. It's also the bridge that `follow` posts to |
 | `balance/teleop.py` | Bench tool: keyboard driver in the terminal, over Wi-Fi (UDP 4210). Untested |
+| `balance/linktest.py` | Bench tool: checks that commands reach the robot (seq/ack), with lag and PASS/FAIL, over Wi-Fi or USB. Sends only `mode: balance`, which never starts the motors |
 | `balance/follow/` | Bench tool: `follow.swift`, camera follow (a yellow object or a person) using Continuity Camera and Apple Vision. Build with `./build.sh` |
 | `bringup/bringup.ino` | The first bring-up sketch: prints the IMU, spins the motors |
 | `bringup/HARDWARE-NOTES.md` | **Read this before changing gains, trim or wiring.** Every setting, test and lesson from bring-up |
@@ -72,7 +73,8 @@ The bench tools talk to the robot directly. They're for testing and tuning only.
 
 ## The link it speaks today
 It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `balancebot.local`).
-- **In:** `{"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}`, about 20 times a second.
+- **In:** `{"t":"cmd","seq":812,"v":0.3,"w":0.0,"mode":"drive"}`, about 20 times a second.
+  - `seq` (optional) is a counter the laptop raises on every command. Telemetry echoes the last one as `ack`.
   - `v` is clamped to ±0.6 m/s and `w` to ±1.5 rad/s.
   - `mode` is `drive`, `balance` (hold position) or `idle` (motors off).
   - If no cmd arrives for 300 ms, speed and turn go to 0 and it holds position. That's the e-stop behavior from decision 0043.
@@ -80,8 +82,9 @@ It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `
   - `x`: motors off. `P`: park. `5`: stop and hold.
   - `L` / `R`: 90° turns. `F` / `B`: 50 cm moves.
   - `c`: recalibrate the gyro (robot still). `p`: print gains.
-  - `i`: telemetry. `h`: 50 Hz CSV log.
-- **Out (UDP only, 20 Hz, to whoever sent the last packet):** `{"t":"tel","pitch":..,"rate":..,"vl":..,"vr":..,"batt":null,"state":"idle|balance|drive","fault":null,"x":..,"yaw":..}`. Over USB, `i` prints a readable line instead, which drive.py parses.
+  - `i`: telemetry. `h`: 50 Hz CSV log. `J`: one JSON telemetry line over USB (same as the Wi-Fi one).
+- **Out (UDP only, 20 Hz, to whoever sent the last packet):** `{"t":"tel","pitch":..,"rate":..,"vl":..,"vr":..,"batt":null,"state":"idle|balance|drive","fault":null,"x":..,"yaw":..,"ack":..}`. `ack` is the `seq` of the last JSON command received (0 until one arrives); if it stops rising, commands aren't reaching the robot. Over USB, `i` prints a readable line instead, which drive.py parses, and `J` prints the JSON line once.
+- **Check the link:** `python3 linktest.py` (Wi-Fi) or `python3 linktest.py --serial` (USB, stop drive.py first). It prints the round-trip lag and PASS or FAIL.
 - **Differences from `docs/03-software.md`:**
   - no `kickstand` mode
   - telemetry is 20 Hz, not 50
