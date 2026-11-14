@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/azhao8/hackprinceton/contract/schema/cmd.schema.json",
+  "title": "cmd: laptop to robot drive command",
+  "description": "Sent about 20 times a second while the laptop wants control. If none arrives for 300 ms the robot stops and holds position. Unknown keys are ignored by the robot.",
+  "type": "object",
+  "required": ["t"],
+  "properties": {
+    "t": { "const": "cmd" },
+    "seq": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Counter raised on every command; echoed as ack in telemetry (#14)." },
+    "mode": { "enum": ["drive", "balance", "idle"], "default": "drive", "description": "drive: follow v and w. balance: stop and hold here. idle: motors off. None of them starts balancing; only the one-letter command g does." },
+    "v": { "type": "number", "default": 0, "description": "Forward speed, m/s, + forward. The robot clamps it to +/-0.6." },
+    "w": { "type": "number", "default": 0, "description": "Turn rate, rad/s, + turning left. The robot clamps it to +/-1.5." }
+  }
+}
