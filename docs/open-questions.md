@@ -28,6 +28,7 @@ Everything not yet decided, with a recommendation and where it came from. Add a 
 | T-7 | How the server handles concurrency | Python asyncio in one process. Vision runs in its own worker and hands over the latest result; each skill is an async task, so the stop gesture can cancel it | Alex's chat, Sat |
 | T-8 | The skill API: what a skill reads, how it requests motion, how it reports, how it's cancelled | Draft it with Grant in the server skeleton PR: skills read perception and memory, send targets to the arbiter, return success or failure, and can be cancelled at any time | Alex's chat, Sat |
 | T-9 | Scanning for secrets before the repo goes public | A gitleaks pre-commit hook now, and GitHub secret scanning once the repo is public. A leaked key stays in git history | Alex's chat, Sat |
+| T-10 | Camera tilt: the phone is now tilted up so the camera sees head and shoulders (Apple Vision's upper-body detector works, balance point +5.6°). Issue #3 plans YOLO legs detection for a low, level camera. Which tilt does the product use? | Keep it tilted up: gestures (stop, wave, point) and faces need the upper body anyway, standard upper-body and hand trackers work out of the box, and the bench follow already works this way. Tilting back down means trim -1.25° again | John's demo, Sat; PR for #19 |
 
 ## Team
 
