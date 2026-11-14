@@ -61,9 +61,10 @@ refactors inside your lane aren't decisions; just do them.
    other code depends on them.
 5. Cite sources (file:line or link) and label guesses as guesses.
 6. Stay impartial: change an answer for a reason, not because someone asked.
-7. Record only what the team settles: a file in docs/decisions/ from
-   TEMPLATE.md, plus the docs it affects (00-overview first). Open ones go
-   in docs/open-questions.md.
+7. Add every open question to docs/open-questions.md as soon as it comes
+   up (chat, issue or PR), with your recommendation and where it came from.
+   Once the team settles it, move it to docs/decisions/ (from TEMPLATE.md)
+   and update the docs it affects (00-overview first).
 
 ## Rules
 
