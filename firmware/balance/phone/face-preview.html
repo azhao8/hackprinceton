@@ -8,9 +8,11 @@
   html, body { margin: 0; height: 100%; background: #FAEEDA; font: 13px -apple-system, system-ui, sans-serif; color: #2C2C2A; }
   body { display: flex; flex-direction: column; }
   #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #e9dcc6; }
-  #face { display: block; width: 100%; height: 100%; touch-action: none; }
-  body.phone #face { width: auto; height: min(100%, 844px); aspect-ratio: 390 / 844; border-radius: 28px;
-                     box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+  /* like the phone: the face fills the top half, Miguel's suit the bottom half */
+  #screen { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; }
+  #face, #suit { display: block; width: 100%; flex: 1 1 50%; min-height: 0; touch-action: none; }
+  body.phone #screen { width: auto; height: min(100%, 844px); aspect-ratio: 390 / 844; border-radius: 28px;
+                       box-shadow: 0 6px 24px rgba(0,0,0,.18); }
   #bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px;
          background: #fff8ee; border-top: 1px solid #e6d6bb; }
   #bar .group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -22,7 +24,7 @@
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="face"></canvas></div>
+<div id="stage"><div id="screen"><canvas id="face"></canvas><canvas id="suit"></canvas></div></div>
 <div id="bar">
   <div class="group" id="moods"></div>
   <div class="group">
@@ -42,6 +44,10 @@
   var canvas = document.getElementById('face');
   var face = Face.create(canvas);
   face.start();
+  var suit = document.getElementById('suit');
+  function paintSuit() { Face.paintSuit(suit); }
+  paintSuit();
+  window.addEventListener('resize', paintSuit);
 
   // moods
   var moodsEl = document.getElementById('moods'), buttons = {};
@@ -72,7 +78,7 @@
   document.addEventListener('pointerleave', function () { face.lookAt(null); });
   follow.onchange = function () { if (!follow.checked) face.lookAt(null); };
 
-  document.getElementById('phone').onchange = function (e) { document.body.classList.toggle('phone', e.target.checked); };
+  document.getElementById('phone').onchange = function (e) { document.body.classList.toggle('phone', e.target.checked); requestAnimationFrame(paintSuit); };
 
   // mouth slider (the talk simulation drives it too)
   var slider = document.getElementById('mouth');
