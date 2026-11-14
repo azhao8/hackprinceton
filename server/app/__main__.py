@@ -509,6 +509,7 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
     state.follow_running = lambda: app.skills.running == "follow"
     state.vision_status = lambda: vision.status
     state.view_jpeg = ViewEncoder(app).jpeg
+    state.vision_debug = lambda: vision_debug(vision)
     state.face = app.face
     return state
 
@@ -517,6 +518,24 @@ def args_source_is_phone(vision: Any) -> bool:
     from app.vision.phone_source import PhoneFrameSource
 
     return isinstance(getattr(vision, "_source", None), PhoneFrameSource)
+
+
+def vision_debug(vision: Any) -> dict:
+    """The sizes follow uses to judge distance, for every person in the newest frame."""
+    from app.vision.follow import shoulder_gap
+
+    p = vision.latest()
+    if p is None:
+        return {"frame": None, "people": []}
+    people = []
+    for person in p.detections.people:
+        b = person.box
+        people.append({"box_w": round(b.x2 - b.x1, 3), "box_h": round(b.y2 - b.y1, 3), "cx": round((b.x1 + b.x2) / 2, 3),
+                       "top": round(b.y1, 3), "bottom": round(b.y2, 3), "shoulder_gap": shoulder_gap(person),
+                       "score": round(person.score, 2)})
+    return {"frame": [p.frame.width, p.frame.height], "age_s": round(time.monotonic() - p.frame_t, 2),
+            "target": p.target.status.value if hasattr(p.target.status, "value") else str(p.target.status),
+            "people": people}
 
 
 class ViewEncoder:

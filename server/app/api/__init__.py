@@ -121,6 +121,7 @@ class ApiState:
     follow_running: Any = None  # () -> bool
     view_jpeg: Any = None       # () -> bytes | None: the server's view (frame + its boxes) as JPEG
     vision_status: Any = None   # () -> str
+    vision_debug: Any = None    # () -> dict: what vision sees right now (people, box widths, shoulder gaps)
     face: Any = None            # () -> dict: the phone face's gaze target and latest follow event
     follow: bool = False
     say: list[dict] = field(default_factory=list)
@@ -337,6 +338,13 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         return resp
+
+    @routes.get("/debug/vision")
+    async def debug_vision(request: web.Request) -> web.Response:
+        """Read-only, this laptop only: the sizes the follow distance is computed from (for calibration)."""
+        if not _local(request):
+            raise web.HTTPForbidden()
+        return web.json_response(state.vision_debug() if state.vision_debug else {"error": "no vision"})
 
     @routes.post("/log")
     async def phone_log(request: web.Request) -> web.Response:
