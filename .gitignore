@@ -5,3 +5,8 @@ node_modules/
 .venv/
 __pycache__/
 .pio/
+
+# Robot firmware: hotspot credentials, local build and camera outputs
+firmware/balance/secrets.h
+firmware/balance/follow/follow
+firmware/balance/follow/follow_view.jpg
