@@ -24,9 +24,16 @@ it wins over every other doc.
 
 ## Workflow
 
+- Lanes and owners are in docs/01-build-plan.md. Stay in your lane's folders;
+  a PR that touches another lane's folder says so and gets that owner's OK.
 - One task = one GitHub issue = one branch = one PR that says "Closes #N".
-- Only the master agent merges and pushes to main; everyone else opens PRs.
-- main always runs against the mock robot.
+  Issues carry a lane label (lane:motion, lane:vision, lane:misc). Assign
+  yourself before starting. Branch name: <lane>/<N>-short-name.
+- Pull main before starting a task. Keep PRs small; tests pass before opening.
+- Only the master agent (Alex, GitHub azhao8) merges and pushes to main;
+  everyone else opens PRs. main always runs against the mock robot.
+- Talk in issue and PR comments (blockers, questions, interface changes);
+  the group chat is for quick pings. Read the issue's comments before working.
 
 ## Rules
 
