@@ -1,30 +1,46 @@
 # Software
 
-Draft. Three parts (motion, arm, vision and understanding) joined by one message contract. Items taken from John's or the teammate's briefs are inputs, not decisions, until they appear in `decisions/`.
+Draft. One Python server on the laptop is the hub: the phone and the dashboard feed it, and it steers the robot through one message contract. Items taken from John's or the teammate's briefs are inputs, not decisions, until they appear in `decisions/`.
 
 ## Architecture
 
-![System architecture](assets/diagram-architecture.png)
+![System architecture](assets/diagram-architecture.svg)
 
-The fast, safety-critical balance loop stays on the ESP32, so a Wi-Fi hiccup can't topple the robot; everything software owns only sends speed and turn targets. Where perception and planning run (laptop or phone) is still open.
+- **The robot (ESP32, John's firmware)** balances itself 200 times a second and enforces its own safety (tilt cutoff, 300 ms command timeout), so a Wi-Fi hiccup can't topple it. It only takes speed and turn targets and a few named actions.
+- **The phone** opens the phone page in Safari. It shows the face, sends camera frames, mic audio and motion sensors to the server, and plays Miguel's voice. (Web page or native app is still open: T-4.)
+- **The Python server** runs everything else, in one process:
+
+| Module | Owner | Job |
+| --- | --- | --- |
+| API | Nick | WebSocket for the phone page and the dashboard |
+| Vision | Grant | Frames in, people and gestures out (OpenCV, MediaPipe) |
+| Agent | Grant | Speech to text, then Claude picks a skill ("follow me" → `follow`) |
+| Skills | Grant | Fast loops such as follow, stop and turn; each sends speed and turn targets |
+| Arbiter | Alex | Picks one command: e-stop > manual joystick > skill |
+| Link | Alex | JSON over UDP to the robot (or the mock), 20 times a second; telemetry back |
+
+- **The dashboard** (a browser on the laptop) sends e-stop and joystick, and shows telemetry and what the robot sees.
+- **The mock robot** speaks the same messages, so everything above runs unchanged on the desk.
+- **Lag** matters only for the follow loop: camera to server to robot is about 100-250 ms on our own hotspot. John's follow tool works with ~0.2 s of video lag, so gentle gains handle it. The LLM (1-3 s) only picks skills, so it never steers.
+- **Bench tools** in `firmware/balance/` (`drive.py`, `follow/`) talk to the robot directly over USB for testing and tuning. They aren't part of the product path.
 
 ## Code layout
 
 | Folder | What | Stack |
 | --- | --- | --- |
 | `contract/` | Messages between laptop and robot, with samples | JSON |
-| `firmware/` | Balancing, motors, IMU, robot link, arm | ESP32, PlatformIO (Arduino framework) |
+| `firmware/` | Balancing, motors, IMU, robot link, arm; bench tools | ESP32, Arduino core 3.3.12 via arduino-cli |
 | `server/` | Robot link, mock robot, vision, speech, LLM brain, skills, API for `web/` | Python |
 | `web/` | Dashboard, plus the phone's face and camera page | Next.js |
-| `sim/` | Balance simulation | Python |
 
 - The server and the web app talk over a WebSocket: telemetry and what the robot sees go to the web app; e-stop, joystick and tasks come back.
 - Safari only gives a web page camera access over HTTPS, so the phone page needs a certificate the phone trusts (for example `next dev --experimental-https`).
-- PlatformIO pins library versions in one file and builds from the command line, so agents can build and upload. Its ESP32 support lags the newest Arduino core, so pin a version that works with FastAccelStepper.
+- The firmware builds with arduino-cli (see `firmware/README.md`), since it uses the ESP32 core 3.x timer API that PlatformIO's official platform doesn't ship (T-5).
+- A balance simulation (`sim/`) is no longer needed: the robot balances.
 
 ## The contract (the seam)
 
-Starting point, from John's brief: newline-delimited JSON over UDP, on a phone or laptop hotspot (not venue Wi-Fi).
+Starting point, from John's brief: JSON over UDP, on a phone or laptop hotspot (not venue Wi-Fi). **What the robot actually speaks today is in `firmware/README.md`** ("The link it speaks today"); it differs from this draft in places (C-1, T-6). `contract/` will hold the agreed version, with samples captured from the robot.
 
 - **Laptop to robot, 20-50 times a second:** `{"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}`. `v` = forward speed (m/s), `w` = turn rate (rad/s), `mode` = idle | balance | drive | kickstand.
 - **Robot to laptop, about 50 times a second:** `{"t":"tel","pitch":1.2,"rate":-0.4,"vl":0.28,"vr":0.31,"batt":11.6,"state":"balance","fault":null}`.
@@ -37,9 +53,9 @@ Starting point, from John's brief: newline-delimited JSON over UDP, on a phone o
 
 - Balancing runs entirely on the robot; the laptop only says how fast to go and turn.
 - Steppers mean the robot always knows its wheel speed, without encoders.
-- Bench order: step pulses spin a loose motor; the IMU reads tilt correctly; the controller is tuned in a simple simulation using the CAD numbers (2.21 kg, center of mass 93 mm above the axle, 85 mm wheels); tethered balance on the robot; then driving.
-- Kickstand mode: the same commands, no balancing. It's the fallback if balancing isn't reliable by T+18.
-- Most balancing work can happen without the robot: a simulation for the controller and ballpark gains, plus a desk rig built from the spare parts for step timing, the IMU filter, loop timing, the link and safety. Only the final gain tuning needs the assembled robot, with a person at it.
+- **Status (Sat noon):** it balances hands-off with the phone mounted, drives up to 0.6 m/s, does exact 90° turns and 50 cm moves on the gyro, and parks on the kickstand. Details, tuned values and safety rules: `firmware/README.md`.
+- **How:** a 200 Hz loop estimates tilt (complementary filter on the MPU-6050) and sets wheel acceleration from tilt, tilt rate, speed and position (gains from an LQR design on the CAD numbers, tuned on the robot). A 40 kHz timer sends the step pulses.
+- **Still to add:** JSON commands for start, park and exact turns and moves; park at the 5-minute run limit instead of tipping over; kickstand mode (the fallback); battery reading; the arm. See C-5 to C-12 in `open-questions.md`.
 
 ## Arm
 
@@ -49,10 +65,11 @@ Starting point, from John's brief: newline-delimited JSON over UDP, on a phone o
 
 ## Vision and understanding (critical path)
 
-- **Camera:** the phone streams to the laptop. Continuity Camera (the iPhone as a Mac webcam) is quickest but takes over the phone's screen, so no face. A web page in Safari on the phone can stream the camera and draw the face at the same time. Leading option: go straight to the phone page over HTTPS. Vision develops on a desk camera behind a frame-source interface until then (still open, see `open-questions.md`).
+- **Camera:** the phone page streams camera frames to the server and draws the face at the same time (Continuity Camera can't, because it takes over the phone's screen). Vision develops on a desk camera behind a frame-source interface until the phone page is ready. How video travels (T-10) and web page vs native app (T-4) are still open.
+- **Voice:** the phone's mic and speaker, through the phone page (T-13), with push-to-talk on the dashboard as a backup.
 - **Perception:** person tracking and hand gestures (MediaPipe) run on every frame on the laptop. Heavier scene and object understanding uses a vision-language model on demand, a few seconds per call.
 - **Understanding:** speech to text, then an LLM that picks from a small set of robot skills. Gestures skip the LLM, so stop is instant.
-- **Follow-me:** the person's position and size in the frame become turn rate and speed, with limits, a dead zone and smoothing. If the person is lost, stop and search slowly.
+- **Follow-me:** the person's position and size in the frame become turn rate and speed, with limits, a dead zone and smoothing. If the person is lost, stop and search slowly. John's follow tool already works on the robot: reuse its gains, dead zones and upper-body tracking (the camera sits ~40 cm up). They're listed under "Next, by lane" in `firmware/README.md`.
 - **Testing without the robot:** hold the phone and walk around; the commands show on the panel and the mock.
 
 ## How an instruction becomes motion
