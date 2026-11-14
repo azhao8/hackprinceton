@@ -18,7 +18,7 @@ Four lanes. Software lanes are owned by folder, so agents rarely touch the same 
 | Lane | Person | Owns | Folders |
 | --- | --- | --- | --- |
 | Hardware | John Huang | Frame, wiring, power, the physical robot. At the robot for every real-robot test | (none) |
-| Motion + integration (master) | Alex Zhao | Runs the master agent that merges. Firmware: balancing, drive, kickstand mode, safety cutoffs, the robot end of the link, arm on the ESP32. The balance simulation. Tuning on the real robot with John. The contract, the mock robot, the server's robot link and arbiter, the run script | `firmware/`, `sim/`, `contract/`, `server/` mock, link, arbiter |
+| Motion + integration (master) | Alex Zhao | Runs the master agent, which organizes the work. Firmware: balancing, drive, kickstand mode, safety cutoffs, the robot end of the link, arm on the ESP32. The balance simulation. Tuning on the real robot with John. The contract, the mock robot, the server's robot link and arbiter, the run script | `firmware/`, `sim/`, `contract/`, `server/` mock, link, arbiter |
 | Vision + understanding | Grant Ji Kim | Camera input, person tracking, gestures, follow-me, speech to text, the LLM brain, the skill runner and skills, memory | `server/` vision, speech, brain, skills, memory modules |
 | Misc | Jialang "Nick" Zhao | The server's web API, dashboard, phone page (camera + face), arm poses on the desk, companion panel, pitch, Devpost, backup video, demo path. Picks up whatever is blocking another lane | `server/` API, `web/` |
 
@@ -75,7 +75,7 @@ Times are Sat/Sun ET. Checkpoints in bold come from `milestones.md`.
 | **Sat 4 am** | **First end-to-end slice:** a person walks in front of the camera, the laptop decides, the mock gets the command and the loose wheel turns the right way | | |
 | Sat 4-6 am | Firmware onto the robot with John; kickstand mode first, then a tether | Speech to text; the LLM brain picking skills; `say()` | Phone page over HTTPS (camera + face) |
 | **Sat 6 am** | **Tethered balance (10 s)** | | |
-| Sat 6 am-12 pm | Tuning; driving by joystick; merges at each check-in | More gestures (come here, point); `look_for` and `describe_scene`; memory | Arm poses on the desk; companion panel; run-script help |
+| Sat 6 am-12 pm | Tuning; driving by joystick | More gestures (come here, point); `look_for` and `describe_scene`; memory | Arm poses on the desk; companion panel; run-script help |
 | **Sat 12 pm** | **Use case and main track picked** | | |
 | Sat 12-2 pm | Server link pointed at the real robot; driving with skills | Skills for the chosen use case | Whatever the use case needs on screen; pitch outline |
 | **Sat 2 pm** | **Go/no-go on balancing:** keep balancing or demo in kickstand mode | | |
@@ -92,7 +92,8 @@ Sleep in shifts. Alex and John sleep at the same time, since tuning needs both o
 - **One task = one issue = one branch = one PR** that says "Closes #N". Tasks are 1-3 hours. Each issue has a lane label (`lane:motion`, `lane:vision`, `lane:misc`); assign yourself before starting. Branch name: `<lane>/<N>-short-name`.
 - **Pull main before each task.** Keep PRs small; tests pass before opening one.
 - **Stay in your lane's folders.** A PR that touches another lane's folder says so and gets that lane's OK.
-- **Main is protected:** only Alex's master agent pushes or merges to main, and only with Alex's OK for each one. Branches, PRs, issues and comments need no permission. Merges happen in batches at check-ins while Alex is at the robot. Main always runs against the mock robot. Pull main after any merge your lane depends on.
+- **Merging to main:** anyone may push or merge to main, but only when their human asks for that action. Branches, PRs, issues and comments need no permission.
+- **Alex's agent is the master agent:** it organizes the work: issues, milestones, decisions and keeping the docs in sync. Main always runs against the mock robot. Pull main after any merge your lane depends on.
 - **Contract changes** update the contract, the mock and the firmware in one PR.
 - **Real robot:** commands go to it only when someone is with it.
 - **Secrets** live in `.env` (not in git); their names go in `.env.example`.
@@ -114,7 +115,7 @@ The top risk is balancing eating the whole weekend, leaving no time for the part
 | Risk | Fallback |
 | --- | --- |
 | Balance tuning takes too long | Kickstand mode, so every other feature still demos |
-| Alex carries motion, the seams and merging, and is at the robot most of Saturday | Contract and mock land first, before any robot time; merges wait for check-ins; Nick takes server or run-script issues when Alex is behind |
+| Alex carries motion, the seams and organizing, and is at the robot most of Saturday | Contract and mock land first, before any robot time; anyone can merge their own PRs; Nick takes server or run-script issues when Alex is behind |
 | Vision needs a camera while the iPhone is on the robot | A second camera for the desk: a teammate's phone or an MLH Logitech webcam |
 | Arm motion knocks it over | Kickstand down before using the arm; keep the arm light and close to the mast |
 | Wi-Fi lag or drops at the venue | Own hotspot; the robot balances on its own and stops after 300 ms without commands |

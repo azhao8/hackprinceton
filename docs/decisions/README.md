@@ -31,7 +31,7 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0023](0023-planning-doc-source.md) | The planning doc was the source for docs/ | Docs round |
 | [0024](0024-docs-layout.md) | docs/ layout | Docs round |
 | [0025](0025-john-pack-archive.md) | John's pack is archived as reference | Docs round |
-| [0026](0026-master-agent-merges.md) | One master agent merges; others open PRs | Repo setup (C2) |
+| [0026](0026-master-agent-merges.md) | One master agent merges; others open PRs (superseded by 0048) | Repo setup (C2) |
 | [0027](0027-tasks-in-issues.md) | Tasks in GitHub Issues plus a milestones doc | Repo setup (T1, T4) |
 | [0028](0028-stack.md) | Stack: Python server, Next.js web app | Repo setup (S2, N1) |
 | [0029](0029-folder-layout.md) | Folder layout | Repo setup (S1, N2) |
@@ -53,3 +53,4 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0045](0045-ask-dont-guess.md) | Agents ask instead of guessing | Collaboration round |
 | [0046](0046-standard-simple-alternatives.md) | Standard and simple, chosen from alternatives | Contract round |
 | [0047](0047-decision-rules.md) | Decision rules in CLAUDE.md; only main is protected | Issue #4 |
+| [0048](0048-anyone-merges.md) | Anyone can merge to main; Alex's agent organizes | Issue #6 |

@@ -30,10 +30,11 @@ it wins over every other doc.
   Issues carry a lane label (lane:motion, lane:vision, lane:misc). Assign
   yourself before starting. Branch name: <lane>/<N>-short-name.
 - Pull main before starting a task. Keep PRs small; tests pass before opening.
-- main is protected: only the master agent (Alex, GitHub azhao8) pushes
-  or merges to main, and only with Alex's OK for that action. Branches,
-  PRs, issues and comments need no permission. main always runs against
-  the mock robot.
+- Anyone may push or merge to main, but only when their human asks for
+  that specific action. Branches, PRs, issues and comments need no
+  permission. main always runs against the mock robot.
+- Alex's agent (GitHub azhao8) is the master agent: it organizes the work
+  (issues, milestones, decisions, keeping the docs in sync).
 - Talk in issue and PR comments (blockers, questions, interface changes);
   the group chat is for quick pings. Read the issue's comments before working.
 

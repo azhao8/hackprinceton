@@ -1,7 +1,7 @@
 # 0047: Decision rules in CLAUDE.md; only main is protected
 
 - Date: 2026-11-14
-- Status: accepted
+- Status: accepted; merge rule superseded by 0048
 - Source: issue #4
 - Agreed by: Alex
 
