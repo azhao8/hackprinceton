@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      # After the build: Next 16 generates route types (LayoutProps) during next build.
+      - run: npm run typecheck
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.arduino15
+          key: arduino-esp32-3.3.12
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install the ESP32 core (same version as on the robot)
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+      - name: Compile the robot firmware
+        run: arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/balance
+      - name: Compile the bring-up sketch
+        run: arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/bringup
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bench tools compile
+        run: python -m py_compile firmware/balance/*.py
+      - uses: astral-sh/setup-uv@v6
+        if: hashFiles('server/pyproject.toml') != ''
+      - name: Server tests
+        if: hashFiles('server/pyproject.toml') != ''
+        working-directory: server
+        run: uv sync && uv run pytest
