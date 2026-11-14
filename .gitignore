@@ -10,3 +10,4 @@ __pycache__/
 firmware/balance/secrets.h
 firmware/balance/follow/follow
 firmware/balance/follow/follow_view.jpg
+firmware/balance/phone/cert/
