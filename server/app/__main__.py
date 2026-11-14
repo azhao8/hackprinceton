@@ -467,6 +467,19 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
     if vision is None:
         return state
     state.phone_frames = getattr(vision, "_source", None) if args_source_is_phone(vision) else None
+    base = getattr(app._follow_factory, "config", None)
+    if base is not None:
+        import dataclasses
+
+        from app.skills.follow import FollowSkill
+
+        def factory() -> Any:
+            # The control page's follow settings: speed cap and stop distance ("bigger = stays closer",
+            # the same upper-body width fraction as John's phone page). They apply when Follow starts.
+            return FollowSkill(dataclasses.replace(base, v_max=float(state.settings["speed"]),
+                                                   target_box_w=float(state.settings["distance"])))
+        factory.config = base  # type: ignore[attr-defined]
+        app._follow_factory = factory
     state.follow_start = lambda: None if app.skills.running == "follow" else app.toggle_follow()
     state.follow_stop = lambda: app.toggle_follow() if app.skills.running == "follow" else None
     state.follow_running = lambda: app.skills.running == "follow"
@@ -612,6 +625,7 @@ def main(argv: list[str] | None = None) -> None:
 
         config = make_follow_config(args)
         follow_factory = lambda: FollowSkill(config)  # noqa: E731
+        follow_factory.config = config  # type: ignore[attr-defined]  # api_state() applies the control page's settings
 
     window = render = None
     if args.window:

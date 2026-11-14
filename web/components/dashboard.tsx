@@ -173,6 +173,7 @@ export function Dashboard() {
             follow={status?.follow ?? false}
             skill={status?.skill ?? null}
             settings={status?.settings ?? null}
+            serverVision={status?.vision?.mode === "server"}
             send={send}
             onToggle={toggleFollow}
           />
@@ -210,8 +211,8 @@ export function Dashboard() {
   );
 }
 
-function FollowCard({ follow, skill, settings, send, onToggle }: {
-  follow: boolean; skill: string | null; settings: FollowSettings | null;
+function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
+  follow: boolean; skill: string | null; settings: FollowSettings | null; serverVision: boolean;
   send: (m: ClientMessage) => boolean; onToggle: () => void;
 }) {
   const [draft, setDraft] = useState<FollowSettings | null>(null);
@@ -224,7 +225,7 @@ function FollowCard({ follow, skill, settings, send, onToggle }: {
   };
   const range = shown ? RANGES[shown.mode] : [0.25, 0.65];
   return (
-    <Card title="Follow" hint="The phone tracks; the server decides">
+    <Card title="Follow" hint={serverVision ? "The server sees and follows · settings apply when Follow starts" : "The phone tracks"}>
       <div className="flex items-center justify-between gap-3">
         <span className={`text-sm font-semibold ${follow ? "text-ok" : "text-muted"}`}>
           {follow ? "Following" : skill ? `Server skill: ${skill}` : "Off"}
@@ -237,7 +238,7 @@ function FollowCard({ follow, skill, settings, send, onToggle }: {
             <select value={shown.mode} onChange={(e) => set({ mode: e.target.value as FollowSettings["mode"] })}
               className="flex-1 rounded-md border border-line bg-background px-2 py-1.5 text-sm">
               <option value="person">Follow a person</option>
-              <option value="yellow">Follow something yellow</option>
+              {!serverVision && <option value="yellow">Follow something yellow</option>}
             </select>
             <button type="button" onClick={() => set({ voice: !shown.voice })}
               className="rounded-md border border-line bg-background px-3 py-1.5 text-sm">
