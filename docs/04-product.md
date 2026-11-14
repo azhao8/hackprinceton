@@ -1,6 +1,8 @@
 # Product
 
-What Miguel.exe is and does, as a person experiences it. The use case isn't chosen yet: the plan is a general core first, with the use case and main track picked around Sat noon.
+What Miguel.exe is and does, as a person experiences it.
+
+**Use case (decision 0052):** a caretaker robot in a senior's home. The senior's children use an iOS app to ask it to help their parent, for example "bring Mom her pills" or "get Dad a glass of water". The senior can also talk to it directly. Open details: how it carries things without a gripper (P-5), how it finds places and the senior (P-6), what else the family app does (P-7), and how the app reaches the robot from outside the home (T-17).
 
 ## Concept
 
@@ -10,7 +12,7 @@ Working pitch (tentative): a two-wheeled self-balancing robot with an iPhone "he
 - **Head:** an iPhone at the top, used for sensing (camera, possibly LiDAR) and as a display (eyes, status, info).
 - **Hands:** nothing built yet; any arm or end attachment can be added later. The robot is pitched as modular, with concept modules in the demo. Core functionality comes first.
 - **Control:** no handheld controller; gestures and voice.
-- **Purpose:** a social-good use case (disability, volunteering or similar); not chosen.
+- **Purpose:** caring for seniors at home, with their family directing it from an app (decision 0052).
 
 ## Principles (decided)
 

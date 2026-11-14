@@ -8,7 +8,7 @@
 - The robot is built and works (Sat noon): it balances hands-off with the phone mounted, drives over USB and follows a yellow object. The firmware and bench tools are in `firmware/`; start with `firmware/README.md`. The tethered-balance milestone is met.
 - Architecture: one Python server on the laptop is the hub. The phone page and the dashboard feed it; it runs vision, the agent and skills, and steers the robot over Wi-Fi. The robot balances and enforces its own safety (see `03-software.md`).
 - Current focus: the server skeleton, contract v1 and the mock robot (overdue), so all lanes build against them (see `01-build-plan.md`).
-- Next milestone: the first end-to-end slice, moved to Sat 6 pm. The use case and main track were due at noon and are still open.
+- Next milestone: the first end-to-end slice, moved to Sat 6 pm. The use case is chosen (0052: senior caretaker, directed by family through an iOS app); the main track is still open.
 
 ## Decided
 
@@ -17,7 +17,7 @@ The full list is in `decisions/` (one file each). In short:
 - **Body:** two-wheeled, self-balancing; iPhone on top as camera, screen, mic and speaker.
 - **Control:** no handheld controller. People speak in their own words (an LLM understands them) and use gestures. Anyone nearby can direct it.
 - **Character:** named Miguel.exe, with a light personality (name, eyes, voice).
-- **Plan shape:** a general core first. "Follows you, carries things, responds to gestures" is the must-work floor. The specific use case is picked around Sat noon.
+- **Plan shape:** a general core first. "Follows you, carries things, responds to gestures" is the must-work floor. The use case: a caretaker robot for seniors at home; family members send it tasks (bring medication, fetch water) from an iOS app (0052).
 - **Autonomy:** the human says what; the robot works out how.
 - **Product:** remembers things while it's running (world memory is in the build); a companion panel if it's not too much effort; trust features (stop gesture always works, says what it's about to do, camera-on indicator); favors low tasks (floor, seated people, kids).
 - **Arm:** nothing attached yet; gestures only (wave, point) unless an attachment is ready after balancing works. The laptop drives it on the desk; the ESP32 drives it on the robot. Pitched as modular, with concept modules in the demo.
@@ -31,7 +31,7 @@ The full list is in `decisions/` (one file each). In short:
 
 ## Open
 
-See `open-questions.md`. The big ones: the use case and main track (Sat noon), and how the phone's camera reaches the server.
+See `open-questions.md`. The big ones: how it carries meds and water without a gripper (P-5), how the family app reaches the robot (T-17), who builds the server API and the robot's face now that Nick builds the iOS app (W-6, W-7), and the main track.
 
 ## Map of the docs
 

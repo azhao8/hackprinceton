@@ -21,7 +21,8 @@ Four lanes. Software lanes are owned by folder, so agents rarely touch the same 
 | Hardware + firmware | John Huang | Frame, wiring, power, the physical robot. The firmware he wrote and tuned, and its bench tools (ownership open: W-5). At the robot for every real-robot test | `firmware/` |
 | Motion + integration (master) | Alex Zhao | Runs the master agent, which organizes the work. The server skeleton, the contract, the mock robot, the server's robot link and arbiter, the run script, CI. Firmware changes the contract needs, together with John | `contract/`, `server/` skeleton, mock, link, arbiter |
 | Vision + understanding | Grant Ji Kim | Camera input, person tracking, gestures, follow-me, speech to text, the LLM brain, the skill runner and skills, memory | `server/` vision, speech, brain, skills, memory modules |
-| Misc | Jialang "Nick" Zhao | The server's web API, dashboard, phone page (camera + face), arm poses on the desk, companion panel, pitch, Devpost, backup video, demo path. Picks up whatever is blocking another lane | `server/` API, `web/` |
+| iOS app | Jialang "Nick" Zhao | The iOS app the senior's children use to send the robot tasks (bring medication, fetch water) and see how it's going | `ios/` |
+| Unassigned (W-6, W-7) | | The server's API, the robot's face and camera on the phone, the dashboard, arm poses on the desk, pitch, Devpost, backup video, demo path | `server/` API, `web/` |
 
 John wrote and tuned the firmware overnight, so he knows it best; who owns it from here is open (W-5). The contract and mock robot sit with Alex, who owns the server end of the link.
 
@@ -44,7 +45,12 @@ John wrote and tuned the firmware overnight, so he knows it best; who owns it fr
 - **Speech and the brain:** the phone's mic through the phone page (T-13), or push-to-talk on the laptop until then; speech to text, then Claude picking skills. Gemini sits behind the same interface.
 - **Memory:** the world memory store from `03-software.md`. Perception and skills write to it, and a summary goes into every LLM call.
 
-### Misc: everything people see, plus filling gaps
+### iOS app (Nick)
+
+- The family's app: send a task (bring medication, fetch water), see what the robot is doing, get told when it's done. How it reaches the robot from outside the home is open (T-17).
+- It talks to the server's API, not to the robot.
+
+### Unassigned since Nick moved to the iOS app (W-6, W-7)
 
 - The server's WebSocket API and the dashboard (e-stop, joystick, telemetry plots), built against the mock robot.
 - The phone page: face, camera frames, mic and motion sensors to the server, and Miguel's voice back, over HTTPS.
@@ -62,20 +68,20 @@ Agree on these first, write them down, and change them only in a PR that every a
 | Arbiter input: speed/turn targets and arm poses, tagged by source (e-stop, joystick, skill) | All three software lanes | Alex | `server/` |
 | Skill API: a skill gets perception and memory and sends targets to the arbiter | Vision and Motion + integration | Grant | `server/` |
 | Frame source: anything that hands out camera frames | Vision and Misc (phone page) | Grant | `server/` |
-| Server and web messages: telemetry, what the robot sees, e-stop, joystick, tasks | Misc (both ends) | Nick | `contract/web/` |
+| Server and app/web messages: tasks and their status, telemetry, what the robot sees, e-stop, joystick | The iOS app, the dashboard, the server API | Open (W-6) | `contract/web/` |
 | Arm pose names: wave, point, push, tuck | Misc (desk) and the firmware | Alex | `contract/` |
 
 ## Timeline by lane
 
 Times are Sat/Sun ET, from Sat 1 pm. Checkpoints in bold come from `milestones.md`.
 
-| When | Alex (motion + integration) | Grant (vision + understanding) | Nick (misc) | John (hardware + firmware) |
+| When | Alex (motion + integration) | Grant (vision + understanding) | Nick (iOS app) | John (hardware + firmware) |
 | --- | --- | --- | --- | --- |
-| Sat 1-3 pm | Server skeleton; contract v1 agreed with John | #3: frames + MediaPipe on the skeleton | Server WebSocket API; phone page started | Hotspot + `linktest.py` (first Wi-Fi test); tilt the phone up 15-20° |
+| Sat 1-3 pm | Server skeleton; contract v1 agreed with John | #3: frames + MediaPipe on the skeleton | iOS app skeleton: send a task, see status (against a stub) | Hotspot + `linktest.py` (first Wi-Fi test); tilt the phone up 15-20° |
 | **Sat 2 pm** | **Go/no-go on balancing:** effectively go; it balances hands-off | | | |
-| Sat 3-6 pm | `contract/` + mock robot; server link + arbiter | Follow skill (John's gains); stop gesture | Phone page: camera + face; dashboard joystick; #8 once the contract lands | Firmware changes for contract v1; kickstand mode |
+| Sat 3-6 pm | `contract/` + mock robot; server link + arbiter | Follow skill (John's gains); stop gesture | App against the server API (once W-6 is settled) | Firmware changes for contract v1; kickstand mode |
 | **Sat 6 pm** | **First end-to-end slice:** a person in front of the phone, the server decides, the mock follows; then the real robot over Wi-Fi | | | |
-| Sat 6 pm-12 am | Real robot through the server; run script | Agent (Claude picks skills); speech | Mic and voice on the phone page; companion panel | Battery reading; arm mount; trim re-check |
+| Sat 6 pm-12 am | Real robot through the server; run script | Agent (Claude picks skills); speech | Task status and delivery confirmation in the app | Battery reading; arm mount; trim re-check |
 | Sun 12-5 am | Robustness; demo path | Use-case skills; tuning in a noisy room | Pitch, Devpost draft, backup video | Robot spares, charged batteries |
 | **Sun 5 am** | **Feature freeze:** bug fixes only | | | |
 | Sun 5-7 am | Rehearse the demo; fix only what breaks it | | Submit on Devpost by 7 am | |

@@ -16,6 +16,7 @@ work, read firmware/README.md: its state, frame, the link it speaks, safety rule
 | firmware/ | Balancing, motors, IMU, robot link, arm; bench tools           | ESP32, arduino-cli |
 | server/   | Robot link, mock robot, vision, speech, LLM brain, skills, API | Python            |
 | web/      | Dashboard, phone face and camera page                          | Next.js           |
+| ios/      | iOS app for the senior's family: send tasks, see status        | Swift             |
 | docs/     | Plans, decisions, open questions, milestones, reference        | Markdown          |
 
 ## Commands (fill in as code lands)
