@@ -35,6 +35,16 @@ it wins over every other doc.
 - Talk in issue and PR comments (blockers, questions, interface changes);
   the group chat is for quick pings. Read the issue's comments before working.
 
+## How to choose
+
+- Be as standard as possible: use the common convention, library or
+  protocol before inventing one (for example SI units and ROS REP 103 axes).
+- Prefer the simpler way when it does the job; pick a better way over the
+  first one that works.
+- For any real choice, list as many alternatives as you can, critique each
+  in a line, then pick one and say why. For a choice that affects the
+  product, bring that list to your human (see below).
+
 ## Ask, don't guess
 
 - If a choice could affect the product (decisions, architecture, interfaces

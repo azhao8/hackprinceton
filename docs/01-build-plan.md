@@ -9,6 +9,7 @@ How four people and their agents build Miguel.exe between now (Sat 1 am) and the
 - **Lanes don't wait on each other:** each lane builds against the mock robot or a stand-in, so nobody is blocked on hardware or on another lane.
 - **Always demoable:** every stage leaves something to show (see Fallback demo tiers below).
 - **Vision and motion are equally important:** each one gets a full-time owner.
+- **Standard and simple:** use the common convention or library first; prefer the simpler way. For any real choice, list the alternatives, critique each, then pick one.
 
 ## Who does what
 

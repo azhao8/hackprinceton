@@ -51,3 +51,4 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0043](0043-estop-keeps-balancing.md) | E-stop stops the robot but keeps it balancing | Contract round |
 | [0044](0044-collaboration-workflow.md) | How we collaborate day to day | Collaboration round |
 | [0045](0045-ask-dont-guess.md) | Agents ask instead of guessing | Collaboration round |
+| [0046](0046-standard-simple-alternatives.md) | Standard and simple, chosen from alternatives | Contract round |
