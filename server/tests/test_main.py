@@ -499,3 +499,4 @@ def test_api_state_applies_the_control_pages_follow_settings():
     state.set_settings({"speed": 0.2, "distance": 0.5})
     skill = app._follow_factory()
     assert skill.config.v_max == 0.2 and skill.config.target_box_w == 0.5
+    assert abs(skill.config.d_target_m - 0.9) < 1e-9 and abs(skill.config.d_min_m - 0.63) < 1e-9

@@ -54,9 +54,12 @@ KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own messa
 
 # Follow settings, set on the control page and read by the phone page (decision 0053).
 # Ranges and defaults are John's from the phone page (MODES in index.html).
-FOLLOW_MODES = {"person": {"dmin": 0.25, "dmax": 0.65, "d": 0.45, "s": 0.25},
-                "yellow": {"dmin": 0.2, "dmax": 0.6, "d": 0.35, "s": 0.4}}
-SPEED_MIN, SPEED_MAX = 0.1, 0.45
+# Wide on purpose (Alex: "in case"): the robot clamps speed to 0.6 m/s itself.
+# person "d" 0.7: the phone streams portrait frames from the 0.5x lens, so a person's box is wide
+# early; 0.45 (John's landscape value) made the server's follow stop far away (robot test, Sat 5:35 pm).
+FOLLOW_MODES = {"person": {"dmin": 0.1, "dmax": 1.0, "d": 0.7, "s": 0.25},
+                "yellow": {"dmin": 0.1, "dmax": 1.0, "d": 0.35, "s": 0.4}}
+SPEED_MIN, SPEED_MAX = 0.05, 0.6
 
 
 def default_settings(mode: str = "person") -> dict:

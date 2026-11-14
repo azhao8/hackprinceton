@@ -7,7 +7,7 @@ import { LineChart } from "./line-chart";
 
 const STALE_MS = 1000;
 const DRIVE_HZ = 20;
-const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.25, 0.65], yellow: [0.2, 0.6] };
+const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.1, 1.0], yellow: [0.1, 1.0] };
 const SAY_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"];
 const CUT_CONFIRM = "Cut motor power?\n\nThe robot stops balancing and drops. Use STOP unless that isn't enough.";
 const ARM_CONFIRM =
@@ -258,9 +258,9 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
               Voice {shown.voice ? "on" : "off"}
             </button>
           </div>
-          <Slider label="Follow speed cap" unit="m/s" min={0.1} max={0.45} step={0.05} value={shown.speed}
+          <Slider label="Follow speed cap" unit="m/s" min={0.05} max={0.6} step={0.05} value={shown.speed}
             onChange={(v) => set({ speed: v })} />
-          <Slider label="Stop distance (bigger = closer)" unit="" min={range[0]} max={range[1]} step={0.05}
+          <Slider label="Closeness (bigger = stops closer)" unit="" min={range[0]} max={range[1]} step={0.05}
             value={shown.distance} onChange={(v) => set({ distance: v })} />
         </div>
       ) : (

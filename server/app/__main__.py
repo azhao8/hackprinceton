@@ -476,8 +476,14 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
         def factory() -> Any:
             # The control page's follow settings: speed cap and stop distance ("bigger = stays closer",
             # the same upper-body width fraction as John's phone page). They apply when Follow starts.
+            # One "closeness" setting moves both distance cues together, so neither stops it early:
+            # the box target is the setting, and the shoulder target in meters scales inversely
+            # (John's 0.45 <-> 1.0 m). It backs off inside 70% of the target distance.
+            closeness = float(state.settings["distance"])
+            d_target = 0.45 / closeness
             return FollowSkill(dataclasses.replace(base, v_max=float(state.settings["speed"]),
-                                                   target_box_w=float(state.settings["distance"])))
+                                                   target_box_w=closeness, d_target_m=d_target,
+                                                   d_min_m=0.7 * d_target))
         factory.config = base  # type: ignore[attr-defined]
         app._follow_factory = factory
     state.follow_start = lambda: None if app.skills.running == "follow" else app.toggle_follow()
