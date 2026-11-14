@@ -17,7 +17,11 @@
         border-radius: 18px; background: #1a7f37; }
   #settings { display: none; }
   /* Server vision (Alex's design): the phone shows Miguel's face and streams its camera to the server. */
-  #face { position: absolute; inset: 0; width: 100%; height: 100%; background: #05070a; display: none; }   /* drawn by face.js */
+  /* The face fills the TOP HALF of the screen (Alex); face.js centers it in its canvas. The bottom half stays dark,
+     with the status line at the very bottom. The camera keeps running underneath (it streams to the server). */
+  #face { position: absolute; top: 0; left: 0; right: 0; width: 100%; height: 50%; background: #05070a; display: none; }   /* drawn by face.js */
+  #wrap.faceon { background: #05070a; }
+  #wrap.faceon video, #wrap.faceon #ov { opacity: 0; }
   #face.on { display: block; }
   #face.on ~ #hud { top: auto; bottom: 0; font-size: 11px; opacity: 0.6; background: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -379,6 +383,7 @@ function setServerVision(on) {
   if (on === serverVision) return;
   serverVision = on;
   $('face').classList.toggle('on', on);
+  $('wrap').classList.toggle('faceon', on);
   if (on && !face && typeof Face !== 'undefined') face = Face.create($('face'));
   if (face) { if (on) face.start(); else face.stop(); }
   log({ event: 'vision mode', mode: on ? 'server' : 'phone' });
