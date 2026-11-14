@@ -182,7 +182,7 @@ export function Dashboard() {
         <EStopPanel active={status?.estop ?? false} sendFailed={false} onChange={(on) => send({ t: "estop", on })} />
       </div>
 
-      <CameraCard status={status} />
+      <CameraCard status={status} send={send} />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
         <section aria-label="Telemetry" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -258,7 +258,9 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
 }
 
 /** The server's view: the phone's camera with the server's boxes, target and command drawn on it. */
-function CameraCard({ status }: { status: import("@/lib/messages").Status | null }) {
+function CameraCard({ status, send }: { status: import("@/lib/messages").Status | null; send: (m: ClientMessage) => boolean }) {
+  const camera = status?.settings.camera ?? "back";
+  const mirror = status?.settings.mirror ?? false;
   const vision = status?.vision ?? null;
   const httpBase = SERVER_WS_URL.replace(/^ws(s?):/, "http$1:").replace(/\/ws$/, "");
   const age = vision?.camera?.age_s ?? null;
@@ -275,6 +277,18 @@ function CameraCard({ status }: { status: import("@/lib/messages").Status | null
               Camera {live ? `live · ${vision.camera?.frames ?? 0} frames` : age === null ? "no frames yet" : `stalled ${age.toFixed(0)} s`}
             </Badge>
             <p className="text-muted">Vision: {vision.status ?? "—"}</p>
+            <div className="flex gap-2">
+              {(["back", "front"] as const).map((side) => (
+                <button key={side} type="button" onClick={() => send({ t: "settings", camera: side })}
+                  className={`flex-1 rounded-md border px-3 py-1.5 ${camera === side ? "border-accent bg-accent text-white" : "border-line bg-background"}`}>
+                  {side === "back" ? "Back camera" : "Front camera"}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={mirror} onChange={(e) => send({ t: "settings", mirror: e.target.checked })} />
+              Mirror (if left and right look swapped)
+            </label>
             {!live && (
               <p className="text-muted">
                 Open the phone page on the robot&apos;s iPhone and tap Start. It streams the camera here.

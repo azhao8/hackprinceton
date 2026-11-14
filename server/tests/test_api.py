@@ -260,11 +260,11 @@ def test_control_page_does_not_use_bare_element_ids():
 def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
     async def t(c, s):
         d = await (await c.get("/tel")).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.45, "voice": True}
+        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.45, "voice": True, "camera": "back", "mirror": False}
         d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False})).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 0.65, "voice": False}   # clamped
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 0.65, "voice": False, "camera": "back", "mirror": False}   # clamped
         d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
-        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False}    # new mode: its defaults
+        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False}    # new mode: its defaults
         await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
         assert (await (await c.get("/tel")).json())["settings"]["mode"] == "yellow"
         ws = await c.ws_connect("/ws")
@@ -351,6 +351,31 @@ def test_phone_frames_feed_vision_and_follow_runs_on_the_server():
         chunk = await resp.content.read(64)
         assert resp.headers["Content-Type"].startswith("multipart/x-mixed-replace") and b"--frame" in chunk
         resp.close()
+        await client.close()
+
+    asyncio.run(go())
+
+
+def test_camera_and_mirror_settings_reach_the_phone_and_the_frame_source():
+    import cv2
+    import numpy as np
+
+    from app.vision.phone_source import PhoneFrameSource
+
+    async def go():
+        src = PhoneFrameSource()
+        state = ApiState(Arbiter(), FakeLink(), phone_frames=src)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        d = await (await client.post("/control/settings", json={"camera": "front", "mirror": True})).json()
+        assert d["settings"]["camera"] == "front" and d["settings"]["mirror"] is True and src.mirror
+        await client.post("/control/settings", json={"camera": "sideways", "mirror": "yes"})   # ignored
+        assert state.settings["camera"] == "front" and state.settings["mirror"] is True
+        img = np.zeros((10, 20, 3), dtype=np.uint8)
+        img[:, :5] = 255                                    # white on the left
+        ok, jpg = cv2.imencode(".png", img)
+        src.push_jpeg(jpg.tobytes())
+        assert src.read_next(timeout=1).image[:, -5:].mean() > 200   # mirrored: white on the right now
         await client.close()
 
     asyncio.run(go())

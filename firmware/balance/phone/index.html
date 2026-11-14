@@ -218,12 +218,27 @@ async function listCams() {
 async function keepAwake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sending) keepAwake(); });
 
+// Which camera: "back" (default) or "front", set on the control page. Ultra-wide when there is one.
+let wantCamera = 'back';
+function pickCamera(cams, side) {
+  const re = side === 'front' ? /front/i : /back/i;
+  return cams.find(c => re.test(c.label) && /ultra ?wide/i.test(c.label)) || cams.find(c => re.test(c.label));
+}
+async function switchCamera(side) {
+  wantCamera = side;
+  if (!stream) return;                                      // start() will pick it
+  try {
+    const want = pickCamera(await listCams(), side);
+    if (want && want.label !== label) { await openCam(want.deviceId); await listCams(); log({ event: 'camera', using: label }); }
+  } catch (e) { log({ event: 'camera error', error: String(e) }); }
+}
+
 async function start() {
   try {
     await openCam(null);                                   // asks for permission; then the camera names are visible
     const cams = await listCams();
-    const uw = cams.find(c => /back/i.test(c.label) && /ultra ?wide/i.test(c.label));
-    if (uw && uw.label !== label) { await openCam(uw.deviceId); await listCams(); }
+    const want = pickCamera(cams, wantCamera);
+    if (want && want.label !== label) { await openCam(want.deviceId); await listCams(); }
     sending = true;
     keepAwake();
     log({ event: 'camera', using: label, frame: v.videoWidth + 'x' + v.videoHeight, cameras: cams.map(c => c.label) });
@@ -245,6 +260,7 @@ function applySettings(st) {
   if (modeSel.value !== st.mode) { modeSel.value = st.mode; setMode(); }
   dist.value = st.distance; spd.value = st.speed; labels();
   Voice.setMuted(!st.voice);
+  if (st.camera && st.camera !== wantCamera) switchCamera(st.camera);
 }
 $('stop').onclick = () => { sending = false; post('/auto', { v: 0, w: 0, found: false, cx: 0.5, h: 0 }).catch(() => {}); };
 camSel.onchange = async () => {

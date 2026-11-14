@@ -32,6 +32,7 @@ class PhoneFrameSource(FrameSource):
         self._stopped = False
         self.received = 0
         self.last_at: float | None = None
+        self.mirror = False   # flip left-right (the front camera may send mirrored frames; steering needs the true view)
 
     def start(self) -> None:
         pass  # frames arrive through push_jpeg(); nothing to open
@@ -43,6 +44,8 @@ class PhoneFrameSource(FrameSource):
         image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             return False
+        if self.mirror:
+            image = cv2.flip(image, 1)
         with self._lock:
             frame = Frame(t=self._clock(), index=self._index, image=image)
             self._index += 1
