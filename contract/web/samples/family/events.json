@@ -1,0 +1,35 @@
+{
+  "t": "events",
+  "day": "2026-11-14",
+  "items": [
+    {
+      "id": "e1",
+      "at": "2026-11-14T07:40:00-05:00",
+      "kind": "wake",
+      "title": "Up for the day",
+      "note": "Miguel turned off the night-light and said good morning."
+    },
+    {
+      "id": "e3",
+      "at": "2026-11-14T09:00:00-05:00",
+      "kind": "medication",
+      "title": "Morning pills",
+      "note": "Miguel asked; she said she took them."
+    },
+    {
+      "id": "e4",
+      "at": "2026-11-14T10:30:00-05:00",
+      "kind": "water",
+      "title": "Water, from you",
+      "quote": "Morning, Mom! Drink up.",
+      "quote_by": "Sarah"
+    },
+    {
+      "id": "e8",
+      "at": "2026-11-14T14:10:00-05:00",
+      "kind": "walk",
+      "title": "Garden walk",
+      "note": "220 m together."
+    }
+  ]
+}

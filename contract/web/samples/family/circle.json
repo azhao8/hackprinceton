@@ -1,0 +1,25 @@
+{
+  "t": "circle",
+  "items": [
+    {
+      "id": "m1",
+      "name": "Sarah",
+      "relation": "Daughter",
+      "access": "Everything",
+      "you": true
+    },
+    {
+      "id": "m2",
+      "name": "David",
+      "relation": "Son",
+      "access": "Alerts, messages, sending things"
+    },
+    {
+      "id": "m4",
+      "name": "Dr. Patel",
+      "relation": "Her doctor",
+      "access": "Weekly walking summary",
+      "invited": true
+    }
+  ]
+}

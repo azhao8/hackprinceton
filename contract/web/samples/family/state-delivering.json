@@ -1,0 +1,18 @@
+{
+  "t": "state",
+  "mode": "delivering",
+  "mode_note": "Bringing water to her",
+  "since": "2026-11-14T16:14:00-05:00",
+  "link": "up",
+  "delivery": {
+    "id": "d7",
+    "item": "water",
+    "label": "Water",
+    "message": "Love you, Mom",
+    "stage": "loading"
+  },
+  "check_in": {
+    "phase": "idle"
+  },
+  "alert": null
+}

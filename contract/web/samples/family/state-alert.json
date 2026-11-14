@@ -1,0 +1,26 @@
+{
+  "t": "state",
+  "mode": "with_mom",
+  "mode_note": "Staying beside her",
+  "since": "2026-11-14T16:21:00-05:00",
+  "link": "up",
+  "delivery": null,
+  "check_in": {
+    "phase": "idle"
+  },
+  "alert": {
+    "id": "a1",
+    "kind": "possible_fall",
+    "at": "2026-11-14T16:21:00-05:00",
+    "place": "Living room, by the window",
+    "saw": "Margaret went from standing to the floor and hasn't gotten up.",
+    "heard": "I slipped. My hip hurts.",
+    "did": [
+      "Asked if she was okay",
+      "Told David",
+      "Staying beside her"
+    ],
+    "status": "active",
+    "photo": "/family/media/7f3c1a9e5b2d4c6f8a0e1b2c3d4e5f60"
+  }
+}

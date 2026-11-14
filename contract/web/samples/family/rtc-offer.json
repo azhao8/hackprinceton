@@ -1,0 +1,8 @@
+{
+  "t": "rtc",
+  "call": "c3",
+  "sdp": {
+    "type": "offer",
+    "sdp": "v=0\r\no=- 90210 2 IN IP4 127.0.0.1\r\n…"
+  }
+}
