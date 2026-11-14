@@ -48,3 +48,4 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0040](0040-platformio.md) | Firmware uses PlatformIO | Build-plan round (T-1) |
 | [0041](0041-iphone-model.md) | The head is an iPhone 18 Pro or similar | Build-plan round (T-2) |
 | [0042](0042-agents-md.md) | AGENTS.md points to CLAUDE.md | Build-plan round (W-2) |
+| [0043](0043-estop-keeps-balancing.md) | E-stop stops the robot but keeps it balancing | Contract round |

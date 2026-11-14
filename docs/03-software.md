@@ -30,6 +30,7 @@ Starting point, from John's brief: newline-delimited JSON over UDP, on a phone o
 - **Robot to laptop, about 50 times a second:** `{"t":"tel","pitch":1.2,"rate":-0.4,"vl":0.28,"vr":0.31,"batt":11.6,"state":"balance","fault":null}`.
 - **Arm:** add one message, for example a named pose ("wave").
 - **Safety on the robot:** if no command arrives for 300 ms, it holds position; past a set tilt angle, it cuts the motors.
+- **E-stop:** zero speed and turn while it keeps balancing; "motors off" (mode idle) is separate (decision 0043).
 - **Mock robot:** a small laptop script that speaks the same messages and fakes the replies.
 
 ## Motion: balance and drive (on the ESP32)
