@@ -35,8 +35,9 @@
 <script src="track.js"></script>
 <script>
 // Miguel's eye and voice. Runs on the robot's iPhone: picks the 0.5x back camera, finds the target here on the phone
-// (a person with MediaPipe, or something yellow), sends only speed and turn to the Mac (phone_server.py -> drive.py
-// /auto), and talks through the phone's speaker. The robot moves only while Follow is ON on the Mac's drive page.
+// (a person with MediaPipe, or something yellow), sends only speed and turn to the Mac, and talks through the phone's
+// speaker. Served either by the main server (server/, python -m app: /auto goes to the arbiter) or by the bench
+// tool phone_server.py (/auto goes to drive.py). Either way the robot moves only while Follow is ON on the Mac.
 const $ = id => document.getElementById(id);
 const v = $('v'), ov = $('ov'), octx = ov.getContext('2d'), hud = $('hud'), camSel = $('cam'), modeSel = $('mode');
 const dist = $('dist'), spd = $('spd');
@@ -213,7 +214,7 @@ setInterval(() => {
   if (sending && !inflight) {
     inflight = true;
     post('/auto', { v: r.v, w: r.w, found: !!r.target, cx: r.target ? r.target.cx : 0.5, h: r.target ? r.target.size : 0 })
-      .then(res => { sendErr = res.ok ? '' : 'drive.py is not running on the Mac'; })
+      .then(res => { sendErr = res.ok ? '' : 'the Mac is not passing commands on (server or drive.py down)'; })
       .catch(() => { sendErr = 'Mac not reachable'; })
       .finally(() => { inflight = false; });
   }
@@ -234,8 +235,8 @@ setInterval(async () => {                                   // robot state, from
   try {
     const d = await (await fetch('/tel')).json(), t = d.tel || {};
     robot = 'Robot: ' + (t.state || '?') + (typeof t.pitch === 'number' ? '  pitch ' + t.pitch.toFixed(1) : '') +
-            '   Follow ' + (d.follow ? 'ON' : 'off (press F on the drive page)');
-  } catch (e) { robot = 'Robot: no answer from drive.py'; }
+            '   Follow ' + (d.follow ? 'ON' : 'off (turn it on: control page, or F on the drive page)');
+  } catch (e) { robot = 'Robot: no answer from the Mac'; }
 }, 1000);
 
 setInterval(() => {

@@ -19,6 +19,15 @@ uv run python -m app --robot mock --test-drive    # forward 2 s, turn left 2 s, 
 
 Every second the server logs what it sent, what the robot reports, and the link health (`ok` plus the round-trip lag, or `DOWN`).
 
+**The robot's phone page** (John's page, served by the server):
+
+1. Start the server (`python -m app ...`); it prints the phone's address.
+2. First time on an iPhone: open `http://<laptop IP>:8080` in Safari and trust the certificate.
+3. Open `https://<laptop IP>:8443` on the robot's iPhone and tap Start.
+4. On the laptop, open `http://localhost:8080/control`: **STOP**/Release, **Follow ON**/off, and lines for Miguel to say. The phone page only drives the robot while Follow is ON.
+
+The dashboard connects to `ws://localhost:8080/ws` (set `NEXT_PUBLIC_SERVER_WS_URL` in `web/`).
+
 **The real robot over Wi-Fi** (someone at the robot, both on our hotspot):
 
 ```bash
@@ -39,7 +48,7 @@ Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so a
 | `app/arbiter.py` | Alex | Picks one command: e-stop > joystick > skill |
 | `app/link/` | Alex | The link interface, and UDP to the robot or the mock (contract v1); Grant's serial link goes here too |
 | `mock/` | Alex | The mock robot: behaves like the firmware over UDP (contract v1) |
-| `app/api/` | Nick | WebSocket for the phone page and the dashboard |
+| `app/api/` | Alex (W-6) | Hosts the phone page (HTTPS), its endpoints, the control page, and the dashboard WebSocket |
 | `app/vision/` | Grant | Frame source and perception (#3) |
 | `app/speech/` | Grant | Speech in and out |
 | `app/brain/` | Grant | The agent: Claude picks skills |

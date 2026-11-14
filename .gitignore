@@ -11,3 +11,6 @@ firmware/balance/secrets.h
 firmware/balance/follow/follow
 firmware/balance/follow/follow_view.jpg
 firmware/balance/phone/cert/
+
+# Server: local CA and certificate for the phone page
+server/cert/

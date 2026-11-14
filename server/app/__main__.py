@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 
+from app import api
 from app.arbiter import Arbiter, Source
 from app.link import PORT, RobotLink, UdpLink
 from app.skills import SkillContext, SkillResult, SkillRunner
@@ -57,12 +58,13 @@ async def drive_loop(arbiter: Arbiter, link: RobotLink, stop: asyncio.Event | No
         await asyncio.sleep(1 / SEND_HZ)
 
 
-async def run(robot: str, host: str | None, test_drive: bool) -> None:
+async def run(robot: str, host: str | None, test_drive: bool, http_port: int = 8080, https_port: int | None = 8443) -> None:
     arbiter = Arbiter()
     skills = SkillRunner(SkillContext(arbiter))
     default = "127.0.0.1" if robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
     link = UdpLink(host or default, PORT)
     await link.start()
+    runner, _ = await api.start(api.ApiState(arbiter, link), http_port, https_port)
     if test_drive:
         log.info("test drive in 3 s (forward 2 s, turn left 2 s). The robot only moves if it's balancing (g).")
 
@@ -75,6 +77,7 @@ async def run(robot: str, host: str | None, test_drive: bool) -> None:
     try:
         await drive_loop(arbiter, link)
     finally:
+        await runner.cleanup()
         await link.close()
 
 
@@ -84,12 +87,14 @@ def main() -> None:
                     help="mock: the mock robot on this laptop (default); real: the robot over Wi-Fi")
     ap.add_argument("--host", help="robot address (default: 127.0.0.1 for mock; $ROBOT_HOST or balancebot.local for real)")
     ap.add_argument("--test-drive", action="store_true", help="drive forward, then turn, through the arbiter")
+    ap.add_argument("--http-port", type=int, default=8080, help="control page, dashboard WebSocket, certificate page")
+    ap.add_argument("--https-port", type=int, default=8443, help="the robot's phone page (0 = off)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     if args.robot == "real":
         log.warning("REAL ROBOT: only run this with someone at the robot (CLAUDE.md).")
     try:
-        asyncio.run(run(args.robot, args.host, args.test_drive))
+        asyncio.run(run(args.robot, args.host, args.test_drive, args.http_port, args.https_port or None))
     except KeyboardInterrupt:
         pass
 
