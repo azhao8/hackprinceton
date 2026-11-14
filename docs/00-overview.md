@@ -5,7 +5,7 @@
 ## Status
 
 - Hacking started 8 pm ET, Fri Nov 13. The submission deadline is 8 am ET, Sun Nov 15.
-- Hardware is bought, printed and being assembled (John). Software hasn't started.
+- The robot is built and works (Sat noon): it balances hands-off with the phone mounted, drives over USB and follows a yellow object. The firmware and bench tools are in `firmware/`; start with `firmware/README.md`. The tethered-balance milestone is met.
 - Current focus: four lanes working in parallel (hardware, motion + integration, vision + understanding, misc), each against the mock robot or a desk rig until the robot is ready (see `01-build-plan.md`).
 - Next milestone: the message contract and mock robot (overdue), then the first end-to-end slice at Sat 4 am (T+8).
 

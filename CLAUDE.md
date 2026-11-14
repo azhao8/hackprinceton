@@ -4,6 +4,10 @@ Two-wheeled self-balancing robot with an iPhone head that sees, shows a face,
 and takes instructions by gesture and voice. Read docs/00-overview.md first;
 it wins over every other doc.
 
+**Latest (Sat Nov 14, noon, from John):** the real robot works. It balances hands-off with the
+phone mounted, drives over USB and follows a yellow object. Before any firmware or real-robot
+work, read firmware/README.md: its state, frame, the link it speaks, safety rules, next steps.
+
 ## Repo map
 
 | Path      | What                                                           | Stack             |
@@ -20,7 +24,9 @@ it wins over every other doc.
 - Server: cd server && uv sync && uv run python -m app --robot mock
 - Mock robot: cd server && uv run python -m mock
 - Web: cd web && npm install && npm run dev
-- Firmware: cd firmware && pio run -t upload && pio device monitor
+- Firmware (arduino-cli for now; see firmware/README.md):
+  cd firmware/balance && arduino-cli compile --upload --fqbn esp32:esp32:esp32s3 -p <port> .
+- Drive the real robot from the keyboard over USB (someone at the robot): cd firmware/balance && python3 drive.py
 
 ## Workflow
 
