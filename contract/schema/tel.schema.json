@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/azhao8/hackprinceton/contract/schema/tel.schema.json",
+  "title": "tel: robot to laptop telemetry",
+  "description": "Sent 20 times a second over UDP to whoever sent the last packet; over USB, once per J command. Readers must ignore keys they don't know.",
+  "type": "object",
+  "required": ["t", "pitch", "rate", "vl", "vr", "batt", "state", "fault", "x", "yaw"],
+  "properties": {
+    "t": { "const": "tel" },
+    "pitch": { "type": "number", "description": "Tilt in DEGREES, + leaning forward (battery side). Balances near the trim (+5.6 with the phone tilted up)." },
+    "rate": { "type": "number", "description": "Tilt rate in DEGREES per second, + tipping forward." },
+    "vl": { "type": "number", "description": "Left wheel speed, m/s, + forward (commanded wheel speed)." },
+    "vr": { "type": "number", "description": "Right wheel speed, m/s, + forward." },
+    "batt": { "type": ["number", "null"], "description": "Battery volts. Always null today: nothing measures it (C-10)." },
+    "state": { "enum": ["idle", "balance", "drive"], "description": "idle: motors off (also while parked). balance: holding position. drive: moving or turning." },
+    "fault": { "type": ["string", "null"], "description": "Why the motors last turned off, as free text (for example \"stop command\", \"fell over (tilt > 30 deg)\"); null after g. Fixed names are proposed in C-1." },
+    "x": { "type": "number", "description": "Distance driven since g, m, + forward (average of both wheels; not a room coordinate)." },
+    "yaw": { "type": "number", "description": "Heading since g in DEGREES, + left (gyro)." },
+    "ack": { "type": "integer", "minimum": 0, "description": "seq of the last JSON command received, 0 until one arrives (#14)." }
+  }
+}
