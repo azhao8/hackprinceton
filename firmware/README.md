@@ -113,7 +113,7 @@ Notes:
   4. `L` / `R`: 90° turns.
   5. `P` parks on the kickstand; `X` turns the motors off.
   6. Write the result in the PR.
-- **If something regresses, go back to the last known-good firmware:** `git checkout fw-known-good -- firmware/balance/balance.ino`, then upload. The tag `fw-known-good` points at John's firmware that balances with the phone on (Sat noon). Move the tag only after a change passes the bench check.
+- **If something regresses, go back to the last known-good firmware:** `git checkout fw-known-good -- firmware/balance/balance.ino`, then upload. The tag `fw-known-good` points at the seq/ack firmware (#14, trim +5.6°), which passed the bench check and the USB and Wi-Fi link tests on the robot on Sat afternoon. It only balances with the phone mounted and **tilted up**; with the phone untilted the trim is −1.25° (commit f7b54ac). Move the tag only after a change passes the bench check.
 
 ## The link it speaks today
 It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `balancebot.local`).
