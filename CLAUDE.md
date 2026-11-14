@@ -35,6 +35,19 @@ it wins over every other doc.
 - Talk in issue and PR comments (blockers, questions, interface changes);
   the group chat is for quick pings. Read the issue's comments before working.
 
+## Ask, don't guess
+
+- If a choice could affect the product (decisions, architecture, interfaces
+  between lanes, product details, UI/UX, demo behavior), stop and ask your
+  human instead of assuming. Say what the question is, the options, and your
+  recommendation.
+- Your human raises it with the team (issue comment, then a group-chat ping);
+  the team decides together. Settled answers go in docs/decisions/; ones still
+  open go in docs/open-questions.md.
+- Keep working on parts the question doesn't touch while you wait.
+- Trivial choices (variable names, file layout inside your lane, small
+  refactors) don't need asking; just make them.
+
 ## Rules
 
 - Everything except firmware runs against the mock robot.
