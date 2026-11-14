@@ -104,6 +104,13 @@ class ApiState:
     link: RobotLink
     skills: Any = None          # the server's SkillRunner, if any: STOP cancels its skill
     tts: Any = None             # app.speech.tts.CartesiaTTS, or None: the phone uses Safari's voice
+    # Server-side vision (Alex's design: the phone streams its camera, the server sees and follows).
+    phone_frames: Any = None    # app.vision.phone_source.PhoneFrameSource, fed by POST /frame
+    follow_start: Any = None    # () -> None: start the server's follow skill
+    follow_stop: Any = None     # () -> None: stop it
+    follow_running: Any = None  # () -> bool
+    view_jpeg: Any = None       # () -> bytes | None: the server's view (frame + its boxes) as JPEG
+    vision_status: Any = None   # () -> str
     follow: bool = False
     say: list[dict] = field(default_factory=list)
     settings: dict = field(default_factory=default_settings)
@@ -119,9 +126,20 @@ class ApiState:
             del self.say[:-50]
             log.info("say: %s", text)
 
+    @property
+    def server_vision(self) -> bool:
+        return self.follow_start is not None
+
     def set_follow(self, on: bool) -> None:
-        """The phone page's follow. Turning it on stops any server skill (for example the server's own
-        follow), so two followers never fight over the arbiter's skill slot."""
+        """Follow on/off. With server vision it starts or stops the server's follow skill; otherwise it
+        gates the phone page's own follow. Two followers never fight over the arbiter's skill slot."""
+        if self.server_vision:
+            if on and self.arbiter.estopped:
+                log.info("follow: release the e-stop first")
+                return
+            (self.follow_start if on else self.follow_stop)()
+            log.info("server follow %s", "ON" if on else "off")
+            return
         if on and self.skills is not None and self.skills.running:
             self.skills.cancel()
         self.follow = on
@@ -132,14 +150,16 @@ class ApiState:
     def estop(self, on: bool) -> None:
         self.arbiter.estop(on)
         if on:
-            self.set_follow(False)
+            self.follow = False
+            self.arbiter.clear(Source.SKILL)
             if self.skills is not None:
                 self.skills.cancel()
         log.info("E-STOP %s", "on" if on else "released")
 
     def stop_motion(self) -> None:
         """Before park, motors off or start: nothing may keep driving."""
-        self.set_follow(False)
+        self.follow = False
+        self.arbiter.clear(Source.SKILL)
         if self.skills is not None:
             self.skills.cancel()
         self.arbiter.clear(Source.JOYSTICK)
@@ -169,10 +189,22 @@ class ApiState:
         return True
 
     def phone_follow_active(self) -> bool:
+        if self.server_vision:
+            return False                 # the server does the following; the phone only sends frames
         return self.follow and not (self.skills is not None and self.skills.running)
 
+    def following(self) -> bool:
+        return bool(self.follow_running()) if self.server_vision else self.follow
+
     def status(self) -> dict:
-        return {"tel": self.link.telemetry, "follow": self.follow, "link": self.link.health().ok,
+        camera = None
+        if self.phone_frames is not None:
+            age = self.phone_frames.age()
+            camera = {"frames": self.phone_frames.received, "age_s": None if age is None else round(age, 2)}
+        vision = {"mode": "server" if self.server_vision else "phone",
+                  "status": self.vision_status() if self.vision_status else None, "camera": camera}
+        return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
+                "vision": vision,
                 "estop": self.arbiter.estopped, "settings": self.settings,
                 "tts": self.tts is not None}
 
@@ -261,6 +293,36 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             return web.json_response({"error": "tts failed"}, status=502)
         return web.Response(body=audio, headers={"Content-Type": getattr(state.tts, "MEDIA_TYPE", "audio/mpeg"),
                                                  "Cache-Control": "no-store"})
+
+    @routes.post("/frame")
+    async def frame(request: web.Request) -> web.Response:
+        """A JPEG from the phone's camera (server vision). The phone sends one at a time, ~12 a second."""
+        if state.phone_frames is None:
+            raise web.HTTPNotFound()
+        data = await request.read()
+        ok = await asyncio.to_thread(state.phone_frames.push_jpeg, data)
+        return web.Response(status=204 if ok else 400)
+
+    @routes.get("/video.mjpg")
+    async def video(request: web.Request) -> web.StreamResponse:
+        """The server's view (the phone's frame with the server's boxes) as an MJPEG stream, for an <img>."""
+        if state.view_jpeg is None:
+            raise web.HTTPNotFound()
+        resp = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame",
+                                           "Cache-Control": "no-store"})
+        await resp.prepare(request)
+        last = None
+        try:
+            while True:
+                jpeg = await asyncio.to_thread(state.view_jpeg)
+                if jpeg and jpeg is not last:
+                    last = jpeg
+                    await resp.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                     + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n")
+                await asyncio.sleep(0.1)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        return resp
 
     @routes.post("/log")
     async def phone_log(request: web.Request) -> web.Response:

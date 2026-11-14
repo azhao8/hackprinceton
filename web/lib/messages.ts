@@ -32,6 +32,14 @@ export interface FollowSettings {
   voice: boolean;
 }
 
+/** Who does the seeing: "server" (the phone streams its camera; Alex's design) or "phone" (the phone tracks). */
+export interface VisionInfo {
+  mode: "server" | "phone";
+  status: string | null;
+  /** Frames from the phone: how many so far and seconds since the last one. */
+  camera: { frames: number; age_s: number | null } | null;
+}
+
 /** The server's own state, about twice a second. */
 export interface Status {
   t: "status";
@@ -41,6 +49,7 @@ export interface Status {
   settings: FollowSettings;
   lag_ms: number | null;
   skill: string | null;
+  vision: VisionInfo | null;
 }
 
 export type ServerMessage = Telemetry | Status;
@@ -89,6 +98,18 @@ function parseSettings(v: unknown): FollowSettings | null {
   return { mode: s.mode, speed: s.speed, distance: s.distance, voice: s.voice };
 }
 
+function parseVision(v: unknown): VisionInfo | null {
+  if (typeof v !== "object" || v === null) return null;
+  const x = v as Record<string, unknown>;
+  if (x.mode !== "server" && x.mode !== "phone") return null;
+  let camera: VisionInfo["camera"] = null;
+  if (typeof x.camera === "object" && x.camera !== null) {
+    const c = x.camera as Record<string, unknown>;
+    if (num(c.frames)) camera = { frames: c.frames, age_s: num(c.age_s) ? c.age_s : null };
+  }
+  return { mode: x.mode, status: typeof x.status === "string" ? x.status : null, camera };
+}
+
 function parseStatus(m: Record<string, unknown>): Status | null {
   const settings = parseSettings(m.settings);
   if (!settings || typeof m.follow !== "boolean" || typeof m.link !== "boolean" || typeof m.estop !== "boolean")
@@ -101,6 +122,7 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     settings,
     lag_ms: num(m.lag_ms) ? m.lag_ms : null,
     skill: typeof m.skill === "string" ? m.skill : null,
+    vision: parseVision(m.vision),
   };
 }
 
