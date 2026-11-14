@@ -21,7 +21,7 @@ Product consequence: low jobs (carrying small things in a tray, interacting with
 
 ## Technical facts
 
-- **Mass:** 2.21 kg (CAD). Measured: center of mass ~40 mm above the axle without the phone, ~80-90 mm with it; with the phone it balances at -1.25° (leaning slightly away from the battery side).
+- **Mass:** 2.21 kg (CAD). Measured: center of mass ~40 mm above the axle without the phone, ~80-90 mm with it; with the phone it balances at -1.25° (leaning slightly away from the battery side). With the phone **tilted up** for person follow (Sat afternoon) it balances at **+5.6°**; `trim` in `balance.ino` has to match the tilt.
 - **Front = the battery side** (also the kickstand side), as the firmware sees it. The CAD was drawn the other way round, so left and right below are the firmware's.
 - **Drive:** steppers at 1/16 microstepping on TMC2209 drivers, step/dir only.
 - **ESP32-S3 pins:**

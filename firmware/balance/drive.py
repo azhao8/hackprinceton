@@ -66,11 +66,12 @@ class Robot:
                     self.msgs.append(line)
 
     def has_json_firmware(self):
-        self.write("V\n")
-        end = time.time() + 2.5
+        end, next_v = time.time() + 8.0, 0.0   # it may be rebooting (port open, upload) and calibrating the gyro for 2 s
         while time.time() < end:
             if any("json-serial" in m for m in self.msgs):
                 return True
+            if time.time() >= next_v:
+                self.write("V\n"); next_v = time.time() + 0.75
             time.sleep(0.05)
         return False
 
