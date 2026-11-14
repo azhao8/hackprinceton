@@ -88,14 +88,17 @@ Sleep in shifts. Alex and John sleep at the same time, since tuning needs both o
 ## How we work
 
 - **Everyone runs their own agent.** Claude Code reads `CLAUDE.md`; Cursor and Codex read `AGENTS.md`, which points to it.
-- **One task = one issue = one branch = one PR** that says "Closes #N". Tasks are 1-3 hours. Label each issue with its lane.
+- **One task = one issue = one branch = one PR** that says "Closes #N". Tasks are 1-3 hours. Each issue has a lane label (`lane:motion`, `lane:vision`, `lane:misc`); assign yourself before starting. Branch name: `<lane>/<N>-short-name`.
+- **Pull main before each task.** Keep PRs small; tests pass before opening one.
 - **Stay in your lane's folders.** A PR that touches another lane's folder says so and gets that lane's OK.
 - **Alex's master agent merges and pushes to main**; nobody else does. Merges happen in batches at check-ins while Alex is at the robot. Main always runs against the mock robot. Pull main after any merge your lane depends on.
 - **Contract changes** update the contract, the mock and the firmware in one PR.
 - **Real robot:** commands go to it only when someone is with it.
 - **Secrets** live in `.env` (not in git); their names go in `.env.example`.
-- **Check-ins:** five minutes at each checkpoint: what works, what's blocked, what's next. Between checkpoints, use the group chat.
-- **Decisions:** tell Alex; the master agent records them in `decisions/` and updates the docs.
+- **Where we talk:** blockers, questions and interface changes go in issue and PR comments, so every agent can read them; the group chat is for quick pings. Read an issue's comments before working on it.
+- **Ask, don't guess:** when an agent hits a question that could affect the product (decisions, architecture, interfaces between lanes, product details, UI/UX, demo behavior), it stops and asks its human, with the options and a recommendation. The human raises it with the team in an issue comment and pings the group chat, and the team decides together. Trivial choices (names, file layout inside a lane, small refactors) don't need asking.
+- **Check-ins:** five minutes at each checkpoint: what works, what's blocked, what's next.
+- **Decisions:** the team decides; Alex's master agent records them in `decisions/` and updates the docs. Questions still open go in `open-questions.md`.
 
 ## Fallback demo tiers
 

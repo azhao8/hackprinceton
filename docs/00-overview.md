@@ -26,7 +26,7 @@ The full list is in `decisions/` (one file each). In short:
 - **Head:** an iPhone 18 Pro or similar (has LiDAR).
 - **Prizes:** aim to win 1-2 tracks for sure; enter only tracks that fit naturally. Tracks aren't chosen yet.
 - **Code:** Python server, Next.js web app (dashboard and phone page), ESP32 firmware on PlatformIO. Folders: `contract/`, `firmware/`, `server/`, `web/`, `sim/`, `docs/`.
-- **Workflow:** tasks are GitHub Issues; one master agent merges and pushes; everyone else opens pull requests. `AGENTS.md` points Cursor and Codex users to `CLAUDE.md`.
+- **Workflow:** tasks are GitHub Issues with a lane label; Alex's master agent merges and pushes; everyone else opens pull requests. Questions and blockers go in issue and PR comments. Agents ask instead of guessing on anything that affects the product, and the team decides together. Rules are in `CLAUDE.md`; `AGENTS.md` points Cursor and Codex users to it.
 
 ## Open
 
