@@ -15,7 +15,11 @@ The phone page keeps the endpoints it already used with phone_server.py, so it w
 
 WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the robot's `tel` about
 10 times a second; it accepts `{"t":"estop","on":bool}`, `{"t":"joystick","v":..,"w":..}`,
-`{"t":"follow","on":bool}` and `{"t":"say","text":..}`.
+`{"t":"follow","on":bool}`, `{"t":"say","text":..}` and `{"t":"settings", mode?, speed?, distance?, voice?}`.
+
+Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
+from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
+reads them from `/tel` (decision 0053: the phone is the robot's eye, every control is on the laptop).
 
 The API never sends `g`: starting to balance stays a person's keypress at the robot.
 """
@@ -41,6 +45,36 @@ PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "tra
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
 
+# Follow settings, set on the control page and read by the phone page (decision 0053).
+# Ranges and defaults are John's from the phone page (MODES in index.html).
+FOLLOW_MODES = {"person": {"dmin": 0.25, "dmax": 0.65, "d": 0.45, "s": 0.25},
+                "yellow": {"dmin": 0.2, "dmax": 0.6, "d": 0.35, "s": 0.4}}
+SPEED_MIN, SPEED_MAX = 0.1, 0.45
+
+
+def default_settings(mode: str = "person") -> dict:
+    m = FOLLOW_MODES[mode]
+    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True}
+
+
+def clean_settings(old: dict, new: dict) -> dict:
+    """Merge a partial update into the settings, keeping every value in range."""
+    out = dict(old)
+    if new.get("mode") in FOLLOW_MODES and new["mode"] != old["mode"]:
+        out = default_settings(new["mode"]) | {"voice": old["voice"]}   # a new mode starts from its defaults
+    m = FOLLOW_MODES[out["mode"]]
+    for key, lo, hi in (("speed", SPEED_MIN, SPEED_MAX), ("distance", m["dmin"], m["dmax"])):
+        if key in new:
+            try:
+                x = float(new[key])
+            except (TypeError, ValueError):
+                continue
+            if x == x:
+                out[key] = round(max(lo, min(hi, x)), 3)
+    if isinstance(new.get("voice"), bool):
+        out["voice"] = new["voice"]
+    return out
+
 
 @dataclass
 class ApiState:
@@ -49,6 +83,11 @@ class ApiState:
     skills: Any = None          # the server's SkillRunner, if any: STOP cancels its skill
     follow: bool = False
     say: list[dict] = field(default_factory=list)
+    settings: dict = field(default_factory=default_settings)
+
+    def set_settings(self, new: dict) -> None:
+        self.settings = clean_settings(self.settings, new)
+        log.info("follow settings: %s", self.settings)
 
     def add_say(self, text: str) -> None:
         text = text.strip()[:300]
@@ -80,7 +119,7 @@ class ApiState:
 
     def status(self) -> dict:
         return {"tel": self.link.telemetry, "follow": self.follow, "link": self.link.health().ok,
-                "estop": self.arbiter.estopped}
+                "estop": self.arbiter.estopped, "settings": self.settings}
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -181,6 +220,13 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             raise web.HTTPNotFound()
         return web.json_response(state.status())
 
+    @routes.post("/control/settings")
+    async def control_settings(request: web.Request) -> web.Response:
+        if not _local(request):
+            raise web.HTTPForbidden()
+        state.set_settings(await _json(request))
+        return web.json_response(state.status())
+
     @routes.get("/ws")
     async def ws(request: web.Request) -> web.WebSocketResponse:
         sock = web.WebSocketResponse(heartbeat=5)
@@ -213,6 +259,8 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                     state.set_follow(bool(m.get("on")))
                 elif t == "say":
                     state.add_say(str(m.get("text", "")))
+                elif t == "settings":
+                    state.set_settings(m)
         finally:
             pusher.cancel()
         return sock
@@ -259,6 +307,11 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <button id=fon style='font:inherit;padding:14px 18px'>Follow ON</button>
 <button id=foff style='font:inherit;padding:14px 18px'>Follow off</button></p>
 <pre id=st style='background:#222;padding:10px;white-space:pre-wrap'>...</pre>
+<h3>Follow settings</h3>
+<p><select id=mode style='font:inherit;padding:8px'><option value=person>Follow a person</option><option value=yellow>Follow yellow</option></select>
+<button id=voice style='font:inherit;padding:8px 12px'>Voice: on</button></p>
+<p><label>Speed cap <input id=spd type=range min=0.1 max=0.45 step=0.05> <b id=spdL></b> m/s</label></p>
+<p><label>Stop distance <input id=dist type=range step=0.05> <b id=distL></b> (bigger = stops closer)</label></p>
 <h3>Make Miguel talk</h3><form id=f><input id=t autofocus style='font:inherit;width:70%;padding:10px' placeholder='Type a line, press Enter'>
 <button style='font:inherit;padding:10px 14px'>Say</button></form><div id=p></div>
 <p style='color:#999'>The robot only moves after someone at the robot starts it balancing (g). Follow uses the phone page's tracking.</p>
@@ -269,7 +322,16 @@ $('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon
 function say(text){fetch('/say',{method:'POST',body:JSON.stringify({text})})}
 $('f').onsubmit=e=>{e.preventDefault();const t=$('t');if(t.value.trim())say(t.value.trim());t.value=''};
 for(const x of ["Hi, I'm Miguel!",'Time for your medicine.','Here is your water.','Follow me!','Hello, judges!']){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);$('p').appendChild(b)}
+const RANGES={person:[0.25,0.65],yellow:[0.2,0.6]};let editing=0;
+const setS=o=>{editing=Date.now();fetch('/control/settings',{method:'POST',body:JSON.stringify(o)}).then(show)};
+$('mode').onchange=()=>setS({mode:$('mode').value});
+$('spd').oninput=()=>{$('spdL').textContent=(+$('spd').value).toFixed(2)};$('spd').onchange=()=>setS({speed:+$('spd').value});
+$('dist').oninput=()=>{$('distL').textContent=(+$('dist').value).toFixed(2)};$('dist').onchange=()=>setS({distance:+$('dist').value});
+$('voice').onclick=()=>setS({voice:$('voice').textContent.endsWith('off')});
+function showSettings(s){if(!s||Date.now()-editing<800)return;const r=RANGES[s.mode];
+$('mode').value=s.mode;$('dist').min=r[0];$('dist').max=r[1];$('dist').value=s.distance;$('spd').value=s.speed;
+$('distL').textContent=(+s.distance).toFixed(2);$('spdL').textContent=(+s.speed).toFixed(2);$('voice').textContent='Voice: '+(s.voice?'on':'off')}
 async function show(){const st=$('st');try{const d=await (await fetch('/tel')).json(),t=d.tel||{};
-st.textContent='Link: '+(d.link?'ok':'DOWN')+'   E-stop: '+(d.estop?'ON':'off')+'   Follow: '+(d.follow?'ON':'off')+'\\nRobot: '+(t.state||'?')+'  pitch '+(t.pitch??'?')+'  x '+(t.x??'?')+'  yaw '+(t.yaw??'?')}catch(e){st.textContent='server not answering'}}
+showSettings(d.settings);st.textContent='Link: '+(d.link?'ok':'DOWN')+'   E-stop: '+(d.estop?'ON':'off')+'   Follow: '+(d.follow?'ON':'off')+'\\nRobot: '+(t.state||'?')+'  pitch '+(t.pitch??'?')+'  x '+(t.x??'?')+'  yaw '+(t.yaw??'?')}catch(e){st.textContent='server not answering'}}
 setInterval(show,500);show();
 </script>"""

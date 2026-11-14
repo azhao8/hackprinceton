@@ -13,7 +13,9 @@
   #bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 12px; display: flex; flex-wrap: wrap; gap: 8px;
          background: linear-gradient(#0000, #000d); }
   button, select { font: inherit; padding: 10px 14px; border: 0; border-radius: 10px; background: #333; color: #fff; }
-  #go { background: #1a7f37; } #stop { background: #b42318; }
+  #go { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 26px; padding: 22px 40px;
+        border-radius: 18px; background: #1a7f37; }
+  #settings { display: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 </style>
 </head>
@@ -21,9 +23,10 @@
 <div id="wrap">
   <video id="v" playsinline muted autoplay></video>
   <canvas id="ov"></canvas>
-  <div id="hud">Tap Start and allow the camera.</div>
-  <div id="bar">
-    <button id="go">Start</button>
+  <div id="hud">Tap Start once and allow the camera, then mount the phone.
+Everything else is on the laptop's control page.</div>
+  <button id="go">Start</button>
+  <div id="settings">
     <button id="stop">Stop sending</button>
     <select id="mode"><option value="person">Follow a person</option><option value="yellow">Follow yellow</option></select>
     <button id="mute">Voice: on</button>
@@ -69,6 +72,7 @@ const Voice = (() => {
   return {
     unlock(text) { if (!ok) return; ready = true; pick(); if (!muted) out(text); lastT = Date.now(); },   // inside a tap
     toggle() { muted = !muted; if (muted && ok) speechSynthesis.cancel(); return muted; },
+    setMuted(m) { muted = !!m; if (muted && ok) speechSynthesis.cancel(); },
     now(text) { if (ready && !muted) { out(text); lastT = Date.now(); } },              // typed on the Mac: say it
     event(key, lines, cooldown = 10) {                                                   // automatic lines, rate-limited
       if (!ready || muted) return;
@@ -169,7 +173,19 @@ async function start() {
   }
 }
 
-$('go').onclick = () => { Voice.unlock("Hi, I'm Miguel."); start(); };    // the tap also unlocks the phone's speaker
+$('go').onclick = () => { Voice.unlock("Hi, I'm Miguel."); start(); $('go').style.display = 'none'; };   // the tap also unlocks the speaker
+
+// Follow settings come from the laptop's control page, through the server's /tel (decision 0053)
+let appliedSettings = '';
+function applySettings(st) {
+  if (!st || !MODES[st.mode]) return;
+  const key = JSON.stringify(st);
+  if (key === appliedSettings) return;
+  appliedSettings = key;
+  if (modeSel.value !== st.mode) { modeSel.value = st.mode; setMode(); }
+  dist.value = st.distance; spd.value = st.speed; labels();
+  Voice.setMuted(!st.voice);
+}
 $('stop').onclick = () => { sending = false; post('/auto', { v: 0, w: 0, found: false, cx: 0.5, h: 0 }).catch(() => {}); };
 camSel.onchange = async () => {
   try { await openCam(camSel.value); await listCams(); log({ event: 'camera', using: label }); }
@@ -234,6 +250,8 @@ setInterval(async () => {
 setInterval(async () => {                                   // robot state, from drive.py through the Mac
   try {
     const d = await (await fetch('/tel')).json(), t = d.tel || {};
+    applySettings(d.settings);
+    if (!d.settings) $('settings').style.display = 'flex';    // bench tool phone_server.py: no control page, show them here
     robot = 'Robot: ' + (t.state || '?') + (typeof t.pitch === 'number' ? '  pitch ' + t.pitch.toFixed(1) : '') +
             '   Follow ' + (d.follow ? 'ON' : 'off (turn it on: control page, or F on the drive page)');
   } catch (e) { robot = 'Robot: no answer from the Mac'; }

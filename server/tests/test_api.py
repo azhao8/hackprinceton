@@ -190,3 +190,21 @@ def test_control_page_does_not_use_bare_element_ids():
     for name in ("stop", "release", "fon", "foff"):
         assert f"\n{name}.onclick" not in CONTROL_PAGE and f";{name}.onclick" not in CONTROL_PAGE
     assert "$('stop').onclick" in CONTROL_PAGE
+
+
+def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
+    async def t(c, s):
+        d = await (await c.get("/tel")).json()
+        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.45, "voice": True}
+        d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False})).json()
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 0.65, "voice": False}   # clamped
+        d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
+        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False}    # new mode: its defaults
+        await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
+        assert (await (await c.get("/tel")).json())["settings"]["mode"] == "yellow"
+        ws = await c.ws_connect("/ws")
+        await ws.send_json({"t": "settings", "speed": 0.2})
+        await asyncio.sleep(0.05)
+        assert s.settings["speed"] == 0.2
+        await ws.close()
+    with_client(t)
