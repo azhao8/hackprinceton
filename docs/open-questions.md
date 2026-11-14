@@ -8,6 +8,8 @@ Everything not yet decided, with a recommendation and where it came from. Add a 
 | --- | --- | --- | --- |
 | P-1 | Which use case? | Pick around Sat noon. Without a gripper, the strongest fits are fetch-and-carry with a tray, find-my-things, the robot pet and telepresence (see `04-product.md`) | Planning |
 | P-2 | Which main track and special tracks? | Pick around Sat noon. Leading idea: Healthcare as the main track; Best Hardware, Best Physical AI and Amazon Practical AI as extras (see `05-event.md`) | Planning |
+| P-3 | What does follow-me lock onto, and which person when Follow turns on: the person (detector), a colored object they carry (John's first yellow follow), or a printed marker (ArUco/AprilTag, unique ID)? | The person: lock onto the closest person near the center when Follow turns on, keep them by motion and clothing colors, and never re-acquire a different-looking person. With the phone tilted up (T-14) that's the upper body plus whatever legs are in view. Weak case: two people dressed alike crossing; a colored band can break the tie. Easy to reverse (the lock is one module) | Grant's chat, Sat; #3 |
+| P-4 | Which way does the phone face? The rear camera faces the robot's front, so the screen (the face) points backward (`firmware/README.md`). Only the front camera looks at people while showing them the face | Settle with T-4: the phone page can use the front camera and show the face; Continuity Camera can't | Grant's chat, Sat |
 
 ## Robot contract and safety
 
