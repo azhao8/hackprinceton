@@ -54,3 +54,4 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0046](0046-standard-simple-alternatives.md) | Standard and simple, chosen from alternatives | Contract round |
 | [0047](0047-decision-rules.md) | Decision rules in CLAUDE.md; only main is protected | Issue #4 |
 | [0048](0048-anyone-merges.md) | Anyone can merge to main; Alex's agent organizes | Issue #6 |
+| [0050](0050-server-skeleton.md) | The server skeleton is #22; Grant builds on it | PR #22 |

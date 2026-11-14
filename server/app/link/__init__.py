@@ -1,0 +1,1 @@
+"""Robot link (owner: Alex). JSON over UDP to the robot or the mock robot, about 20 times a second, telemetry back. The only code that talks to the robot (CLAUDE.md). Built with the contract (next issue)."""
