@@ -7,10 +7,25 @@ One Python process on the laptop: the hub between the phone page, the dashboard 
 ```bash
 cd server
 uv sync
-uv run python -m mock               # the mock robot on 127.0.0.1:4210 (contract/README.md)
-uv run python -m app --robot mock   # the server (today: arbiter only, commands are logged)
 uv run pytest                       # tests; CI runs these on every PR
 ```
+
+**See the server drive the mock robot** (two terminals):
+
+```bash
+uv run python -m mock --armed                     # mock robot, already balancing
+uv run python -m app --robot mock --test-drive    # forward 2 s, turn left 2 s, through the arbiter
+```
+
+Every second the server logs what it sent, what the robot reports, and the link health (`ok` plus the round-trip lag, or `DOWN`).
+
+**The real robot over Wi-Fi** (someone at the robot, both on our hotspot):
+
+```bash
+uv run python -m app --robot real --test-drive    # finds balancebot.local; --host IP to override
+```
+
+The server never starts balancing by itself: the person at the robot holds it upright and presses `g` (for example in `firmware/balance/teleop.py`). Until then the commands do nothing.
 
 Secrets go in `server/.env` (git-ignored); the names are in `.env.example`.
 
@@ -22,7 +37,7 @@ Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so a
 | --- | --- | --- |
 | `app/__main__.py` | Alex | Starts everything in one asyncio loop |
 | `app/arbiter.py` | Alex | Picks one command: e-stop > joystick > skill |
-| `app/link/` | Alex | JSON over UDP to the robot or the mock (next, with the contract) |
+| `app/link/` | Alex | The link interface, and UDP to the robot or the mock (contract v1); Grant's serial link goes here too |
 | `mock/` | Alex | The mock robot: behaves like the firmware over UDP (contract v1) |
 | `app/api/` | Nick | WebSocket for the phone page and the dashboard |
 | `app/vision/` | Grant | Frame source and perception (#3) |
