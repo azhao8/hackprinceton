@@ -403,3 +403,80 @@ def test_serve_link_start_failure_exits_with_a_message():
         asyncio.run(server.serve(parse_args(["--no-api"]), NoRobot(), vision=vision, window=window, render=lambda p, h: h))
     assert "Robot not found" in str(e.value.code)
     assert vision.stopped and window.closed and not vision.started
+
+
+# --- voice (Cartesia) for the API ---
+
+
+class FakeTTS:
+    def __init__(self) -> None:
+        self.warmed: list[str] = []
+        self.closed = False
+
+    async def prewarm(self, lines) -> int:
+        self.warmed = list(lines)
+        return len(self.warmed)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeRunner:
+    cleaned = False
+
+    async def cleanup(self) -> None:
+        self.cleaned = True
+
+
+def fake_api_start(monkeypatch):
+    seen: dict = {}
+
+    async def start(state, http_port=8080, https_port=8443):
+        seen["state"], seen["runner"] = state, FakeRunner()
+        return seen["runner"], ""
+
+    monkeypatch.setattr(server.api, "start", start)
+    return seen
+
+
+def test_make_tts_runs_without_a_key_or_the_module(monkeypatch, caplog):
+    import sys
+
+    caplog.set_level("INFO")
+    monkeypatch.delenv("CARTESIA_API_KEY", raising=False)
+    assert server.make_tts() is None
+    assert "Safari's built-in (CARTESIA_API_KEY not set)" in caplog.text
+    monkeypatch.setitem(sys.modules, "app.speech.tts", None)   # the module fails to import
+    assert server.make_tts() is None
+
+
+def test_serve_gives_the_api_the_voice_prewarms_it_and_closes_it(monkeypatch):
+    tts, seen = FakeTTS(), fake_api_start(monkeypatch)
+    monkeypatch.setattr(server, "make_tts", lambda: tts)
+    asyncio.run(server.serve(parse_args([]), FakeUdpLink(dict(TEL)), window=FakeWindow([-1, -1, -1, "q"]),
+                             render=lambda p, h: h))
+    assert seen["state"].tts is tts and seen["state"].status()["tts"] is True
+    assert tts.warmed == server.api.STOCK_LINES and tts.closed and seen["runner"].cleaned
+
+
+def test_serve_runs_without_a_voice(monkeypatch):
+    seen = fake_api_start(monkeypatch)
+    monkeypatch.setattr(server, "make_tts", lambda: None)
+    link = FakeUdpLink(dict(TEL))
+    asyncio.run(server.serve(parse_args([]), link, window=FakeWindow(["q"]), render=lambda p, h: h))
+    assert seen["state"].tts is None and seen["state"].status()["tts"] is False
+    assert seen["runner"].cleaned and link.events[-2:] == ["x", "close"]
+
+
+def test_serve_closes_the_voice_if_the_api_fails_to_start(monkeypatch):
+    tts = FakeTTS()
+
+    async def start(*a, **k):
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(server.api, "start", start)
+    monkeypatch.setattr(server, "make_tts", lambda: tts)
+    with pytest.raises(OSError):
+        asyncio.run(server.serve(parse_args([]), FakeUdpLink(dict(TEL)), window=FakeWindow(["q"]),
+                                 render=lambda p, h: h))
+    assert tts.closed
