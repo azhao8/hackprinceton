@@ -47,7 +47,7 @@ John wrote and tuned the firmware overnight, so he knows it best; who owns it fr
 
 ### iOS app (Nick)
 
-- The family's app: send a task (bring medication, fetch water), see what the robot is doing, get told when it's done. How it reaches the robot from outside the home is open (T-16).
+- The family's app: send a task (bring medication, fetch water), see what the robot is doing, get told when it's done. How it reaches the robot from outside the home is open (T-17).
 - It talks to the server's API, not to the robot.
 
 ### Unassigned since Nick moved to the iOS app (W-6, W-7)

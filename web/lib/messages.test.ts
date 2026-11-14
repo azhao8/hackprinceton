@@ -3,34 +3,40 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseServerMessage, type ClientMessage } from "./messages";
 
-const samples = join(__dirname, "..", "..", "contract", "web", "samples");
-const sample = (name: string) => readFileSync(join(samples, name), "utf8");
+const web = join(__dirname, "..", "..", "contract", "web", "samples");
+const robot = join(__dirname, "..", "..", "contract", "samples");
+const read = (dir: string, name: string) => readFileSync(join(dir, name), "utf8");
 
-describe("contract/web samples", () => {
-  it("tel.json parses as telemetry", () => {
-    expect(parseServerMessage(sample("tel.json"))).toEqual({
-      t: "tel",
-      pitch: 0.021,
-      rate: -0.007,
-      vl: 0.28,
-      vr: 0.31,
-      batt: 11.6,
-      state: "balance",
-      fault: null,
+describe("contract samples", () => {
+  it("web tel.json parses as telemetry, angles in degrees", () => {
+    expect(parseServerMessage(read(web, "tel.json"))).toEqual({
+      t: "tel", pitch: 5.71, rate: -1.8, vl: 0, vr: 0, batt: null, state: "balance", fault: null,
+      x: 0.012, yaw: 0.4, ack: 814,
     });
   });
 
-  it("estop.json has the shape the dashboard sends", () => {
-    const msg = JSON.parse(sample("estop.json")) as ClientMessage;
-    expect(msg.t).toBe("estop");
-    expect(typeof msg.on).toBe("boolean");
+  it.each(["tel-idle.json", "tel-balance.json", "tel-drive.json", "tel-fell.json"])(
+    "the robot's %s parses", (name) => {
+      expect(parseServerMessage(read(robot, name))?.t).toBe("tel");
+    });
+
+  it("status.json parses", () => {
+    expect(parseServerMessage(read(web, "status.json"))).toEqual({
+      t: "status", follow: false, link: true, estop: false,
+      settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, lag_ms: 27.4, skill: null,
+    });
+  });
+
+  it("estop.json has the shape the page sends", () => {
+    const msg = JSON.parse(read(web, "estop.json")) as ClientMessage;
+    expect(msg).toEqual({ t: "estop", on: true });
   });
 });
 
 describe("parseServerMessage", () => {
   it("keeps a fault string", () => {
-    const raw = '{"t":"tel","pitch":0,"rate":0,"vl":0,"vr":0,"batt":10.9,"state":"idle","fault":"tilt"}';
-    expect(parseServerMessage(raw)?.fault).toBe("tilt");
+    const raw = '{"t":"tel","pitch":0,"rate":0,"vl":0,"vr":0,"batt":null,"state":"idle","fault":"fell over"}';
+    expect(parseServerMessage(raw)?.t === "tel" && parseServerMessage(raw)).toMatchObject({ fault: "fell over" });
   });
 
   it.each([
@@ -39,6 +45,7 @@ describe("parseServerMessage", () => {
     ["an unknown type", '{"t":"sees","people":[]}'],
     ["a missing field", '{"t":"tel","pitch":1,"rate":0,"vl":0,"vr":0,"state":"balance","fault":null}'],
     ["a string number", '{"t":"tel","pitch":"1","rate":0,"vl":0,"vr":0,"batt":12,"state":"balance","fault":null}'],
+    ["status without settings", '{"t":"status","follow":false,"link":true,"estop":false}'],
   ])("returns null for %s", (_label, raw) => {
     expect(parseServerMessage(raw)).toBeNull();
   });

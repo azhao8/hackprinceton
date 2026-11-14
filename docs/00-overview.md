@@ -31,7 +31,7 @@ The full list is in `decisions/` (one file each). In short:
 
 ## Open
 
-See `open-questions.md`. The big ones: how it carries meds and water without a gripper (P-5), how the family app reaches the robot (T-16), who builds the server API and the robot's face now that Nick builds the iOS app (W-6, W-7), and the main track.
+See `open-questions.md`. The big ones: how it carries meds and water without a gripper (P-5), how the family app reaches the robot (T-17), who builds the server API and the robot's face now that Nick builds the iOS app (W-6, W-7), and the main track.
 
 ## Map of the docs
 

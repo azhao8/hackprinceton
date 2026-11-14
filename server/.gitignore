@@ -1,0 +1,5 @@
+# Model weights are downloaded, not committed
+models/
+*.pt
+# Debug snapshots
+*.debug.jpg

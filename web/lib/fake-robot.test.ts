@@ -20,9 +20,9 @@ describe("FakeRobot", () => {
     const robot = new FakeRobot(7);
     const seen = Array.from({ length: 15 / DT }, () => robot.step(DT));
     expect(seen.some((t) => t.state === "drive")).toBe(true);
-    const maxPitchDeg = (Math.max(...seen.map((t) => Math.abs(t.pitch))) * 180) / Math.PI;
-    expect(maxPitchDeg).toBeGreaterThan(0.1);
-    expect(maxPitchDeg).toBeLessThan(5);
+    const offTrim = seen.map((t) => Math.abs(t.pitch - 5.6));   // degrees around the trim, like the robot
+    expect(Math.max(...offTrim)).toBeGreaterThan(0.1);
+    expect(Math.max(...offTrim)).toBeLessThan(5);
   });
 
   it("e-stop brings the wheels to zero and keeps balancing", () => {

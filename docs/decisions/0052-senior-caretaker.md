@@ -13,4 +13,4 @@ From the brainstorm in `04-product.md`: fetch-and-carry helper, medication remin
 
 ## Reversibility
 
-Hard after tonight: the skills, the app and the demo script are built around it. How it carries things without a gripper, how the family app reaches the robot, and the main track are still open (P-5 to P-7, T-16, P-2).
+Hard after tonight: the skills, the app and the demo script are built around it. How it carries things without a gripper, how the family app reaches the robot, and the main track are still open (P-5 to P-7, T-17, P-2).

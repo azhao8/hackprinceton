@@ -2,7 +2,7 @@
 
 What Miguel.exe is and does, as a person experiences it.
 
-**Use case (decision 0052):** a caretaker robot in a senior's home. The senior's children use an iOS app to ask it to help their parent, for example "bring Mom her pills" or "get Dad a glass of water". The senior can also talk to it directly. Open details: how it carries things without a gripper (P-5), how it finds places and the senior (P-6), what else the family app does (P-7), and how the app reaches the robot from outside the home (T-16).
+**Use case (decision 0052):** a caretaker robot in a senior's home. The senior's children use an iOS app to ask it to help their parent, for example "bring Mom her pills" or "get Dad a glass of water". The senior can also talk to it directly. Open details: how it carries things without a gripper (P-5), how it finds places and the senior (P-6), what else the family app does (P-7), and how the app reaches the robot from outside the home (T-17).
 
 ## Concept
 
