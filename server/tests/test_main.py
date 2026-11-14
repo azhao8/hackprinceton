@@ -383,7 +383,7 @@ def test_hud_shows_health_and_contract_telemetry():
 
 
 def test_serve_starts_the_link_and_vision_then_quits_cleanly():
-    args = parse_args(["--follow"])
+    args = parse_args(["--follow", "--no-api"])
     link, vision, window = FakeUdpLink(dict(TEL)), FakeVision(), FakeWindow([-1, -1, -1, "q"])
     app = asyncio.run(server.serve(args, link, vision=vision, follow_factory=Drive, window=window,
                                    render=lambda p, hud: hud))
@@ -400,6 +400,6 @@ def test_serve_link_start_failure_exits_with_a_message():
 
     vision, window = FakeVision(), FakeWindow()
     with pytest.raises(SystemExit) as e:
-        asyncio.run(server.serve(parse_args([]), NoRobot(), vision=vision, window=window, render=lambda p, h: h))
+        asyncio.run(server.serve(parse_args(["--no-api"]), NoRobot(), vision=vision, window=window, render=lambda p, h: h))
     assert "Robot not found" in str(e.value.code)
     assert vision.stopped and window.closed and not vision.started

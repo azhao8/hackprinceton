@@ -13,6 +13,7 @@
 //   ./follow                  follow (still needs Follow ON on the drive page)
 // Options: --camera-back   the phone's camera faces the robot's back (Wago side): drive backward toward the person
 //          --rotate left|right   if people show up sideways in follow_view.jpg
+//          --quiet   don't talk.   --voice NAME   macOS voice for the spoken lines (Fred; try Junior, Ralph, Samantha)
 //          --distance 0.45  upper-body width as a fraction of the picture to hold (bigger = stay closer; 0.33 ~1.3 m)
 // The camera is only ~40 cm off the floor, so whole bodies don't fit until ~4 m away: it tracks the upper body
 // and judges distance by its WIDTH (shoulders fit in frame from ~0.7 m).
@@ -30,6 +31,8 @@ let turnOnly = args.contains("--turn-only")
 let yellowMode = args.contains("--yellow")
 let targetY = Double(opt("--distance") ?? "0.35") ?? 0.35   // yellow patch size to hold: bigger = stops closer (0.12 and 0.28 stayed too far)
 let followVmax = Double(opt("--speed") ?? "0.4") ?? 0.4      // m/s cap while following yellow
+let quiet = args.contains("--quiet")                          // no talking
+let voice = opt("--voice") ?? "Fred"                          // macOS voice for `say` (try Junior, Ralph, Samantha, Zarvox)
 let rotation: CGImagePropertyOrientation = {
     switch opt("--rotate") { case "left": return .left; case "right": return .right; default: return .up }
 }()
@@ -61,6 +64,7 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             print("No iPhone camera found. Open FaceTime, pick the iPhone under Video, quit FaceTime, then run this again."); exit(1)
         }
         print("Target: \(yellowMode ? "something bright YELLOW" : "a person (upper body)")")
+        speak("start", ["Hi, I'm Miguel."], cooldown: 0)
         print("Camera: \(dev.localizedName)\(dry ? "   (DRY RUN: detection only, no driving)" : (turnOnly ? "   (TURN ONLY: no forward/back)" : ""))")
         do {
             session.beginConfiguration()
@@ -111,6 +115,8 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             else if abs(lastEx) > 0.15 { w = 0.6 * w + 0.4 * (lastEx > 0 ? -SEARCH_W : SEARCH_W) }   // left near the edge: keep turning that way
             else if lost > LOST_AFTER { w = 0 }
         }
+        talk(found: best != nil, acquired: best != nil && lockNote == "acquired", tooClose: h > TOO_CLOSE_W,
+             atCap: !turnOnly && v >= VMAX * 0.9, what: "person")
         if !dry { post(v: v, w: w, found: best != nil, cx: cx, h: h) }
 
         let now = Date()
@@ -120,6 +126,40 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             else { print(people.isEmpty ? "no person in view" : "no target (\(people.count) other person(s) in view, ignored)") }
         }
         if now.timeIntervalSince(lastSnap) > 1.0 { lastSnap = now; snapshot(pb, people: people, best: best) }
+    }
+
+    // ---- voice: short lines out of the Mac's speakers (macOS `say`), one at a time, each with its own cooldown
+    var sayProc: Process? = nil, lastSaid = Date.distantPast, saidAt: [String: Date] = [:]
+    var lostSpoken = true, capSince: Date? = nil
+    func speak(_ key: String, _ lines: [String], cooldown: Double = 10) {
+        if quiet { return }
+        let now = Date()
+        if let p = sayProc, p.isRunning { return }                         // never talk over itself
+        if now.timeIntervalSince(lastSaid) < 2.5 { return }
+        if let t = saidAt[key], now.timeIntervalSince(t) < cooldown { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        p.arguments = ["-v", voice, lines.randomElement()!]
+        do { try p.run(); sayProc = p; lastSaid = now; saidAt[key] = now } catch {}
+    }
+    // found it (hello), lost it for 2.5 s (where did you go), too close, or stuck at top speed for 3 s (wait for me)
+    func talk(found: Bool, acquired: Bool, tooClose: Bool, atCap: Bool, what: String) {
+        if found {
+            if acquired { speak("hello", what == "person" ? ["Hi! I'll follow you.", "Found you!", "Hello there! Lead the way."]
+                                                          : ["Ooh, something yellow!", "I see yellow!"]) }
+            lostSpoken = false
+            if tooClose { speak("close", ["Whoa, personal space!", "That's a little close."], cooldown: 12) }
+            if atCap {
+                if capSince == nil { capSince = Date() }
+                else if Date().timeIntervalSince(capSince!) > 3 { speak("wait", ["Wait for me!", "Not so fast!"], cooldown: 15) }
+            } else { capSince = nil }
+        } else {
+            capSince = nil
+            if !lostSpoken && Date().timeIntervalSince(lastSeen) > 2.5 {
+                lostSpoken = true
+                speak("lost", what == "person" ? ["Where did you go?", "Hello? I lost you."] : ["Where did my yellow thing go?"])
+            }
+        }
     }
 
     // ---- person lock: stay on one person in a crowd (nearest to where they were, similar size); re-pick the
@@ -246,6 +286,7 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             if cameraBack { vCmd = -vCmd }
             v = 0.6 * v + 0.4 * vCmd; w = 0.6 * w + 0.4 * wCmd
         } else if Date().timeIntervalSince(lastSeen) > LOST_AFTER { v = 0; w = 0 }
+        talk(found: t != nil, acquired: t?.how == "acquired", tooClose: false, atCap: !turnOnly && v >= followVmax * 0.9, what: "yellow")
         if !dry { post(v: v, w: w, found: t != nil, cx: t?.cx ?? 0.5, h: t?.size ?? 0) }
         let now = Date()
         if now.timeIntervalSince(lastPrint) > 0.5 {

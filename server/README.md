@@ -62,6 +62,16 @@ The server never starts balancing by itself. Quitting, Ctrl+C, SIGTERM or a cras
 
 Secrets go in `server/.env` (git-ignored); the names are in `.env.example`.
 
+## The phone page, control page and dashboard (the API)
+
+`python -m app` also starts the API (`--no-api` turns it off):
+
+1. First time on an iPhone: open `http://<laptop IP>:8080` in Safari and trust the certificate.
+2. On the robot's iPhone, open `https://<laptop IP>:8443` (John's phone page) and tap Start.
+3. On the laptop, open `http://localhost:8080/control`: **STOP**/Release, phone **Follow ON**/off, and lines for Miguel to say.
+
+The phone page only drives the robot while its Follow is ON. Turning it on stops any server skill (such as the server's own follow, F), and STOP ends both. The dashboard connects to `ws://localhost:8080/ws`.
+
 ## Layout and owners
 
 Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so and gets their OK.
@@ -72,7 +82,7 @@ Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so a
 | `app/arbiter.py` | Alex | Picks one command: e-stop > joystick > skill |
 | `app/link/` | Alex | The link interface, and UDP to the robot or the mock (contract v1); Grant's serial link goes here too |
 | `mock/` | Alex | The mock robot: behaves like the firmware over UDP (contract v1) |
-| `app/api/` | Nick | WebSocket for the phone page and the dashboard |
+| `app/api/` | Alex (W-6) | Hosts the phone page (HTTPS), its endpoints, the control page, and the dashboard WebSocket |
 | `app/vision/` | Grant | Perception (#3): frame source, YOLO pose detector, target lock, follow controller; `worker.py` runs them on a thread and publishes the newest `Perception`; `debug_view.py` draws the window |
 | `app/speech/` | Grant | Speech in and out |
 | `app/brain/` | Grant | The agent: Claude picks skills |

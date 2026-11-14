@@ -29,6 +29,7 @@ _Updated Sat Nov 14, around noon ET, by John (hardware) and his Claude. Everythi
 | `balance/drive.py` | Bench tool: hold-to-drive keyboard page at http://localhost:8765, over USB. It's also the bridge that `follow` posts to |
 | `balance/teleop.py` | Bench tool: keyboard driver in the terminal, over Wi-Fi (UDP 4210). Untested |
 | `balance/follow/` | Bench tool: `follow.swift`, camera follow (a yellow object or a person) using Continuity Camera and Apple Vision. Build with `./build.sh` |
+| `balance/phone/` | Bench tool: the **phone page** (`index.html`, `track.js`) and its HTTPS server (`phone_server.py`). See "Phone page" below |
 | `bringup/bringup.ino` | The first bring-up sketch: prints the IMU, spins the motors |
 | `bringup/HARDWARE-NOTES.md` | **Read this before changing gains, trim or wiring.** Every setting, test and lesson from bring-up |
 
@@ -61,10 +62,38 @@ The bench tools talk to the robot directly. They're for testing and tuning only.
 4. **Follow (John's Mac only):** run `cd firmware/balance/follow && ./build.sh && ./follow --yellow`, then press **F** on the page.
    - Holding a drive key overrides it. X stops it and turns Follow off.
    - Knobs: `--distance` (bigger = stops closer, default 0.35) and `--speed` (default 0.4).
+   - It talks through the Mac's speakers (macOS `say`, voice Fred): `--quiet` mutes it, `--voice Junior` changes it.
    - The camera is John's iPhone, on his Apple ID, with Wi-Fi and Bluetooth on.
    - A person has to start `follow` in Terminal. macOS gives the camera only to programs a person starts, so a copy launched by an agent gets "Camera access denied".
    - **If it says no iPhone camera:** make sure no older `follow` is still running, and Ctrl+C any you find. A stale one can keep the camera busy, and then the page's Follow card says "follow program not running". `follow` waits up to 20 s for the phone. If that fails, open FaceTime, pick the iPhone under Video, quit FaceTime, and run it again.
    - **If it only prints "no yellow in view" with the object right in front, or stops printing:** look at `follow/follow_view.jpg`. If it's solid black, no video is getting through. On Nov 14 the cause was the Mac's peer-to-peer Wi-Fi link being off: `ifconfig awdl0` showed no `UP` flag, and `sudo ifconfig awdl0 up` fixed it at once. Also check that the phone is locked and not paused, and keep hands off it while following.
+
+## Phone page: Miguel's eye and voice (Safari on the robot's iPhone)
+_New Sat afternoon. John and his Claude build this; the native iOS app is the other teammates' track (see T-4)._
+
+Instead of Continuity Camera, the robot's iPhone runs a web page. It:
+- uses the **0.5x back camera**
+- finds the target **on the phone** (a person with MediaPipe, or something yellow)
+- sends only speed and turn to the Mac
+- **talks through the phone's speaker**
+
+1. On the Mac, with drive.py running: `cd firmware/balance/phone && python3 phone_server.py`. It prints the addresses.
+2. **Once per iPhone,** trust this Mac:
+   - Open `http://<Mac IP>:8080` on the phone and install the certificate profile.
+   - Turn on full trust: Settings → General → About → Certificate Trust Settings → **Robot Eye local CA**.
+   - Why: iPhones refuse self-signed pages. This local CA only covers private-network addresses and lasts 30 days. Its key stays in `phone/cert/` (git-ignored). Remove the profile after the hackathon.
+3. On the phone, open `https://<Mac IP>:8443` and tap **Start**. That unlocks the speaker (it says "Hi, I'm Miguel"). Then allow the camera.
+   - Mode: **Follow a person** (the default) or **Follow yellow**.
+   - Sliders: stop distance and speed.
+4. On the drive page: hold it upright, press **G**, then **F**.
+5. **Make Miguel talk:** on the Mac, open `http://localhost:8080/control`. Type a line or tap a preset, and the phone says it.
+
+Notes:
+- The phone and the Mac must be on the same Wi-Fi; the venue Wi-Fi worked.
+- **Close the page on every other device.** Every open copy sends commands.
+- Sizes are converted to the 1x landscape camera the tuning was done with (`Track.geom`), so the same defaults apply: person upper-body width 0.45, yellow size 0.35. The person speed cap is 0.25 m/s (there's a slider).
+- **Tested on the iPhone:** the certificate install, the page loading, the 0.5x camera.
+- **Not yet tested on the phone:** person mode, the voice, the Say page, driving from the page.
 
 ## Build and upload
 - **Toolchain:** `arduino-cli` with the `esp32:esp32` core **3.3.12** (`arduino-cli core install esp32:esp32@3.3.12`). Not PlatformIO yet (see the open questions).

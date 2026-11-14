@@ -40,6 +40,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+from app import api
 from app.arbiter import Arbiter, Command
 from app.link import PORT, RobotLink, UdpLink
 from app.skills import SkillContext, SkillResult, SkillRunner
@@ -391,6 +392,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--follow", action="store_true", help="start the follow skill at once (useful with --no-window)")
     ap.add_argument("--window", action=argparse.BooleanOptionalAction, default=True,
                     help="show the debug window (keys only work in it)")
+    ap.add_argument("--api", action=argparse.BooleanOptionalAction, default=True,
+                    help="serve the phone page, the control page and the dashboard WebSocket")
+    ap.add_argument("--http-port", type=int, default=8080, help="control page, dashboard WebSocket, certificate page")
+    ap.add_argument("--https-port", type=int, default=8443, help="the robot's phone page (0 = off)")
     return ap
 
 
@@ -464,7 +469,11 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         if isinstance(e, Exception):
             raise SystemExit(f"Couldn't start the robot link: {e}") from e
         raise
+    runner = None
     try:
+        if args.api:
+            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills),
+                                        args.http_port, args.https_port or None)
         if args.robot == "real":
             if args.link == "serial":
                 print("REAL robot on USB. Nothing moves until someone holds it upright and presses G.", flush=True)
@@ -487,6 +496,8 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         await app.run()
     finally:
         await app.shutdown()   # already done by run() unless something failed before it: safe twice
+        if runner is not None:
+            await runner.cleanup()
     return app
 
 
