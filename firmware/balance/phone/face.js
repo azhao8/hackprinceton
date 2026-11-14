@@ -4,15 +4,20 @@
 // Pure core (no DOM, testable in Node): Face.initialState(), Face.step(state, dt, inputs, rng), Face.draw(ctx, W, H, state).
 // Browser wrapper: Face.create(canvas) -> { setMood, lookAt, setMouth, pulseMouth, start, stop, snapshot }.
 //
-// Layout is in units of u = min(width, 0.62 * height), so a portrait phone gets the designed proportions
-// (u = width) and a wide desktop window gets the same face centered instead of stretched.
+// Layout is in units of u = min(width, 1.05 * height): on the phone the face canvas is the TOP HALF of the screen
+// (about 390 x 422 pt), so u = width and the face fills it; a wide desktop window gets the same face centered.
+// Features are drawn large on purpose so older people can read Miguel's expression from a few meters away.
+// Face.drawSuit(ctx, W, H) draws Miguel's navy suit, white shirt and red tie for the BOTTOM HALF.
 var Face = (function () {
   var MOODS = ['idle', 'happy', 'surprised', 'worried', 'sleepy', 'listening', 'alarm'];
   var OVAL_MOODS = ['idle', 'surprised', 'worried', 'listening'];   // moods drawn with open oval eyes
 
   var C = {
     bg: '#FAEEDA', bgAlarm: '#FCEBEB', eye: '#2C2C2A', eyeAlarm: '#A32D2D',
-    blush: '#F4C0D1', mouth: '#993C1D', sparkle: '#FFFFFF'
+    blush: '#F4C0D1', mouth: '#993C1D', sparkle: '#FFFFFF',
+    // the suit (bottom half)
+    suit: '#1B2A49', lapel: '#26385F', notch: '#142039', shirt: '#FFFFFF', collarLine: '#D3D1C7',
+    tie: '#C8302E', tieKnot: '#A32523', button: '#0F1830'
   };
 
   // ---- timing ----
@@ -25,19 +30,20 @@ var Face = (function () {
   var GLANCE_X = 0.06, GLANCE_Y = 0.04;      // max eye shift, in u (fraction of width on a phone)
 
   // ---- shapes (all in u) ----
-  var EYE_DX = 0.20, EYE_RX = 0.11, EYE_RY = 0.13, MOUTH_DY = 0.26;
+  var EYE_DX = 0.24, EYE_RX = 0.15, EYE_RY = 0.175, MOUTH_DY = 0.30, FACE_CY = 0.44;   // FACE_CY: eye line as a fraction of height
   // per-mood oval eye scale [x, y]
   var EYE_SCALE = { idle: [1, 1], surprised: [1.2, 1.12], worried: [1, 0.96], listening: [1.06, 1.06] };
   // per-mood mouth: [half width, top height, bottom height, top added when open, bottom added when open].
   // Heights are measured from the corners' line: top > 0 bulges up, bottom > 0 bulges down.
+  // (2.5x the first version's mouth: big enough to read lip movement from across a room)
   var MOUTH = {
-    idle:      [0.030, 0.008, 0.011, 0.016, 0.036],
-    happy:     [0.040, -0.004, 0.028, 0.008, 0.030],
-    surprised: [0.022, 0.022, 0.026, 0.008, 0.012],
-    worried:   [0.028, 0.019, -0.006, 0.006, 0.028],
-    sleepy:    [0.017, 0.005, 0.007, 0.008, 0.018],
-    listening: [0.026, 0.008, 0.010, 0.016, 0.034],
-    alarm:     [0.034, 0.005, 0.004, 0.010, 0.026]
+    idle:      [0.076, 0.020, 0.028, 0.041, 0.091],
+    happy:     [0.101, -0.010, 0.070, 0.020, 0.076],
+    surprised: [0.056, 0.056, 0.066, 0.020, 0.031],
+    worried:   [0.070, 0.048, -0.015, 0.015, 0.070],
+    sleepy:    [0.043, 0.013, 0.018, 0.020, 0.045],
+    listening: [0.066, 0.020, 0.025, 0.041, 0.085],
+    alarm:     [0.085, 0.013, 0.010, 0.025, 0.066]
   };
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -168,7 +174,7 @@ var Face = (function () {
   }
 
   function draw(ctx, W, H, s) {
-    var w = s.w, u = Math.min(W, 0.62 * H), t = s.t;
+    var w = s.w, u = Math.min(W, 1.05 * H), t = s.t;
     var wOval = 0; OVAL_MOODS.forEach(function (m) { wOval += w[m]; });
 
     ctx.save();
@@ -179,7 +185,7 @@ var Face = (function () {
     var bob = Math.sin(t * 2 * Math.PI / 4) * 0.004 * u;            // slow "breathing"
     var gx = clamp(s.gaze.x + s.sac.x, -1.1, 1.1), gy = clamp(s.gaze.y + s.sac.y, -1.1, 1.1);
     var ox = gx * GLANCE_X * u, oy = gy * GLANCE_Y * u;             // eye shift toward the target
-    var cx = W / 2, cy = H / 2 + bob;
+    var cx = W / 2, cy = FACE_CY * H + bob;
     var eyes = [{ x: cx - EYE_DX * u + ox, y: cy + oy, side: -1 }, { x: cx + EYE_DX * u + ox, y: cy + oy, side: 1 }];
 
     // blush (behind the eyes), follows the gaze a little
@@ -188,8 +194,8 @@ var Face = (function () {
     ctx.globalAlpha = blushA;
     eyes.forEach(function (e) {
       ctx.beginPath();
-      ctx.ellipse(cx + e.side * (EYE_DX + 0.08) * u + 0.3 * ox, cy + 0.16 * u + 0.3 * oy,
-                  0.075 * u * blushK, 0.042 * u * blushK, 0, 0, 2 * Math.PI);
+      ctx.ellipse(cx + e.side * (EYE_DX + 0.10) * u + 0.3 * ox, cy + 0.20 * u + 0.3 * oy,
+                  0.10 * u * blushK, 0.056 * u * blushK, 0, 0, 2 * Math.PI);
       ctx.fill();
     });
     ctx.globalAlpha = 1;
@@ -215,7 +221,7 @@ var Face = (function () {
       });
     } else if (wOval > 0.01) {
       // fully blinked: a soft closed line
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.035 * u; ctx.lineCap = 'round';
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.045 * u; ctx.lineCap = 'round';
       eyes.forEach(function (e) {
         ctx.beginPath(); ctx.moveTo(e.x - 0.8 * EYE_RX * u, e.y); ctx.lineTo(e.x + 0.8 * EYE_RX * u, e.y); ctx.stroke();
       });
@@ -224,7 +230,7 @@ var Face = (function () {
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     // happy: upward arcs ^ ^
     if (w.happy > 0.01) {
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.05 * u; ctx.globalAlpha = Math.min(1, w.happy * 1.5);
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.065 * u; ctx.globalAlpha = Math.min(1, w.happy * 1.5);
       eyes.forEach(function (e) {
         var r = EYE_RX * u * 0.9, h = EYE_RY * u * 0.95 * w.happy;
         ctx.beginPath(); ctx.moveTo(e.x - r, e.y + 0.25 * h); ctx.quadraticCurveTo(e.x, e.y - 1.3 * h, e.x + r, e.y + 0.25 * h); ctx.stroke();
@@ -232,7 +238,7 @@ var Face = (function () {
     }
     // sleepy: closed downward arcs
     if (w.sleepy > 0.01) {
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.042 * u; ctx.globalAlpha = Math.min(1, w.sleepy * 1.5);
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.055 * u; ctx.globalAlpha = Math.min(1, w.sleepy * 1.5);
       eyes.forEach(function (e) {
         var r = EYE_RX * u * 0.85, h = EYE_RY * u * 0.55 * w.sleepy, y = e.y + 0.15 * EYE_RY * u;
         ctx.beginPath(); ctx.moveTo(e.x - r, y); ctx.quadraticCurveTo(e.x, y + 1.2 * h, e.x + r, y); ctx.stroke();
@@ -240,7 +246,7 @@ var Face = (function () {
     }
     // alarm: > < chevrons
     if (w.alarm > 0.01) {
-      ctx.strokeStyle = C.eyeAlarm; ctx.lineWidth = 0.055 * u; ctx.globalAlpha = Math.min(1, w.alarm * 1.5);
+      ctx.strokeStyle = C.eyeAlarm; ctx.lineWidth = 0.07 * u; ctx.globalAlpha = Math.min(1, w.alarm * 1.5);
       eyes.forEach(function (e) {
         var r = EYE_RX * u * 0.65, h = EYE_RY * u * 0.6 * w.alarm, tip = -e.side;   // left eye ">" points right
         ctx.beginPath(); ctx.moveTo(e.x - tip * r, e.y - h); ctx.lineTo(e.x + tip * r, e.y); ctx.lineTo(e.x - tip * r, e.y + h); ctx.stroke();
@@ -248,7 +254,7 @@ var Face = (function () {
     }
     // worried: small tilted brows, inner ends higher
     if (w.worried > 0.01) {
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.028 * u; ctx.globalAlpha = w.worried;
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.036 * u; ctx.globalAlpha = w.worried;
       eyes.forEach(function (e) {
         var top = e.y - EYE_RY * u * sy - 0.06 * u, inner = -e.side;          // inner = toward the face's center
         ctx.beginPath();
@@ -265,7 +271,7 @@ var Face = (function () {
     var op = clamp(s.mouth, 0, 1);
     var mw = mp[0] * (1 - 0.15 * op) * u, top = (mp[1] + op * mp[3]) * u, bot = (mp[2] + op * mp[4]) * u;
     var mx = cx + 0.3 * ox, my = cy + MOUTH_DY * u + 0.3 * oy, K = 4 / 3;
-    ctx.fillStyle = C.mouth; ctx.strokeStyle = C.mouth; ctx.lineWidth = 0.008 * u;
+    ctx.fillStyle = C.mouth; ctx.strokeStyle = C.mouth; ctx.lineWidth = 0.012 * u;
     ctx.beginPath();
     ctx.moveTo(mx - mw, my);
     ctx.bezierCurveTo(mx - mw, my - K * top, mx + mw, my - K * top, mx + mw, my);
@@ -275,10 +281,10 @@ var Face = (function () {
 
     // sleepy: little z's floating up
     if (w.sleepy > 0.01) {
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.01 * u;
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.014 * u;
       for (var i = 0; i < 3; i++) {
-        var ph = (t / 2.4 + i / 3) % 1, size = 0.028 * u * (0.6 + 0.8 * ph);
-        var zx = cx + (EYE_DX + 0.12) * u + ph * 0.08 * u, zy = cy - 0.2 * u - ph * 0.28 * u;
+        var ph = (t / 2.4 + i / 3) % 1, size = 0.04 * u * (0.6 + 0.8 * ph);
+        var zx = cx + (EYE_DX + 0.12) * u + ph * 0.08 * u, zy = cy - 0.17 * u - ph * 0.2 * u;
         ctx.globalAlpha = 0.65 * Math.sin(Math.PI * ph) * w.sleepy;
         ctx.beginPath();
         ctx.moveTo(zx - size / 2, zy - size / 2); ctx.lineTo(zx + size / 2, zy - size / 2);
@@ -288,15 +294,76 @@ var Face = (function () {
     }
     // listening: sound-wave arcs beside the right eye
     if (w.listening > 0.01) {
-      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.012 * u;
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 0.016 * u;
       var wx = eyes[1].x + EYE_RX * u * sx + 0.02 * u, wy = eyes[1].y;
       for (var j = 0; j < 3; j++) {
         var pulse = 0.5 + 0.5 * Math.sin(t * 6 - j * 1.1);
         ctx.globalAlpha = (0.2 + 0.4 * pulse) * w.listening;
-        ctx.beginPath(); ctx.arc(wx, wy, (0.035 + 0.03 * j) * u, -0.55, 0.55); ctx.stroke();
+        ctx.beginPath(); ctx.arc(wx, wy, (0.045 + 0.038 * j) * u, -0.55, 0.55); ctx.stroke();
       }
     }
     ctx.restore();
+  }
+
+  // Miguel's suit for the bottom half of the screen: navy jacket, white shirt with collar points, red tie,
+  // lapels, two buttons and a pocket square. Static, so it's drawn once per resize. Proportions are of the
+  // canvas itself (the top edge meets the face canvas, like a neckline).
+  function drawSuit(ctx, W, H) {
+    var cx = W / 2;
+    function poly(pts, fill) {
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+    }
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = C.suit; ctx.fillRect(0, 0, W, H);
+
+    var vTop = 0.24 * W, vY = 0.62 * H;                 // the shirt's V: half-width at the neck, depth
+    poly([[cx - vTop, 0], [cx + vTop, 0], [cx, vY]], C.shirt);
+
+    // lapels along both sides of the V, with a notch near the top
+    [-1, 1].forEach(function (sd) {
+      poly([[cx + sd * vTop, 0], [cx + sd * 0.36 * W, 0], [cx + sd * 0.07 * W, 0.70 * H], [cx, vY]], C.lapel);
+      poly([[cx + sd * 0.315 * W, 0.15 * H], [cx + sd * 0.38 * W, 0.12 * H], [cx + sd * 0.29 * W, 0.24 * H]], C.suit);
+      ctx.strokeStyle = C.notch; ctx.lineWidth = 0.006 * W; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.moveTo(cx + sd * 0.36 * W, 0); ctx.lineTo(cx + sd * 0.07 * W, 0.70 * H); ctx.stroke();
+    });
+
+    // tie: knot, then a blade that widens and ends in a point inside the V
+    poly([[cx - 0.06 * W, 0], [cx + 0.06 * W, 0], [cx + 0.038 * W, 0.11 * H], [cx - 0.038 * W, 0.11 * H]], C.tieKnot);
+    poly([[cx - 0.038 * W, 0.11 * H], [cx + 0.038 * W, 0.11 * H], [cx + 0.075 * W, 0.50 * H], [cx, 0.58 * H],
+          [cx - 0.075 * W, 0.50 * H]], C.tie);
+
+    // shirt collar points over the knot
+    [-1, 1].forEach(function (sd) {
+      var pts = [[cx + sd * 0.035 * W, 0], [cx + sd * 0.19 * W, 0], [cx + sd * 0.09 * W, 0.14 * H]];
+      poly(pts, C.shirt);
+      ctx.strokeStyle = C.collarLine; ctx.lineWidth = 0.005 * W;
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[2][0], pts[2][1]); ctx.lineTo(pts[1][0], pts[1][1]); ctx.stroke();
+    });
+
+    // jacket buttons below the V
+    ctx.fillStyle = C.button;
+    [0.75, 0.88].forEach(function (y) { ctx.beginPath(); ctx.arc(cx, y * H, 0.022 * W, 0, 2 * Math.PI); ctx.fill(); });
+
+    // pocket square on the wearer's left chest (the viewer's right)
+    var px = cx + 0.30 * W, py = 0.40 * H;
+    poly([[px - 0.07 * W, py], [px - 0.04 * W, py - 0.06 * H], [px, py - 0.02 * H], [px + 0.035 * W, py - 0.065 * H],
+          [px + 0.07 * W, py]], C.shirt);
+    ctx.strokeStyle = C.notch; ctx.lineWidth = 0.006 * W;
+    ctx.beginPath(); ctx.moveTo(px - 0.08 * W, py); ctx.lineTo(px + 0.08 * W, py); ctx.stroke();
+    ctx.restore();
+  }
+
+  // Draw the suit into a canvas at its CSS size x devicePixelRatio (call when shown and on resize).
+  function paintSuit(canvas) {
+    var dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    var cw = Math.round((canvas.clientWidth || 0) * dpr), ch = Math.round((canvas.clientHeight || 0) * dpr);
+    if (cw <= 0 || ch <= 0) return false;
+    if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+    drawSuit(canvas.getContext('2d'), cw, ch);
+    return true;
   }
 
   // ---------------- browser wrapper ----------------
@@ -327,6 +394,7 @@ var Face = (function () {
     };
   }
 
-  return { MOODS: MOODS.slice(), create: create, initialState: initialState, step: step, draw: draw };
+  return { MOODS: MOODS.slice(), create: create, initialState: initialState, step: step, draw: draw,
+           drawSuit: drawSuit, paintSuit: paintSuit };
 })();
 if (typeof module !== 'undefined') module.exports = Face;
