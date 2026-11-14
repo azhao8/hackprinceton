@@ -56,3 +56,4 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0048](0048-anyone-merges.md) | Anyone can merge to main; Alex's agent organizes | Issue #6 |
 | [0050](0050-server-skeleton.md) | The server skeleton is #22; Grant builds on it | PR #22 |
 | [0051](0051-contract-v1.md) | Contract v1 is what the firmware speaks today | Issue #23 |
+| [0052](0052-senior-caretaker.md) | Use case: a caretaker robot for seniors at home, directed by their family | Sat afternoon (P-1) |
