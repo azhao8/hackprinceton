@@ -46,7 +46,7 @@ class Hud:
     skill: str | None = None  # running skill's name
     follow: DriveCommand | None = None  # the follow skill's last command (v/w + reason, distance)
     connected: bool = False
-    telemetry: Any = None  # app.link.Telemetry or None: .state, .pitch_deg, .fault
+    telemetry: Any = None  # anything with .state, .pitch_deg, .fault (__main__ adapts the link's telemetry dict)
     vision_status: str = ""  # the worker's status, shown until frames arrive
     note: str = ""  # last event, e.g. "follow: nobody to follow"
 
