@@ -17,11 +17,8 @@
         border-radius: 18px; background: #1a7f37; }
   #settings { display: none; }
   /* Server vision (Alex's design): the phone shows Miguel's face and streams its camera to the server. */
-  #face { position: absolute; inset: 0; background: #05070a; display: none; align-items: center; justify-content: center; gap: 14vw; }
-  #face.on { display: flex; }
-  .eye { width: 22vw; height: 30vw; background: #e8f4ff; border-radius: 50%; box-shadow: 0 0 40px #4aa3ff88;
-         animation: blink 5s infinite; transform-origin: center; }
-  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+  #face { position: absolute; inset: 0; width: 100%; height: 100%; background: #05070a; display: none; }   /* drawn by face.js */
+  #face.on { display: block; }
   #face.on ~ #hud { top: auto; bottom: 0; font-size: 11px; opacity: 0.6; background: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 </style>
@@ -30,9 +27,9 @@
 <div id="wrap">
   <video id="v" playsinline muted autoplay></video>
   <canvas id="ov"></canvas>
+  <canvas id="face"></canvas>   <!-- before #hud, so "#face.on ~ #hud" applies and the hud draws on top -->
   <div id="hud">Tap Start once and allow the camera, then mount the phone.
 Everything else is on the laptop's control page.</div>
-  <div id="face"><div class="eye"></div><div class="eye"></div></div>
   <button id="go">Start</button>
   <div id="settings">
     <button id="stop">Stop sending</button>
@@ -44,6 +41,7 @@ Everything else is on the laptop's control page.</div>
   </div>
 </div>
 <script src="track.js"></script>
+<script src="face.js"></script>   <!-- Miguel's face (global Face); the bench tool doesn't serve it, the page works without it -->
 <script>
 // Miguel's eye and voice. Runs on the robot's iPhone: picks the 0.5x back camera, finds the target here on the phone
 // (a person with MediaPipe, or something yellow), sends only speed and turn to the Mac, and talks through the phone's
@@ -69,28 +67,88 @@ dist.oninput = spd.oninput = labels;
 // ---------- voice (the phone's speaker) ----------
 // With the main server and CARTESIA_API_KEY set (/tel says tts: true), lines play as Cartesia speech from /tts;
 // otherwise, or if a line fails or takes over 4 s, Safari's built-in voice says it.
+// The mouth follows the voice: Cartesia audio goes through a Web Audio analyser (its loudness opens the mouth);
+// Safari's voice can't be measured, so each spoken word (and a steady beat, if words aren't reported) pulses it.
+const MOUTH_FLOOR = 0.02, MOUTH_GAIN = 6;                 // RMS (-1..1 samples) to mouth opening; a guess, tune on the phone
+function mouthFromRms(rms) { return Math.max(0, Math.min(1, (rms - MOUTH_FLOOR) * MOUTH_GAIN)); }
 const Voice = (() => {
   const ok = 'speechSynthesis' in window, saidAt = {}, audio = new Audio();   // ONE element, unlocked by the Start tap
   const SILENT = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
   let ready = false, muted = false, voice = null, lastT = 0, cloud = false, queue = Promise.resolve(), pending = 0, endClip = null;
+  let actx = null, analyser = null, buf = null, mouthId = 0, mouthRaf = 0, mouthTimer = 0, lastWord = 0;
   function pick() {
     const vs = ok ? speechSynthesis.getVoices() : [];
     voice = vs.find(x => /^Fred\b/i.test(x.name)) || vs.find(x => /en-US/i.test(x.lang) && x.localService) ||
             vs.find(x => /^en/i.test(x.lang)) || null;
   }
   if (ok) { pick(); speechSynthesis.onvoiceschanged = pick; }
+  // Web Audio: audio element -> analyser -> speaker. Built inside the Start tap (iOS only lets a tap start an AudioContext).
+  // If any of it fails, the element stays unrouted and plays as before, and the mouth pulses instead.
+  function wireAudio() {
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}   // iOS 17+: ignore the silent switch, like <audio> does
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error('no Web Audio');
+      if (!actx) actx = new AC();
+      if (!analyser) {
+        const an = actx.createAnalyser(); an.fftSize = 1024; an.smoothingTimeConstant = 0;
+        an.connect(actx.destination);
+        actx.createMediaElementSource(audio).connect(an);   // from here on the element is heard only through actx
+        analyser = an; buf = new Uint8Array(an.fftSize);
+      }
+      actx.resume().catch(() => {});
+    } catch (e) { log({ event: 'mouth sync: no Web Audio, pulsing instead', error: String(e) }); }
+  }
+  // the mouth: 'level' reads the analyser every frame, 'pulse' beats every 180 ms (word boundaries add pulses)
+  function mouthStart(kind) {
+    mouthStop(); const id = ++mouthId;
+    if (kind === 'level') {
+      let lvl = 0;
+      const tick = () => {
+        if (id !== mouthId) return;
+        analyser.getByteTimeDomainData(buf);
+        let s = 0; for (let i = 0; i < buf.length; i++) { const x = (buf[i] - 128) / 128; s += x * x; }
+        lvl = Math.max(mouthFromRms(Math.sqrt(s / buf.length)), lvl * 0.8);   // opens at once, closes over ~5 frames
+        Mouth.level(lvl);
+        mouthRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    } else {
+      mouthTimer = setInterval(() => {
+        const talking = kind === 'speech' ? ok && speechSynthesis.speaking : !audio.paused;
+        if (talking && Date.now() - lastWord > 300) Mouth.pulse(0.5);       // steady beat when no word events come
+      }, 180);
+    }
+    return id;
+  }
+  function mouthStop(id) {
+    if (id !== undefined && id !== mouthId) return;          // an older line finishing late: not ours to close (no id: stop all)
+    mouthId++; cancelAnimationFrame(mouthRaf); clearInterval(mouthTimer); Mouth.level(0);
+  }
+  function silence() { if (ok) speechSynthesis.cancel(); audio.pause(); if (endClip) endClip(); mouthStop(); }
   function speak(text) {                                  // Safari's voice; resolves when it's done
     if (!ok) return Promise.resolve();
     const u = new SpeechSynthesisUtterance(text); if (voice) u.voice = voice;
-    return new Promise(done => { u.onend = u.onerror = done; setTimeout(done, 15000); speechSynthesis.speak(u); });
+    return new Promise(resolve => {
+      let id;
+      const done = () => { if (id) mouthStop(id); resolve(); };
+      u.onstart = () => { id = mouthStart('speech'); };
+      u.onboundary = e => { if (!e.name || e.name === 'word') { lastWord = Date.now(); Mouth.pulse(0.8); } };
+      u.onend = u.onerror = done; setTimeout(done, 15000); speechSynthesis.speak(u);
+    });
   }
-  function play(url) {                                    // resolves when the clip ends (or is muted); rejects if it can't play
+  async function play(url) {                              // resolves when the clip ends (or is muted); rejects if it can't play
+    if (analyser && actx.state !== 'running') {             // routed through Web Audio: a stopped context would play silence
+      await Promise.race([actx.resume().catch(() => {}), new Promise(r => setTimeout(r, 800))]);
+      if (actx.state !== 'running') throw new Error('audio context ' + actx.state);   // -> Safari's voice says it
+    }
     return new Promise((done, fail) => {
-      const off = () => { audio.onended = audio.onerror = null; endClip = null; };
+      let id;
+      const off = () => { audio.onended = audio.onerror = null; endClip = null; if (id) mouthStop(id); };
       endClip = () => { off(); done(); };
       audio.onended = endClip; audio.onerror = () => { off(); fail(new Error('audio error')); };
       audio.src = url;
-      audio.play().catch(e => { off(); fail(e); });
+      audio.play().then(() => { if (endClip) id = mouthStart(analyser ? 'level' : 'pulse'); }, e => { off(); fail(e); });
     });
   }
   async function cartesia(text) {
@@ -120,17 +178,18 @@ const Voice = (() => {
     unlock(text) {                                                                       // inside a tap (iOS needs one)
       ready = true;
       audio.src = SILENT; audio.play().catch(() => {});                                  // lets this element play later
+      wireAudio();                                                                       // and the mouth's analyser
       if (ok) { pick(); speechSynthesis.speak(new SpeechSynthesisUtterance('')); }      // and Safari's voice
       if (!muted) out(text); lastT = Date.now();
     },
     toggle() {
       muted = !muted;
-      if (muted) { if (ok) speechSynthesis.cancel(); audio.pause(); if (endClip) endClip(); }
+      if (muted) silence();
       return muted;
     },
     setMuted(m) {
       muted = !!m;
-      if (muted) { if (ok) speechSynthesis.cancel(); audio.pause(); if (endClip) endClip(); }
+      if (muted) silence();
     },
     now(text) { if (ready && !muted) { out(text); lastT = Date.now(); } },              // typed on the Mac: say it
     event(key, lines, cooldown = 10) {                                                   // automatic lines, rate-limited
@@ -320,7 +379,47 @@ function setServerVision(on) {
   if (on === serverVision) return;
   serverVision = on;
   $('face').classList.toggle('on', on);
+  if (on && !face && typeof Face !== 'undefined') face = Face.create($('face'));
+  if (face) { if (on) face.start(); else face.stop(); }
   log({ event: 'vision mode', mode: on ? 'server' : 'phone' });
+}
+
+// ---------- Miguel's face (face.js): eyes on the locked person, mood from the robot and the tracker ----------
+let face = null, faceEvent = null, eventMood = null, eventUntil = 0, gaveUp = false, shownMood = '', gazing = true;
+const Mouth = { level(x) { if (face) face.setMouth(x); }, pulse(s) { if (face) face.pulseMouth(s); } };
+const MIRROR = new URLSearchParams(location.search).get('mirror') === '1';   // ?mirror=1 flips the eyes left/right
+const clamp1 = x => Math.max(-1, Math.min(1, x));
+// Where the eyes look, from the viewer's side of the screen (x > 0: viewer's right, y > 0: down), given the target's
+// spot in the streamed camera frame (normalized, NOT mirrored). The front camera faces the same way as the screen, so
+// the frame's left (small cx) is the viewer's right; the back camera faces away, so it isn't flipped. Not yet checked
+// on the real iPhone: if the eyes look away from the person, open the page with ?mirror=1.
+function gaze(t, side, mirror) {
+  const x = (side === 'front' ? 0.5 - t.cx : t.cx - 0.5) * 2;
+  return { x: clamp1(mirror ? -x : x), y: clamp1((t.cy - 0.45) * 2) };
+}
+function cameraSide() { return /front/i.test(label) ? 'front' : /back/i.test(label) ? 'back' : wantCamera; }
+const EVENT_MOODS = { found: ['happy', 2], too_close: ['surprised', 1.5], lost: ['worried', 2], gave_up: ['worried', 2.5] };
+function faceMood(d, f, now) {
+  if (d.estop) return 'alarm';
+  if (now < eventUntil) return eventMood;
+  if ((d.tel || {}).state === 'idle' && !d.follow) return 'sleepy';               // parked
+  if (f && f.status === 'lost' && !gaveUp) return 'worried';
+  return 'idle';
+}
+function updateFace(d) {                                     // every /tel answer
+  const f = d.face || null, now = performance.now() / 1000;
+  if (f && f.event && f.event.id !== faceEvent) {            // each event once
+    faceEvent = f.event.id;
+    const em = EVENT_MOODS[f.event.kind];
+    if (em) { eventMood = em[0]; eventUntil = now + em[1]; }
+    if (f.event.kind === 'gave_up') gaveUp = true;           // worried, then back to idle while still lost
+  }
+  if (!f || f.status !== 'lost') gaveUp = false;
+  if (!face) return;
+  const m = faceMood(d, f, now);
+  if (m !== shownMood) { shownMood = m; face.setMood(m); }
+  if (f && f.target) { const p = gaze(f.target, cameraSide(), MIRROR); face.lookAt(p.x, p.y); gazing = true; }
+  else if (gazing) { face.lookAt(null); gazing = false; }   // nobody locked: let the eyes wander
 }
 setInterval(() => {                                         // ~12 frames a second, one upload at a time
   if (!serverVision || !stream || !v.videoWidth || frameInflight) return;
@@ -348,17 +447,19 @@ setInterval(async () => {
   } catch (e) {}
 }, 600);
 
-setInterval(async () => {                                   // robot state, from drive.py through the Mac
+(async function pollTel() {                                // robot state, from drive.py through the Mac
   try {
     const d = await (await fetch('/tel')).json(), t = d.tel || {};
-    setServerVision(d.vision && d.vision.mode === 'server');
-    applySettings(d.settings);
+    setServerVision(!!(d.vision && d.vision.mode === 'server'));
+    applySettings(d.settings);                              // first: the camera side the gaze uses
+    updateFace(d);
     if (!d.settings) $('settings').style.display = 'flex';    // bench tool phone_server.py: no control page, show them here
     Voice.server(!!d.tts);                                  // phone_server.py has no tts: Safari's voice
     robot = 'Robot: ' + (t.state || '?') + (typeof t.pitch === 'number' ? '  pitch ' + t.pitch.toFixed(1) : '') +
             '   Follow ' + (d.follow ? 'ON' : 'off (turn it on: control page, or F on the drive page)');
   } catch (e) { robot = 'Robot: no answer from the Mac'; }
-}, 1000);
+  setTimeout(pollTel, serverVision ? 125 : 1000);           // ~8 Hz while the face is on: fresh targets for the eyes
+})();
 
 setInterval(() => {
   const now = performance.now(); fps = frames * 1000 / (now - fpsT); frames = 0; fpsT = now;

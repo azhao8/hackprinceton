@@ -54,6 +54,7 @@ def test_phone_page_and_cert_page_are_served():
         page = await c.get("/index.html")
         assert page.status == 200 and "Miguel" in await page.text()
         assert (await c.get("/track.js")).status == 200
+        assert (await c.get("/face.js")).status == 200
     with_client(t)
 
 
@@ -378,4 +379,30 @@ def test_camera_and_mirror_settings_reach_the_phone_and_the_frame_source():
         assert src.read_next(timeout=1).image[:, -5:].mean() > 200   # mirrored: white on the right now
         await client.close()
 
+    asyncio.run(go())
+
+
+def test_tel_has_the_face_with_server_vision_and_null_without():
+    async def phone_mode(c, s):
+        assert (await (await c.get("/tel")).json())["face"] is None
+    with_client(phone_mode)
+
+    face = {"status": "locked", "target": {"cx": 0.4, "cy": 0.3, "w": 0.2}, "event": {"id": 1, "kind": "found"}}
+
+    async def go():
+        state = ApiState(Arbiter(), FakeLink(), follow_start=lambda: None, follow_stop=lambda: None,
+                         follow_running=lambda: True, vision_status=lambda: "running", face=lambda: face)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        try:
+            st = await (await client.get("/tel")).json()
+            assert st["face"] == face and set(st["face"]) == {"status", "target", "event"}
+            ws = await client.ws_connect("/ws")
+            msg = await ws.receive_json(timeout=2)
+            while msg.get("t") != "status":
+                msg = await ws.receive_json(timeout=2)
+            assert msg["face"] == face
+            await ws.close()
+        finally:
+            await client.close()
     asyncio.run(go())
