@@ -48,7 +48,7 @@ Starting point, from John's brief: newline-delimited JSON over UDP, on a phone o
 
 ## Vision and understanding (critical path)
 
-- **Camera:** the phone streams to the laptop. The quickest start is Continuity Camera (the iPhone as a Mac webcam), but it takes over the phone's screen, so no face. A web page in Safari on the phone can stream the camera and draw the face at the same time. Proposal: start vision on Continuity Camera, build the web page in parallel, switch when it works.
+- **Camera:** the phone streams to the laptop. Continuity Camera (the iPhone as a Mac webcam) is quickest but takes over the phone's screen, so no face. A web page in Safari on the phone can stream the camera and draw the face at the same time. Leading option: go straight to the phone page over HTTPS. Vision develops on a desk camera behind a frame-source interface until then (still open, see `open-questions.md`).
 - **Perception:** person tracking and hand gestures (MediaPipe) run on every frame on the laptop. Heavier scene and object understanding uses a vision-language model on demand, a few seconds per call.
 - **Understanding:** speech to text, then an LLM that picks from a small set of robot skills. Gestures skip the LLM, so stop is instant.
 - **Follow-me:** the person's position and size in the frame become turn rate and speed, with limits, a dead zone and smoothing. If the person is lost, stop and search slowly.
@@ -82,5 +82,6 @@ Only one task runs at a time, since there's one body. Small talk ("how are you?"
 "A slow LLM picks from a set of skills, fast code runs them" is the standard pattern for LLM-controlled robots (research systems such as SayCan and Inner Monologue; commercial humanoids use the same slow-thinker/fast-controller split). The hard part is the skills themselves (vision that works in a noisy hall, a balancing robot that drives where it's told), not the LLM.
 
 - **Decide now:** only the principle: the LLM picks skills and never drives; gestures skip it.
-- **Decide later:** memory, conversation timeouts, named places and the exact skill list.
-- **Start simple:** each request is one LLM call returning skill calls, with no stored memory.
+- **Decided:** world memory is in the build (decision 0039); Claude is the LLM, with Gemini swappable (0037).
+- **Decide later:** conversation timeouts, named places and the exact skill list.
+- **Start simple:** each request is one LLM call returning skill calls; add the memory summary once the store exists.

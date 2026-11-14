@@ -12,7 +12,7 @@ The hardware is bought and 3D printed, and John is assembling it. This file cove
 | ESP32-S3 + MPU-6050 | Balancing runs on the robot itself |
 | 3S 2200 mAh LiPo x2 (about 24 Wh each) | Swap packs between runs; a 12 V desk supply tethers it while testing |
 | 240 mm printed mast + phone cradle (70-81 mm wide phones) | 495 mm from floor to phone top, 2.21 kg, footprint 188 x 130 mm: about knee-to-thigh height, phone face on top, tilts back 0-20° |
-| Spare iPhone (model unknown) | Camera, screen, mic, speaker; LiDAR only if it's a Pro model |
+| iPhone 18 Pro or similar | Camera, screen, mic, speaker; LiDAR |
 | 3 HTD-45H bus servos + BusLinker | In the CAD, a two-link arm on the mast's right side that ends in a ball: no gripper. It can wave, point, push or tap. Any other end attachment can be added later |
 | Printed kickstand | It rests leaning back 13.1° when idle or while the arm works; also the fallback "kickstand mode" |
 | No extra sensors | Everything it perceives comes from the phone |
@@ -39,7 +39,7 @@ Product consequence: low jobs (carrying small things in a tray, interacting with
 ## Materials and setup still needed (confirm with John)
 
 - [ ] M3 screws, heat-set inserts and battery straps (still to buy as of Nov 10)
-- [ ] USB cable for the ESP32-S3; USB lead for the BusLinker, if it has a USB port
+- [ ] USB cable for the ESP32-S3; USB lead for the BusLinker (it has a USB port)
 - [ ] A second camera for vision work while the spare iPhone is on the robot: a teammate's phone or an MLH Logitech webcam
 - [ ] 12 V for the arm on the desk while the bench supply tethers the robot
 - [ ] An LLM API key

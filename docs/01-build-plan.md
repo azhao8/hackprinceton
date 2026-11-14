@@ -1,44 +1,101 @@
-# Build plan
+# Build plan and collaboration
 
-Draft. Software doesn't wait for the robot: every piece is built and tested on the desk or against a mock robot, then moves onto the real robot once it passes a bench test. Vision and understanding come first, because without them there is no project.
+How four people and their agents build Miguel.exe between now (Sat 1 am) and the deadline (Sun 8 am). It covers who owns what, how each part gets built before the robot is ready, how the parts connect, the timeline for each lane, and how we work together. Checkpoints are in `milestones.md`. Tasks are GitHub Issues.
 
 ## Principles
 
-- **One seam:** the laptop-robot message contract. The mock robot and the real robot speak the same messages, so swapping one for the other changes nothing else.
-- **Bench before robot:** each part is proven on the desk (loose motor, loose IMU, loose arm, phone in hand) before it goes on the robot.
+- **One seam:** the message contract between laptop and robot. The mock robot and the real robot use the same messages, so swapping one for the other changes nothing else.
+- **Bench before robot:** each part is proven on the desk (loose motor, loose IMU, loose arm, a camera on the desk) before it goes on the robot.
+- **Lanes don't wait on each other:** each lane builds against the mock robot or a stand-in, so nobody is blocked on hardware or on another lane.
 - **Always demoable:** every stage leaves something to show (see Fallback demo tiers below).
+- **Vision and motion are equally important:** each one gets a full-time owner.
 
-## Workstreams
+## Who does what
 
-| Priority | Workstream | Build now, without the robot | Bench test passes when | Then on the robot |
-| --- | --- | --- | --- | --- |
-| 1 | Vision + understanding | Phone or webcam on the desk streaming to the laptop; the mock robot shows the commands | It follows a person, obeys gestures and acts on one spoken request, all visible as commands on screen | Phone in the mast cradle |
-| 2 | Motion (balance + drive) | One motor, driver and ESP32 on the desk, wheel spinning in the air; the IMU on the desk, tilted by hand; a small balance simulation using the CAD numbers | Wheel speed follows commands; tilt reads correctly; the simulated robot stays up | Tethered balance (T+10), then driving before the T+18 go/no-go |
-| 3 | Arm | Servos and the BusLinker on the desk, driven from the laptop | Named poses work: wave, point, tuck | Mounted on the mast, commanded through the robot |
-| 4 | Panel + glue | Dashboard against the mock: e-stop, joystick, live plots, companion panel | One command starts everything against the mock | The same, pointed at the real robot |
+Four lanes. Software lanes are owned by folder, so agents rarely touch the same files.
 
-**First milestone (proposed T+8, Sat 4 am):** a person walks in front of the phone, the laptop decides, and the command reaches the mock robot while a loose wheel on the desk turns the right way. That proves the whole chain before any balancing.
+| Lane | Person | Owns | Folders |
+| --- | --- | --- | --- |
+| Hardware | John Huang | Frame, wiring, power, the physical robot. At the robot for every real-robot test | (none) |
+| Motion + integration (master) | Alex Zhao | Runs the master agent that merges. Firmware: balancing, drive, kickstand mode, safety cutoffs, the robot end of the link, arm on the ESP32. The balance simulation. Tuning on the real robot with John. The contract, the mock robot, the server's robot link and arbiter, the run script | `firmware/`, `sim/`, `contract/`, `server/` mock, link, arbiter |
+| Vision + understanding | Grant Ji Kim | Camera input, person tracking, gestures, follow-me, speech to text, the LLM brain, the skill runner and skills, memory | `server/` vision, speech, brain, skills, memory modules |
+| Misc | Jialang "Nick" Zhao | The server's web API, dashboard, phone page (camera + face), arm poses on the desk, companion panel, pitch, Devpost, backup video, demo path. Picks up whatever is blocking another lane | `server/` API, `web/` |
 
-**Already overdue:** the contract and mock robot (planned for T+1). They come first, since every workstream builds against them.
+Motion and firmware belong to the same person because balancing *is* the firmware: the control loop, IMU filter, step timing and safety cutoffs all run on the ESP32 together. The contract and mock robot sit with them too, since the contract is the firmware's other half.
 
-**What could sink the project:** vision and understanding not working (start now, desk-only, simplest pipeline first); balancing not working (kickstand mode keeps the demo alive).
+## How each lane builds without the robot
 
-## Team
+### Motion + integration: seams first, then balancing
 
-John Huang owns the whole hardware stack; three people (Grant Ji Kim, Jialang Zhao and a third) write the software. The split among the three isn't decided; for now one agent does everything and work gets delegated when needed.
+- **Contract and mock robot first** (overdue). Every other lane builds against them, so they come before anything else.
+- **Simulation (`sim/`, about an hour, mostly agent work).** A Python model of the robot as an inverted pendulum on wheels, using the CAD numbers: 2.21 kg, center of mass 93 mm above the axle, 85 mm wheels. It settles the controller shape, the sign conventions (which way is "forward", which way positive tilt is) and ballpark gains, and checks that the 300 ms timeout and the tilt cutoff behave. Steppers take speed commands, so the usual setup is two loops: an inner loop turns tilt and tilt rate into wheel acceleration, and an outer loop turns the speed error into a target tilt.
+- **Desk rig (spare ESP32, driver, stepper and IMU).** This is the real firmware running on real parts. The steps spin a loose wheel at the commanded speed; tilting the IMU by hand gives the right angle and sign; the loop holds its rate; the UDP link talks to the server; the timeout and tilt cutoff trip. This rig is the loose wheel in the first end-to-end slice.
+- **Server robot link and arbiter:** the UDP link and the arbiter (e-stop > manual joystick > skills), so the same server drives either the mock or the real robot.
+- **Real robot, with John.** Flash the same firmware, start from the simulated gains, and tune on a tether. Only this step needs the assembled robot. Kickstand mode (same commands, no balancing) is ready before tuning starts, so it's always there as a fallback.
 
-Proposed role split (from John's brief, not decided):
+### Vision and understanding: on the desk
 
-| Role | Owns | Person |
-| --- | --- | --- |
-| Hardware | Frame, wiring, power, the physical robot | John Huang |
-| Firmware / controls | Balancing, motors, safety cutoffs, robot-laptop link, kickstand mode | TBD (maybe John) |
-| Robot software + integrator | Robot service, dashboard (e-stop, joystick, live plots), merges, run script, demo path | TBD |
-| Vision / AI + pitch | Video from the phone, follow-me, gestures, voice/language, Devpost, demo script, backup video | TBD |
+- **Camera:** a laptop webcam or a second camera, behind a frame-source interface. The phone page or Continuity Camera plugs in later without changing anything else (the camera route is still open, see `open-questions.md`).
+- **Perception:** MediaPipe person and hand tracking on every frame, with a debug window showing boxes and the recognized gesture.
+- **Follow-me and gestures:** the person's position and size become speed and turn targets that go to the arbiter. The result shows on the mock robot and the dashboard. Walk around the desk to test it.
+- **Skill runner:** runs one skill at a time and sends its targets to the arbiter.
+- **Speech and the brain:** push-to-talk on the laptop mic, then speech to text, then Claude picking skills. Gemini sits behind the same interface.
+- **Memory:** the world memory store from `03-software.md`. Perception and skills write to it, and a summary goes into every LLM call.
 
-## Timeline
+### Misc: everything people see, plus filling gaps
 
-Checkpoints are in `milestones.md`; tasks are GitHub Issues.
+- The server's WebSocket API and the dashboard (e-stop, joystick, telemetry plots), built against the mock robot.
+- The phone page: camera stream and face, over HTTPS.
+- Arm poses from the laptop over the BusLinker's USB port.
+- The companion panel, the pitch, Devpost, the backup video and the demo path.
+- When a lane is blocked or behind, take one of its issues.
+
+## Interfaces between lanes
+
+Agree on these first, write them down, and change them only in a PR that every affected lane looks at.
+
+| Interface | Between | Owner | Where |
+| --- | --- | --- | --- |
+| Robot messages: drive, mode, arm pose, telemetry | Motion + integration (both ends) | Alex | `contract/`, with samples. A change updates the mock and the firmware in the same PR |
+| Arbiter input: speed/turn targets and arm poses, tagged by source (e-stop, joystick, skill) | All three software lanes | Alex | `server/` |
+| Skill API: a skill gets perception and memory and sends targets to the arbiter | Vision and Motion + integration | Grant | `server/` |
+| Frame source: anything that hands out camera frames | Vision and Misc (phone page) | Grant | `server/` |
+| Server and web messages: telemetry, what the robot sees, e-stop, joystick, tasks | Misc (both ends) | Nick | `contract/web/` |
+| Arm pose names: wave, point, push, tuck | Misc (desk) and Motion (ESP32) | Alex | `contract/` |
+
+## Timeline by lane
+
+Times are Sat/Sun ET. Checkpoints in bold come from `milestones.md`.
+
+| When | Motion + integration (Alex) | Vision + understanding (Grant) | Misc (Nick) |
+| --- | --- | --- | --- |
+| Sat 1-2 am | Contract + mock robot (unblocks everyone); the agent starts the simulation | Frame source on the webcam; MediaPipe person + hands with a debug view | Web API and dashboard skeleton against sample telemetry |
+| Sat 2-4 am | Firmware on the desk rig: wheel follows commands, IMU sign and filter, UDP link, timeout; server link and arbiter | Follow-me and the stop gesture; skill runner into the arbiter (straight to the mock if the arbiter isn't ready) | Dashboard e-stop, joystick and live telemetry |
+| **Sat 4 am** | **First end-to-end slice:** a person walks in front of the camera, the laptop decides, the mock gets the command and the loose wheel turns the right way | | |
+| Sat 4-6 am | Firmware onto the robot with John; kickstand mode first, then a tether | Speech to text; the LLM brain picking skills; `say()` | Phone page over HTTPS (camera + face) |
+| **Sat 6 am** | **Tethered balance (10 s)** | | |
+| Sat 6 am-12 pm | Tuning; driving by joystick; merges at each check-in | More gestures (come here, point); `look_for` and `describe_scene`; memory | Arm poses on the desk; companion panel; run-script help |
+| **Sat 12 pm** | **Use case and main track picked** | | |
+| Sat 12-2 pm | Server link pointed at the real robot; driving with skills | Skills for the chosen use case | Whatever the use case needs on screen; pitch outline |
+| **Sat 2 pm** | **Go/no-go on balancing:** keep balancing or demo in kickstand mode | | |
+| Sat 2 pm-Sun 5 am | Arm on the ESP32; robustness, falls, battery; run script | Use-case skills; tuning in a noisy room | Demo path; Devpost draft; backup video |
+| **Sun 5 am** | **Feature freeze:** bug fixes only | | |
+| Sun 5-7 am | Rehearse the demo; fix only what breaks it | | Submit on Devpost by 7 am |
+| **Sun 9:30 am** | **Judging:** in-person demo, max 2 min | | |
+
+Sleep in shifts. Alex and John sleep at the same time, since tuning needs both of them. Grant and Nick cover the other shift.
+
+## How we work
+
+- **Everyone runs their own agent.** Claude Code reads `CLAUDE.md`; Cursor and Codex read `AGENTS.md`, which points to it.
+- **One task = one issue = one branch = one PR** that says "Closes #N". Tasks are 1-3 hours. Label each issue with its lane.
+- **Stay in your lane's folders.** A PR that touches another lane's folder says so and gets that lane's OK.
+- **Alex's master agent merges and pushes to main**; nobody else does. Merges happen in batches at check-ins while Alex is at the robot. Main always runs against the mock robot. Pull main after any merge your lane depends on.
+- **Contract changes** update the contract, the mock and the firmware in one PR.
+- **Real robot:** commands go to it only when someone is with it.
+- **Secrets** live in `.env` (not in git); their names go in `.env.example`.
+- **Check-ins:** five minutes at each checkpoint: what works, what's blocked, what's next. Between checkpoints, use the group chat.
+- **Decisions:** tell Alex; the master agent records them in `decisions/` and updates the docs.
 
 ## Fallback demo tiers
 
@@ -53,6 +110,8 @@ The top risk is balancing eating the whole weekend, leaving no time for the part
 | Risk | Fallback |
 | --- | --- |
 | Balance tuning takes too long | Kickstand mode, so every other feature still demos |
+| Alex carries motion, the seams and merging, and is at the robot most of Saturday | Contract and mock land first, before any robot time; merges wait for check-ins; Nick takes server or run-script issues when Alex is behind |
+| Vision needs a camera while the iPhone is on the robot | A second camera for the desk: a teammate's phone or an MLH Logitech webcam |
 | Arm motion knocks it over | Kickstand down before using the arm; keep the arm light and close to the mast |
 | Wi-Fi lag or drops at the venue | Own hotspot; the robot balances on its own and stops after 300 ms without commands |
 | Robot falls and breaks the phone | Crash bars at the top, kickstand when idle, test with a dummy weight first |

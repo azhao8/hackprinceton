@@ -7,7 +7,7 @@ The checkpoints for the weekend. Tasks themselves live in GitHub Issues. Only th
 | When | Milestone | Done when |
 | --- | --- | --- |
 | T+1 (Fri 9 pm) | Contract and mock robot | Messages and samples in `contract/`; the mock robot accepts commands and sends fake telemetry. Overdue |
-| T+8 (Sat 4 am, proposed) | First end-to-end slice | A person walks in front of the phone, the laptop decides, the command reaches the mock robot and a loose wheel on the desk turns the right way |
+| T+8 (Sat 4 am) | First end-to-end slice | A person walks in front of the phone, the laptop decides, the command reaches the mock robot and a loose wheel on the desk turns the right way |
 | T+10 (Sat 6 am) | Tethered balance | The robot balances 10 s on a tether |
 | T+16 (Sat 12 pm) | Use case and main track picked | Recorded in `decisions/` |
 | T+18 (Sat 2 pm) | Go/no-go on balancing | Balances and drives by joystick; otherwise demo in kickstand mode |

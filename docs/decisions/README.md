@@ -14,7 +14,7 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0006](0006-software-unconstrained.md) | Software is unconstrained | Round 3 |
 | [0007](0007-keep-options-open.md) | Brainstorm wide before narrowing | Round 3 |
 | [0008](0008-autonomy-level.md) | Autonomy: the human says what, the robot works out how | Round 3 |
-| [0009](0009-one-agent-for-now.md) | One agent does all software work for now | Exit round |
+| [0009](0009-one-agent-for-now.md) | One agent does all software work for now (superseded by 0033) | Exit round |
 | [0010](0010-plan-shape.md) | General core first, then specialize | Q1, Q11 |
 | [0011](0011-llm-understanding.md) | An LLM handles understanding | Q2 |
 | [0012](0012-anyone-can-direct.md) | Anyone nearby can direct it | Q3 |
@@ -37,3 +37,14 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0029](0029-folder-layout.md) | Folder layout | Repo setup (S1, N2) |
 | [0030](0030-claude-md.md) | Rules live in CLAUDE.md | Repo setup (C3) |
 | [0031](0031-docs-is-source.md) | docs/ is the source of truth | After the first commit |
+| [0032](0032-bench-first.md) | Build on the desk and against the mock robot | Build-plan round (B1) |
+| [0033](0033-vision-motion-equal.md) | Vision and motion are equal priority, one person each | Build-plan round (B2) |
+| [0034](0034-first-slice.md) | First milestone: the end-to-end slice | Build-plan round (B3) |
+| [0035](0035-arm-control.md) | Arm: laptop on the desk, ESP32 on the robot | Build-plan round (B5) |
+| [0036](0036-motion-owns-firmware.md) | One person owns firmware and balancing | Build-plan round (B6) |
+| [0037](0037-llm-claude.md) | LLM: Claude, with Gemini swappable | Build-plan round (B7) |
+| [0038](0038-arm-gestures.md) | Arm in the demo: gestures only for now | Build-plan round (P-3) |
+| [0039](0039-memory-in-build.md) | Memory is in the build | Build-plan round (P-4) |
+| [0040](0040-platformio.md) | Firmware uses PlatformIO | Build-plan round (T-1) |
+| [0041](0041-iphone-model.md) | The head is an iPhone 18 Pro or similar | Build-plan round (T-2) |
+| [0042](0042-agents-md.md) | AGENTS.md points to CLAUDE.md | Build-plan round (W-2) |
