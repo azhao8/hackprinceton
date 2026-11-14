@@ -54,6 +54,7 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0046](0046-standard-simple-alternatives.md) | Standard and simple, chosen from alternatives | Contract round |
 | [0047](0047-decision-rules.md) | Decision rules in CLAUDE.md; only main is protected | Issue #4 |
 | [0048](0048-anyone-merges.md) | Anyone can merge to main; Alex's agent organizes | Issue #6 |
+| [0049](0049-seq-ack.md) | Commands carry seq; telemetry echoes it as ack | Issue #13 |
 | [0050](0050-server-skeleton.md) | The server skeleton is #22; Grant builds on it | PR #22 |
 | [0051](0051-contract-v1.md) | Contract v1 is what the firmware speaks today | Issue #23 |
 | [0053](0053-controls-on-control-page.md) | The phone page is the robot's eye; every control is on the control page | Issue #39 |

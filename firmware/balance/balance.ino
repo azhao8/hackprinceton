@@ -23,6 +23,7 @@
 //   F / B = drive exactly MOVE_DIST forward / back on a braking profile, then report "move done" with the error
 //   v = flip the yaw gyro sign (only if L/R turn the wrong way)
 //   k = (not balancing) lock the wheels with motor holding torque, no balancing: floor-grip test. k again = release
+//   J = print one JSON telemetry line over USB (same as the Wi-Fi tel message), for link tests without Wi-Fi
 //   h = fast log on/off: 50 Hz CSV  t_ms,pitch,accAngleRaw,gyro,v,x,xt,a,Iterm,ffLean,yaw  (replaces the 10 Hz telemetry)
 // Driving feedforward (added Nov 14): while a speed is commanded the target angle moves by
 //   atan(target accel / g) + FF_RR * (direction of travel), so it leans and goes at once instead of lagging 1.5-3 s.
@@ -42,16 +43,19 @@
 #endif
 
 // ---------- Wi-Fi control (team contract): UDP port 4210, newline-free JSON packets
-//   laptop -> robot: {"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}   v m/s (max 0.3), w rad/s left + (max 1.5)
+//   laptop -> robot: {"t":"cmd","seq":812,"v":0.3,"w":0.0,"mode":"drive"}   v m/s (max 0.3), w rad/s left + (max 1.5)
+//                    seq (optional): a counter the laptop increases on every command; telemetry echoes the last one as ack
 //                    mode: drive | balance (hold here) | idle (motors off). Arming is only by the plain packet "g".
 //   any packet not starting with '{' is treated as the same one-letter commands as the serial port (g, x, L, R, ...)
 //   robot -> laptop (20 Hz, to whoever sent the last packet):
-//     {"t":"tel","pitch":..,"rate":..,"vl":..,"vr":..,"batt":null,"state":"idle|balance|drive","fault":null,"x":..,"yaw":..}
+//     {"t":"tel","pitch":..,"rate":..,"vl":..,"vr":..,"batt":null,"state":"idle|balance|drive","fault":null,"x":..,"yaw":..,"ack":..}
+//     ack = the seq of the last JSON command received (0 until one arrives). If it stops rising, commands aren't arriving.
 //   Safety: drive commands older than 300 ms -> speed and turn go to 0 and it holds position.
 const uint16_t UDP_PORT = 4210;
 WiFiUDP udp;
 IPAddress peerIP; uint16_t peerPort = 0; bool havePeer = false, wifiUp = false, netDriving = false;
 uint32_t lastNetCmd = 0;
+uint32_t lastSeq = 0;           // seq of the last JSON command received, echoed as ack in telemetry
 const char *lastFault = nullptr;
 
 const int STEP_R = 4, DIR_R = 5, STEP_L = 6, DIR_L = 7, EN = 15;
@@ -199,6 +203,7 @@ void setup() {
   Serial.println("Ready. Hold it upright, then send g.");
 }
 
+void formatTelemetry(char *out, size_t size);
 void handleChar(char c) {
     switch (c) {
       case 'g':
@@ -233,6 +238,7 @@ void handleChar(char c) {
         moving = 1; moveStart = millis(); headingTarget = roundf(yaw / 90.0f) * 90.0f;
         Serial.printf("move %s %.2f m: target %.3f\n", c == 'F' ? "forward" : "back", MOVE_DIST, moveTarget); break;
       case 'V': Serial.println("FW balance json-serial v1"); break;
+      case 'J': { char out[256]; formatTelemetry(out, sizeof(out)); Serial.println(out); } break;
       case 'T':                                    // wheel top-speed test: HOLD THE ROBOT UP, wheels off the ground
         if (running) break;
         Serial.println("SPIN TEST: wheels to 1.0 m/s and back (robot must be held up)");
@@ -278,6 +284,12 @@ void handleSerial() {                 // '{...}' = JSON drive command (same as W
   }
 }
 
+bool jsonUInt(const char *js, const char *key, uint32_t &out) {
+  const char *p = strstr(js, key); if (!p) return false;
+  p = strchr(p + strlen(key), ':'); if (!p) return false;
+  out = strtoul(p + 1, nullptr, 10); return true;
+}
+
 float jsonNum(const char *js, const char *key, float dflt) {
   const char *p = strstr(js, key); if (!p) return dflt;
   p = strchr(p + strlen(key), ':'); if (!p) return dflt;
@@ -285,6 +297,7 @@ float jsonNum(const char *js, const char *key, float dflt) {
 }
 
 void handleJson(const char *js) {
+  jsonUInt(js, "\"seq\"", lastSeq);                    // before any early return: ack works even when not balancing
   const char *m = strstr(js, "\"mode\"");
   char mode[12] = "drive";
   if (m) { m = strchr(m + 6, '"'); if (m) { int i = 0; m++; while (*m && *m != '"' && i < 11) mode[i++] = *m++; mode[i] = 0; } }
@@ -321,13 +334,16 @@ void handleNet() {
   }
 }
 
+void formatTelemetry(char *out, size_t size) {
+  const char *state = !running ? "idle" : ((vt != 0 || wt != 0 || turning) ? "drive" : "balance");
+  char fault[80]; if (lastFault) snprintf(fault, sizeof(fault), "\"%s\"", lastFault); else strcpy(fault, "null");
+  snprintf(out, size, "{\"t\":\"tel\",\"pitch\":%.2f,\"rate\":%.1f,\"vl\":%.3f,\"vr\":%.3f,\"batt\":null,\"state\":\"%s\",\"fault\":%s,\"x\":%.3f,\"yaw\":%.1f,\"ack\":%lu}",
+           pitch, rate, vcmd - wt * HALF_TRACK, vcmd + wt * HALF_TRACK, state, fault, xpos, yaw, (unsigned long)lastSeq);
+}
+
 void sendTelemetry() {
   if (!wifiUp || !havePeer) return;
-  char out[220];
-  const char *state = !running ? "idle" : ((vt != 0 || wt != 0 || turning) ? "drive" : "balance");
-  char fault[48]; if (lastFault) snprintf(fault, sizeof(fault), "\"%s\"", lastFault); else strcpy(fault, "null");
-  snprintf(out, sizeof(out), "{\"t\":\"tel\",\"pitch\":%.2f,\"rate\":%.1f,\"vl\":%.3f,\"vr\":%.3f,\"batt\":null,\"state\":\"%s\",\"fault\":%s,\"x\":%.3f,\"yaw\":%.1f}",
-           pitch, rate, vcmd - wt * HALF_TRACK, vcmd + wt * HALF_TRACK, state, fault, xpos, yaw);
+  char out[256]; formatTelemetry(out, sizeof(out));
   udp.beginPacket(peerIP, peerPort); udp.print(out); udp.endPacket();
 }
 
