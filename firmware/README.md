@@ -70,6 +70,19 @@ The bench tools talk to the robot directly. They're for testing and tuning only.
 - **Upload:** `cd firmware/balance && arduino-cli compile --upload --fqbn esp32:esp32:esp32s3 -p <port> .` (`arduino-cli board list` shows the port).
 - **After every upload or reboot,** keep the robot still for 3 s. It calibrates the gyro at boot.
 
+## Before merging a firmware change
+- **Leave the balance loop alone** unless the change is about balancing. Change the command handling and telemetry around it.
+- **Keep the USB status line exactly as it is.** `drive.py` reads it.
+- **CI compiles every PR** (`.github/workflows/ci.yml`). A PR that doesn't compile doesn't merge.
+- **Bench check after every upload,** about five minutes, with someone at the robot:
+  1. Keep it still for 3 s at boot (gyro calibration).
+  2. `g`: balances hands-off for 30 s.
+  3. `drive.py`: forward, back, left, right; Space stops and holds.
+  4. `L` / `R`: 90° turns.
+  5. `P` parks on the kickstand; `X` turns the motors off.
+  6. Write the result in the PR.
+- **If something regresses, go back to the last known-good firmware:** `git checkout fw-known-good -- firmware/balance/balance.ino`, then upload. The tag `fw-known-good` points at John's firmware that balances with the phone on (Sat noon). Move the tag only after a change passes the bench check.
+
 ## The link it speaks today
 It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `balancebot.local`).
 - **In:** `{"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}`, about 20 times a second.
