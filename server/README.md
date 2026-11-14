@@ -7,6 +7,7 @@ One Python process on the laptop: the hub between the phone page, the dashboard 
 ```bash
 cd server
 uv sync
+uv run python -m mock               # the mock robot on 127.0.0.1:4210 (contract/README.md)
 uv run python -m app --robot mock   # the server (today: arbiter only, commands are logged)
 uv run pytest                       # tests; CI runs these on every PR
 ```
@@ -22,7 +23,7 @@ Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so a
 | `app/__main__.py` | Alex | Starts everything in one asyncio loop |
 | `app/arbiter.py` | Alex | Picks one command: e-stop > joystick > skill |
 | `app/link/` | Alex | JSON over UDP to the robot or the mock (next, with the contract) |
-| `mock/` | Alex | The mock robot (next, with the contract) |
+| `mock/` | Alex | The mock robot: behaves like the firmware over UDP (contract v1) |
 | `app/api/` | Nick | WebSocket for the phone page and the dashboard |
 | `app/vision/` | Grant | Frame source and perception (#3) |
 | `app/speech/` | Grant | Speech in and out |

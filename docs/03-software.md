@@ -40,7 +40,7 @@ Draft. One Python server on the laptop is the hub: the phone and the dashboard f
 
 ## The contract (the seam)
 
-Starting point, from John's brief: JSON over UDP, on a phone or laptop hotspot (not venue Wi-Fi). **What the robot actually speaks today is in `firmware/README.md`** ("The link it speaks today"); it differs from this draft in places (C-1, T-6). `contract/` will hold the agreed version, with samples captured from the robot.
+**The agreed messages are in `contract/README.md` (v1: exactly what the firmware speaks today), with JSON Schemas and samples; the mock robot speaks the same.** The lines below are John's original brief, kept for history; where they differ, `contract/` wins. Proposed changes are listed at the bottom of `contract/README.md` (C-1).
 
 - **Laptop to robot, 20-50 times a second:** `{"t":"cmd","v":0.3,"w":0.0,"mode":"drive"}`. `v` = forward speed (m/s), `w` = turn rate (rad/s), `mode` = idle | balance | drive | kickstand.
 - **Robot to laptop, about 50 times a second:** `{"t":"tel","pitch":1.2,"rate":-0.4,"vl":0.28,"vr":0.31,"batt":11.6,"state":"balance","fault":null}`.
