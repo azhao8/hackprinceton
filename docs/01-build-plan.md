@@ -92,7 +92,7 @@ Sleep in shifts. Alex and John sleep at the same time, since tuning needs both o
 - **One task = one issue = one branch = one PR** that says "Closes #N". Tasks are 1-3 hours. Each issue has a lane label (`lane:motion`, `lane:vision`, `lane:misc`); assign yourself before starting. Branch name: `<lane>/<N>-short-name`.
 - **Pull main before each task.** Keep PRs small; tests pass before opening one.
 - **Stay in your lane's folders.** A PR that touches another lane's folder says so and gets that lane's OK.
-- **Alex's master agent merges and pushes to main**; nobody else does. Merges happen in batches at check-ins while Alex is at the robot. Main always runs against the mock robot. Pull main after any merge your lane depends on.
+- **Main is protected:** only Alex's master agent pushes or merges to main, and only with Alex's OK for each one. Branches, PRs, issues and comments need no permission. Merges happen in batches at check-ins while Alex is at the robot. Main always runs against the mock robot. Pull main after any merge your lane depends on.
 - **Contract changes** update the contract, the mock and the firmware in one PR.
 - **Real robot:** commands go to it only when someone is with it.
 - **Secrets** live in `.env` (not in git); their names go in `.env.example`.

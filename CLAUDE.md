@@ -30,33 +30,33 @@ it wins over every other doc.
   Issues carry a lane label (lane:motion, lane:vision, lane:misc). Assign
   yourself before starting. Branch name: <lane>/<N>-short-name.
 - Pull main before starting a task. Keep PRs small; tests pass before opening.
-- Only the master agent (Alex, GitHub azhao8) merges and pushes to main;
-  everyone else opens PRs. main always runs against the mock robot.
+- main is protected: only the master agent (Alex, GitHub azhao8) pushes
+  or merges to main, and only with Alex's OK for that action. Branches,
+  PRs, issues and comments need no permission. main always runs against
+  the mock robot.
 - Talk in issue and PR comments (blockers, questions, interface changes);
   the group chat is for quick pings. Read the issue's comments before working.
 
-## How to choose
+## Decisions
 
-- Be as standard as possible: use the common convention, library or
-  protocol before inventing one (for example SI units and ROS REP 103 axes).
-- Prefer the simpler way when it does the job; pick a better way over the
-  first one that works.
-- For any real choice, list as many alternatives as you can, critique each
-  in a line, then pick one and say why. For a choice that affects the
-  product, bring that list to your human (see below).
+A decision is anything that changes what the product does or looks like,
+how parts fit together, or would be hard to change later. Naming and small
+refactors inside your lane aren't decisions; just do them.
 
-## Ask, don't guess
-
-- If a choice could affect the product (decisions, architecture, interfaces
-  between lanes, product details, UI/UX, demo behavior), stop and ask your
-  human instead of assuming. Say what the question is, the options, and your
-  recommendation.
-- Your human raises it with the team (issue comment, then a group-chat ping);
-  the team decides together. Settled answers go in docs/decisions/; ones still
-  open go in docs/open-questions.md.
-- Keep working on parts the question doesn't touch while you wait.
-- Trivial choices (variable names, file layout inside your lane, small
-  refactors) don't need asking; just make them.
+1. Don't decide alone: ask your human, and the team decides. Keep working
+   on what the question doesn't touch.
+2. When asking, list every alternative you can find with a one-line
+   critique, mark which is standard, and give your pick and why.
+3. Prefer standard over custom and simple over complex, unless the other
+   option buys something real. Setup effort barely counts (agents do it);
+   runtime, platform, debugging and demo risks do.
+4. Say how hard it is to reverse, and settle hard-to-reverse ones before
+   other code depends on them.
+5. Cite sources (file:line or link) and label guesses as guesses.
+6. Stay impartial: change an answer for a reason, not because someone asked.
+7. Record only what the team settles: a file in docs/decisions/ from
+   TEMPLATE.md, plus the docs it affects (00-overview first). Open ones go
+   in docs/open-questions.md.
 
 ## Rules
 
@@ -73,5 +73,3 @@ it wins over every other doc.
 
 - Settled: docs/decisions/. Open: docs/open-questions.md. Milestones: docs/milestones.md.
 - docs/reference/ is background; docs/reference/john-pack/ is a raw archive, open only when needed.
-- When something is decided: add a decision file and update 00-overview,
-  open-questions and the doc it affects.

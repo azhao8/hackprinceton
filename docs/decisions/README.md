@@ -2,7 +2,7 @@
 
 One file per settled decision. Don't edit an old decision: to change it, add a new file and mark the old one "superseded by NNNN".
 
-New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / superseded), Source and the decision in a few lines.
+New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.md). Older decisions predate the template and keep the short form.
 
 | # | Decision | Source |
 | --- | --- | --- |
@@ -52,3 +52,4 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0044](0044-collaboration-workflow.md) | How we collaborate day to day | Collaboration round |
 | [0045](0045-ask-dont-guess.md) | Agents ask instead of guessing | Collaboration round |
 | [0046](0046-standard-simple-alternatives.md) | Standard and simple, chosen from alternatives | Contract round |
+| [0047](0047-decision-rules.md) | Decision rules in CLAUDE.md; only main is protected | Issue #4 |
