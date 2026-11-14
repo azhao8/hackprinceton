@@ -26,6 +26,10 @@ Safety (CLAUDE.md, firmware/README.md "Safety rules"):
   v = w = 0 every tick; the robot keeps balancing (decision 0043).
 - Quitting, Ctrl+C, SIGTERM or a crash cancels the skill, sends `x` (motors off), closes the
   link, stops vision and closes the window.
+
+Voice: with CARTESIA_API_KEY set, the API serves Cartesia speech at `/tts` for the phone page and
+makes the stock lines (api.STOCK_LINES) in the background at startup; without it the phone uses
+Safari's built-in voice.
 """
 
 from __future__ import annotations
@@ -446,6 +450,31 @@ def make_vision(args: argparse.Namespace) -> Any:
     return VisionWorker(open_source(args.source, rotate=args.rotate), detector, TargetLock())
 
 
+def make_tts() -> Any:
+    """Cartesia text-to-speech for the phone's voice, or None: the phone then uses Safari's built-in voice."""
+    try:
+        from app.speech.tts import CartesiaTTS
+
+        tts = CartesiaTTS.from_env()
+    except Exception as e:   # the module or its settings are broken: run without it
+        log.warning("voice: Cartesia unavailable (%s); using Safari's built-in voice", e)
+        return None
+    if tts is None:
+        log.info("voice: Safari's built-in (CARTESIA_API_KEY not set)")
+    else:
+        log.info("voice: Cartesia")
+    return tts
+
+
+async def prewarm_voice(tts: Any) -> None:
+    """Make the stock lines ahead of time (in the background), so the first time each plays it's instant."""
+    try:
+        n = await tts.prewarm(api.STOCK_LINES)
+        log.info("voice: %d of %d stock lines ready", n, len(api.STOCK_LINES))
+    except Exception:   # prewarm shouldn't raise; never let it take the server down
+        log.exception("voice: prewarming the stock lines failed")
+
+
 def make_window() -> tuple[Any, Any]:
     from app.vision.debug_view import DebugWindow, render
 
@@ -469,11 +498,14 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         if isinstance(e, Exception):
             raise SystemExit(f"Couldn't start the robot link: {e}") from e
         raise
-    runner = None
+    runner = tts = warm = None
     try:
         if args.api:
-            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills),
+            tts = make_tts()
+            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills, tts=tts),
                                         args.http_port, args.https_port or None)
+            if tts is not None:
+                warm = asyncio.create_task(prewarm_voice(tts))   # don't hold up startup
         if args.robot == "real":
             if args.link == "serial":
                 print("REAL robot on USB. Nothing moves until someone holds it upright and presses G.", flush=True)
@@ -496,8 +528,16 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         await app.run()
     finally:
         await app.shutdown()   # already done by run() unless something failed before it: safe twice
+        if warm is not None:
+            warm.cancel()
+            await asyncio.gather(warm, return_exceptions=True)
         if runner is not None:
             await runner.cleanup()
+        if tts is not None:
+            try:
+                await tts.close()
+            except Exception:
+                log.exception("closing the voice failed")
     return app
 
 

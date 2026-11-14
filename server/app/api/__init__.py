@@ -9,8 +9,12 @@ One aiohttp app on the server's asyncio loop, on two ports:
 The phone page keeps the endpoints it already used with phone_server.py, so it works unchanged:
 - `POST /auto {v, w, found, cx, h}`: the page's follow command. It goes to the arbiter as a skill,
   and only while Follow is switched on (control page or WebSocket). Off by default.
-- `GET /tel`: `{tel, follow, link, estop}` for the page's status line.
+- `GET /tel`: `{tel, follow, link, estop, tts}` for the page's status line; `tts` says whether
+  `/tts` is set up (Cartesia), so the page knows whether to try it.
 - `GET /say?after=N`: lines for the phone to speak. `POST /say {text}` adds one (localhost only).
+- `GET /tts?text=...`: the line as Cartesia speech (audio/mpeg). 400 if the text is empty or over
+  300 characters, 503 if CARTESIA_API_KEY isn't set, 502 if Cartesia fails; the page then falls
+  back to Safari's built-in voice.
 - `POST /log`: what the page reports (camera chosen, errors), printed here.
 
 WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the robot's `tel` about
@@ -40,6 +44,20 @@ PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phon
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js"}
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
+TTS_MAX_CHARS = 300   # the same cap as a /say line
+
+# The control page's preset buttons.
+CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
+# What the phone page says by itself: the Start tap and the Voice.event lines in talk(), copied from
+# firmware/balance/phone/index.html. Keep them in sync (tests/test_api.py checks they're still there).
+PHONE_LINES = [
+    "Hi, I'm Miguel.",
+    "Hi! I'll follow you.", "Found you!", "Hello there! Lead the way.", "Ooh, something yellow!", "I see yellow!",
+    "Whoa, personal space!", "That's a little close.", "Wait for me!", "Not so fast!",
+    "Where did you go?", "Hello? I lost you.", "Where did my yellow thing go?",
+]
+# Made ahead in the background at startup, so these play without waiting for Cartesia.
+STOCK_LINES = CONTROL_PRESETS + PHONE_LINES
 
 
 @dataclass
@@ -47,6 +65,7 @@ class ApiState:
     arbiter: Arbiter
     link: RobotLink
     skills: Any = None          # the server's SkillRunner, if any: STOP cancels its skill
+    tts: Any = None             # app.speech.tts.CartesiaTTS, or None: the phone uses Safari's voice
     follow: bool = False
     say: list[dict] = field(default_factory=list)
 
@@ -80,7 +99,7 @@ class ApiState:
 
     def status(self) -> dict:
         return {"tel": self.link.telemetry, "follow": self.follow, "link": self.link.health().ok,
-                "estop": self.arbiter.estopped}
+                "estop": self.arbiter.estopped, "tts": self.tts is not None}
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -152,6 +171,21 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         text = str((await _json(request)).get("text", ""))
         state.add_say(text)
         return web.json_response({"ok": bool(text.strip())}, status=200 if text.strip() else 400)
+
+    @routes.get("/tts")
+    async def tts(request: web.Request) -> web.Response:
+        text = request.query.get("text", "").strip()
+        if not text or len(text) > TTS_MAX_CHARS:
+            return web.json_response({"error": f"text must be 1 to {TTS_MAX_CHARS} characters"}, status=400)
+        if state.tts is None:
+            return web.json_response({"error": "tts not configured"}, status=503)
+        try:
+            audio = await state.tts.synth(text)
+        except Exception as e:   # TTSError (network, key, quota): the page falls back to Safari's voice
+            log.warning("tts failed for %r: %s", text[:60], e)
+            return web.json_response({"error": "tts failed"}, status=502)
+        return web.Response(body=audio, headers={"Content-Type": getattr(state.tts, "MEDIA_TYPE", "audio/mpeg"),
+                                                 "Cache-Control": "no-store"})
 
     @routes.post("/log")
     async def phone_log(request: web.Request) -> web.Response:
@@ -267,8 +301,8 @@ const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
 stop.onclick=()=>act('stop');release.onclick=()=>act('release');fon.onclick=()=>act('follow-on');foff.onclick=()=>act('follow-off');
 function say(text){fetch('/say',{method:'POST',body:JSON.stringify({text})})}
 f.onsubmit=e=>{e.preventDefault();if(t.value.trim())say(t.value.trim());t.value=''};
-for(const x of ["Hi, I'm Miguel!",'Time for your medicine.','Here is your water.','Follow me!','Hello, judges!']){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);p.appendChild(b)}
+for(const x of __PRESETS__){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);p.appendChild(b)}
 async function show(){try{const d=await (await fetch('/tel')).json(),t=d.tel||{};
 st.textContent='Link: '+(d.link?'ok':'DOWN')+'   E-stop: '+(d.estop?'ON':'off')+'   Follow: '+(d.follow?'ON':'off')+'\\nRobot: '+(t.state||'?')+'  pitch '+(t.pitch??'?')+'  x '+(t.x??'?')+'  yaw '+(t.yaw??'?')}catch(e){st.textContent='server not answering'}}
 setInterval(show,500);show();
-</script>"""
+</script>""".replace("__PRESETS__", json.dumps(CONTROL_PRESETS))

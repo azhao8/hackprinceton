@@ -3,11 +3,12 @@ The last test runs the whole path: phone page -> API -> arbiter -> UDP link -> m
 
 import asyncio
 import socket
+from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.__main__ import drive_loop
-from app.api import ApiState, create_app
+from app.api import CONTROL_PAGE, PHONE_DIR, PHONE_LINES, STOCK_LINES, ApiState, create_app
 from app.arbiter import Arbiter
 from app.link import Health, UdpLink
 from mock.__main__ import serve
@@ -21,9 +22,23 @@ class FakeLink:
         return Health(True, 0.01, 0.01, 12.0)
 
 
-def with_client(test):
+class FakeTTS:
+    MEDIA_TYPE = "audio/mpeg"
+
+    def __init__(self, fail: Exception | None = None):
+        self.fail = fail
+        self.asked: list[str] = []
+
+    async def synth(self, text):
+        self.asked.append(text)
+        if self.fail:
+            raise self.fail
+        return b"ID3 fake mp3 " + text.encode()
+
+
+def with_client(test, tts=None):
     async def go():
-        state = ApiState(Arbiter(), FakeLink())
+        state = ApiState(Arbiter(), FakeLink(), tts=tts)
         client = TestClient(TestServer(create_app(state, ca_page="trust me")))
         await client.start_server()
         try:
@@ -87,6 +102,56 @@ def test_tel_and_say():
         assert (await c.post("/say", json={"text": "  "})).status == 400
         assert (await c.get("/control")).status == 200
     with_client(t)
+
+
+def test_tts_serves_mp3_from_the_voice():
+    tts = FakeTTS()
+
+    async def t(c, s):
+        r = await c.get("/tts", params={"text": "  Here is your water.  "})
+        assert r.status == 200 and r.headers["Content-Type"] == "audio/mpeg"
+        assert r.headers["Cache-Control"] == "no-store"
+        assert await r.read() == b"ID3 fake mp3 Here is your water."
+        assert tts.asked == ["Here is your water."]
+        assert (await (await c.get("/tel")).json())["tts"] is True
+    with_client(t, tts)
+
+
+def test_tts_rejects_empty_or_long_text():
+    tts = FakeTTS()
+
+    async def t(c, s):
+        assert (await c.get("/tts")).status == 400
+        assert (await c.get("/tts", params={"text": "   "})).status == 400
+        assert (await c.get("/tts", params={"text": "a" * 301})).status == 400
+        assert (await c.get("/tts", params={"text": "a" * 300})).status == 200
+        assert tts.asked == ["a" * 300]
+    with_client(t, tts)
+
+
+def test_tts_without_a_voice_is_503():
+    async def t(c, s):
+        r = await c.get("/tts", params={"text": "hello"})
+        assert r.status == 503 and await r.json() == {"error": "tts not configured"}
+        assert (await (await c.get("/tel")).json())["tts"] is False
+    with_client(t)
+
+
+def test_tts_failure_is_502():
+    from app.speech.tts import TTSError
+
+    async def t(c, s):
+        r = await c.get("/tts", params={"text": "hello"})
+        assert r.status == 502 and "error" in await r.json()
+    with_client(t, FakeTTS(TTSError("cartesia said 401")))
+
+
+def test_stock_lines_match_the_pages():
+    page = (Path(PHONE_DIR) / "index.html").read_text()
+    for line in PHONE_LINES:                     # the phone page's own lines, copied into the api module
+        assert line in page, line
+    assert "Hi, I'm Miguel!" in CONTROL_PAGE and "__PRESETS__" not in CONTROL_PAGE
+    assert len(set(STOCK_LINES)) == len(STOCK_LINES) and all(0 < len(x) <= 300 for x in STOCK_LINES)
 
 
 def test_websocket_sends_telemetry_and_takes_commands():

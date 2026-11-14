@@ -72,6 +72,16 @@ Secrets go in `server/.env` (git-ignored); the names are in `.env.example`.
 
 The phone page only drives the robot while its Follow is ON. Turning it on stops any server skill (such as the server's own follow, F), and STOP ends both. The dashboard connects to `ws://localhost:8080/ws`.
 
+## Miguel's voice (Cartesia)
+
+Without a key, the phone page speaks with Safari's built-in voice. With one, it speaks in a Cartesia voice (`sonic-3.6`):
+
+1. Copy `.env.example` to `.env` and type your key after `CARTESIA_API_KEY=` yourself. Never commit it or paste it into a chat. Optionally set `CARTESIA_VOICE_ID` (pick a voice in Cartesia's voice library), `CARTESIA_MODEL` and `CARTESIA_SPEED`.
+2. Start the server with the file loaded: `uv run --env-file .env python -m app ...`. The log says which voice is in use.
+3. On the phone page, tap Start once (iOS only plays audio after a tap).
+
+The server makes each line with Cartesia (`GET /tts?text=...`, an mp3), caches it, and makes the stock lines at startup. If Cartesia or the network fails, the phone falls back to Safari's voice for that line.
+
 ## Layout and owners
 
 Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so and gets their OK.
@@ -105,4 +115,5 @@ Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so a
 - [OpenCV](https://opencv.org) (Apache-2.0): camera capture, image handling, the debug window.
 - [NumPy](https://numpy.org) (BSD-3-Clause).
 - [pyserial](https://github.com/pyserial/pyserial) (BSD-3-Clause): the USB link to the robot.
+- [Cartesia](https://cartesia.ai) (paid API, `sonic-3.6`): Miguel's voice.
 - The follow gains come from John's `firmware/balance/follow/follow.swift`, tuned on the real robot.
