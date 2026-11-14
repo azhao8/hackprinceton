@@ -10,7 +10,7 @@
 // Wheel speed = integral of a. Steps come from a 40 kHz hardware-timer interrupt.
 //
 // Serial commands (115200):
-//   g = arm: starts balancing if held within 6 deg of upright; stops by itself after RUN_MS
+//   g = arm: starts balancing if held within 6 deg of upright; parks itself on the kickstand after RUN_MS (30 min)
 //   x = stop now             z = set trim to the current pitch (hold it at its balance point first)
 //   i = telemetry on/off     p = print gains
 //   q/a = KT up/down 10%     w/s = KW up/down 10%     e/d = KV up/down 10%     r/f = KX up/down 10%
@@ -29,7 +29,7 @@
 //   atan(target accel / g) + FF_RR * (direction of travel), so it leans and goes at once instead of lagging 1.5-3 s.
 //   c = recalibrate gyro (robot must be STILL for 2 s)
 //   Driving while balancing: 8/2 = speed +/- 0.1 m/s (max 0.3), 4/6 = turn left/right +/- 0.5 rad/s (max 1.5), 5 = stop and hold here
-// Safety: motors off at boot, off when |pitch - trim| > 30 deg, off after RUN_MS.
+// Safety: motors off at boot, off when |pitch - trim| > 30 deg; parks itself after RUN_MS.
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -63,7 +63,7 @@ const uint8_t MPU = 0x68;
 const float STEPS_PER_M = 3200.0f / (PI * 0.085f);   // 11983
 const float DT = 0.005f;                               // 200 Hz control loop
 const float VMAX = 1.0f, AMAX = 6.0f;                  // m/s, m/s^2 (VMAX was 0.8; raised with faster driving, check with T)
-const uint32_t RUN_MS = 300000;                        // each g balances for at most 5 min (tilt cutoff and Wi-Fi watchdog still apply)
+const uint32_t RUN_MS = 1800000;                       // each g balances for at most 30 min, then parks itself (tilt cutoff and watchdog still apply)
 const float HALF_TRACK = 0.0775f;                      // wheel centre to robot centre, m (CAD)
 const uint32_t ISR_HZ = 40000;
 
@@ -76,7 +76,7 @@ const float I_LIM = 1.0f;      // m/s^2, about 2.3 deg of lean (was 1.5: wound u
 const float VT_ACC = 0.5f;     // m/s^2: drive commands ramp the target speed this fast (was 0.4)
 float FF_CREEP = 0.6f;         // deg toward the target when >3 cm off while holding. 1.75 without the phone; with it, that rocked at 0.45 Hz
 float FF_RR = 0.5f;            // deg of extra lean while moving (rolling resistance). 1.25 without the phone
-float trim = -1.25f;           // deg. With the phone: stands still at -1.25 with wheels locked (was +0.5 without it), Nov 14
+float trim = 5.6f;             // deg. Phone tilted up for person-follow: balances hands-off at a mean +5.66 (was -1.25 untilted, +0.5 no phone), Nov 14
 
 // ---------- step generation (DDS in a timer interrupt)
 volatile uint32_t incR = 0, incL = 0;      // phase increment per tick (0 = stopped)
@@ -399,10 +399,12 @@ void loop() {
     parkLockTime = 0; hold = false; digitalWrite(EN, HIGH); Serial.println("parked: motors released");
   }
 
+  if (running && rampMode != 2 && millis() - runStart > RUN_MS) {   // time's up: park on the kickstand instead of dropping it
+    Serial.println("run time limit reached: parking"); moving = 0; handleChar('P');
+  }
   if (running) {
     float err = pitch - trimEff - ffLean;
     if (fabsf(pitch - trim) > 30) { motorsOff("fell over (tilt > 30 deg)"); }
-    else if (millis() - runStart > RUN_MS) { motorsOff("run time limit reached"); }
     else {
       noInterrupts(); int32_t pR = posR, pL = posL; interrupts();
       xpos = 0.5f * (pR + pL) / STEPS_PER_M;

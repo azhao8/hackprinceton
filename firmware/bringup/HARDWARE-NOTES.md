@@ -97,6 +97,12 @@ How it got there: wrong trim (-1.25 → +0.5) made it park 30–40 cm short; smo
   3. A 3 m/s² stand-up cap made it rise too slowly, then hit the 1.0 m/s speed cap and fall.
   Fixes in balance.ino: gyro-only estimate during stand-up, hard acceleration, fast rotation, or when |acc| is not ~1 g; accelerometer at ±4 g; stand-up guard for 2.5 s (abort if > 0.7 m/s, tipping > 4° past the kickstand angle, or > 12° back). Simulation says a stand-up with the phone needs a fast 0.4 s ramp and peaks near 0.8 m/s, so it stays marginal; test it again only over something soft.
 
+## Phone tilted up for person-follow (Nov 14, ~1:45 PM): new balance point +5.6°
+- Tilting the phone up so the camera sees head and shoulders moved the balance point by about +7° (from −1.25°).
+- Locked-wheel stands were at +2.7..+5.0°. That's a wide range, probably because the tire's contact patch lets it stay put over a few degrees.
+- Hands-off balancing with trim +3.5° averaged **+5.66°** (range +5.2..+6.1) while holding position, which is the real balance point. Trim is now **+5.6°**, the default in balance.ino.
+- Lesson: after any change on the mast, balance hands-off and average the pitch while it holds still. That's quicker and more accurate than the locked-wheel test.
+
 ## Camera follow (Nov 14, morning)
 - Video: the robot's iPhone as a **Continuity Camera** ("John's iPhone Camera"): no hotspot or network needed, but the phone must be on John's Apple ID, nearby, with Wi-Fi and Bluetooth on. Programs need an Info.plist with `NSCameraUseContinuityCameraDeviceType` to see it (built into `follow/`). Frames are 1920x1080, upright; the rear camera faces the battery side (robot front).
 - `balance/follow/follow` (Swift, `./build.sh`): Apple Vision upper-body person detection, or `--yellow` for a bright yellow object (hue 45–70°, saturation ≥ 0.5; 0 false pixels in this room). Posts speed and turn to drive.py's `/auto`; drive.py passes them on only while **Follow is ON (F)**; held keys override; X stops. Flags: `--dry`, `--turn-only`, `--distance`, `--camera-back`, `--rotate`.
@@ -104,3 +110,9 @@ How it got there: wrong trim (-1.25 → +0.5) made it park 30–40 cm short; smo
 - **Yellow follow, turn-only: works.** The log shows the object pulled from offset -0.43 to ~0 in ~3 s. Yellow patch size: ~0.07 far, 0.12–0.20 at arm's length, up to 0.38 close.
 - **Yellow full follow works** (~10 m in one run): default `--distance 0.35` (stops closer; 0.28 was still too far), `--speed 0.4`; speed scales with how many times too far the target is.
 - **Target lock** (Nov 14): yellow pixels are split into blobs; it locks onto one and only accepts a blob near the last position (within 0.22 of the frame) with a similar size (0.45–2.2×). Other yellow things are ignored (seen ignoring up to 11 at once). If the target is hidden it holds still, and re-acquires the biggest blob after 0.7 s. Tiny blobs (size < 0.045) are never acquired, and a locked target smaller than 0.025 is dropped: before this it once chased a distant yellow speck at full speed.
+- **"No iPhone camera found" (Nov 14, noon):** a `follow` left running for hours had stopped getting frames, but it still seemed to hold the iPhone camera, so a new run couldn't find it. Stopping the old one fixed it. `follow` now keeps looking for the camera for up to 20 s. If that fails, open FaceTime, pick the iPhone under Video, quit FaceTime, and run it again.
+- **Black frames mid-demo (Nov 14, noon):** `follow` found the iPhone camera, but every frame was solid black, in FaceTime too.
+  - Ruled out: the phone's own Camera app worked, Continuity Camera was on, and restarting the phone didn't help.
+  - Cause: the Mac's peer-to-peer Wi-Fi link (`awdl0`), which carries the Continuity Camera video, was down. `ifconfig awdl0` showed no `UP` flag.
+  - Fix: `sudo ifconfig awdl0 up` brought the video back immediately.
+  - Meanwhile the robot just held position, because the 300 ms watchdog did its job.

@@ -13,7 +13,7 @@
 //   ./follow                  follow (still needs Follow ON on the drive page)
 // Options: --camera-back   the phone's camera faces the robot's back (Wago side): drive backward toward the person
 //          --rotate left|right   if people show up sideways in follow_view.jpg
-//          --distance 0.28  upper-body width as a fraction of the picture to hold (~1.5 m; bigger = stay closer)
+//          --distance 0.45  upper-body width as a fraction of the picture to hold (bigger = stay closer; 0.33 ~1.3 m)
 // The camera is only ~40 cm off the floor, so whole bodies don't fit until ~4 m away: it tracks the upper body
 // and judges distance by its WIDTH (shoulders fit in frame from ~0.7 m).
 import AVFoundation
@@ -25,7 +25,7 @@ let args = CommandLine.arguments
 func opt(_ name: String) -> String? { if let i = args.firstIndex(of: name), i + 1 < args.count { return args[i + 1] }; return nil }
 let dry = args.contains("--dry")
 let cameraBack = args.contains("--camera-back")
-let targetW = Double(opt("--distance") ?? "0.28") ?? 0.28
+let targetW = Double(opt("--distance") ?? "0.45") ?? 0.45   // person: upper-body width to hold (bigger = closer). 0.33 felt too far
 let turnOnly = args.contains("--turn-only")
 let yellowMode = args.contains("--yellow")
 let targetY = Double(opt("--distance") ?? "0.35") ?? 0.35   // yellow patch size to hold: bigger = stops closer (0.12 and 0.28 stayed too far)
@@ -40,7 +40,7 @@ let KW = 2.0        // rad/s per unit of horizontal offset (person at the pictur
 let KV = 1.2        // m/s per unit of width error
 let VMAX = 0.25, VBACK = -0.10, WMAX = 1.0
 let DEAD_X = 0.06, DEAD_W = 0.03
-let TOO_CLOSE_W = 0.55   // ~0.7 m: back off
+let TOO_CLOSE_W = max(0.55, targetW + 0.15)   // much closer than wanted: back off
 let LOST_AFTER = 0.5  // s without a person -> stop
 
 final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -51,11 +51,14 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     var lastSeen = Date.distantPast, lastSnap = Date.distantPast, lastPrint = Date.distantPast
     var frames = 0, printedSize = false
 
-    func start() {
+    func start(tries: Int = 0) {
         let found = AVCaptureDevice.DiscoverySession(deviceTypes: [.continuityCamera, .external],
                                                      mediaType: .video, position: .unspecified).devices
         guard let dev = found.first(where: { $0.deviceType == .continuityCamera }) ?? found.first else {
-            print("No iPhone camera found. Lock the iPhone, keep it near the Mac, Wi-Fi and Bluetooth on."); exit(1)
+            // the iPhone often shows up a few seconds after the first look, so keep looking (without blocking the run loop)
+            if tries == 0 { print("Looking for the iPhone camera (up to 20 s). Lock the iPhone, keep it near the Mac, Wi-Fi and Bluetooth on...") }
+            if tries < 40 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.start(tries: tries + 1) }; return }
+            print("No iPhone camera found. Open FaceTime, pick the iPhone under Video, quit FaceTime, then run this again."); exit(1)
         }
         print("Target: \(yellowMode ? "something bright YELLOW" : "a person (upper body)")")
         print("Camera: \(dev.localizedName)\(dry ? "   (DRY RUN: detection only, no driving)" : (turnOnly ? "   (TURN ONLY: no forward/back)" : ""))")
@@ -85,14 +88,15 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         let req = VNDetectHumanRectanglesRequest()
         req.upperBodyOnly = true
         try? VNImageRequestHandler(cvPixelBuffer: pb, orientation: rotation).perform([req])
-        let people = (req.results ?? []).filter { $0.confidence > 0.5 }
-        let best = people.max { $0.boundingBox.width < $1.boundingBox.width }     // the closest person
+        let people = (req.results ?? []).filter { $0.confidence > 0.35 }         // 0.5 dropped people near the edge or mid-turn
+        let best = choosePerson(people)                                           // locked person, or the closest one
 
         var cx = 0.5, h = 0.0
         if let b = best {
             lastSeen = Date()
             cx = Double(b.boundingBox.midX); h = Double(b.boundingBox.width)
             let ex = cx - 0.5, eh = targetW - h
+            lastEx = ex
             var wCmd = abs(ex) < DEAD_X ? 0 : -KW * ex                   // person on the right -> turn right (w < 0)
             var vCmd = abs(eh) < DEAD_W ? 0 : KV * eh                    // narrow in the picture -> drive closer
             if h > TOO_CLOSE_W { vCmd = VBACK }                           // much too close -> back off
@@ -100,18 +104,49 @@ final class Follower: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             vCmd = max(VBACK, min(VMAX, vCmd)); wCmd = max(-WMAX, min(WMAX, wCmd))
             if cameraBack { vCmd = -vCmd }
             v = 0.6 * v + 0.4 * vCmd; w = 0.6 * w + 0.4 * wCmd
-        } else if Date().timeIntervalSince(lastSeen) > LOST_AFTER {
-            v = 0; w = 0                                                   // lost: stop and hold
+        } else {
+            let lost = Date().timeIntervalSince(lastSeen)
+            v = 0.6 * v; if lost > LOST_AFTER { v = 0 }                    // can't see them: no driving forward or back
+            if lost > SEARCH_FOR { w = 0 }                                 // gave up: hold still
+            else if abs(lastEx) > 0.15 { w = 0.6 * w + 0.4 * (lastEx > 0 ? -SEARCH_W : SEARCH_W) }   // left near the edge: keep turning that way
+            else if lost > LOST_AFTER { w = 0 }
         }
         if !dry { post(v: v, w: w, found: best != nil, cx: cx, h: h) }
 
         let now = Date()
         if now.timeIntervalSince(lastPrint) > 0.5 {
             lastPrint = now
-            if let _ = best { print(String(format: "person: offset %+.2f  size %.2f  ->  speed %+.2f m/s  turn %+.2f rad/s", cx - 0.5, h, v, w)) }
-            else { print("no person in view") }
+            if let _ = best { print(String(format: "person: offset %+.2f  size %.2f  [%@]  ->  speed %+.2f m/s  turn %+.2f rad/s", cx - 0.5, h, lockNote, v, w)) }
+            else { print(people.isEmpty ? "no person in view" : "no target (\(people.count) other person(s) in view, ignored)") }
         }
         if now.timeIntervalSince(lastSnap) > 1.0 { lastSnap = now; snapshot(pb, people: people, best: best) }
+    }
+
+    // ---- person lock: stay on one person in a crowd (nearest to where they were, similar size); re-pick the
+    //      closest (widest) person only after the locked one has been out of sight for P_HOLD seconds
+    var pTrack = CGRect.zero, pLast = Date.distantPast, lockNote = "", lastEx = 0.0
+    let SEARCH_FOR = 2.0, SEARCH_W = 0.5     // lost near the picture edge: keep turning that way at 0.5 rad/s for up to 2 s
+    let P_GATE = 0.25, P_HOLD = 1.0
+    func choosePerson(_ people: [VNHumanObservation]) -> VNHumanObservation? {
+        let now = Date()
+        if now.timeIntervalSince(pLast) < P_HOLD && pTrack.width > 0 {
+            var best: (Double, VNHumanObservation)? = nil
+            for p in people {
+                let b = p.boundingBox
+                let d = hypot(Double(b.midX - pTrack.midX), Double(b.midY - pTrack.midY))
+                let r = Double(b.width / pTrack.width)
+                if d > P_GATE || r < 0.6 || r > 1.6 { continue }
+                let score = d + 0.3 * abs(log(r))
+                if best == nil || score < best!.0 { best = (score, p) }
+            }
+            guard let p = best?.1 else { return nil }                       // locked person hidden: hold, don't switch
+            pTrack = p.boundingBox; pLast = now
+            lockNote = people.count > 1 ? "locked, ignoring \(people.count - 1) other" : "locked"
+            return p
+        }
+        guard let p = people.max(by: { $0.boundingBox.width < $1.boundingBox.width }) else { return nil }
+        pTrack = p.boundingBox; pLast = now; lockNote = "acquired"
+        return p
     }
 
     // ---- yellow target: blobs + track lock, so another yellow thing entering the frame can't steal the target
