@@ -43,6 +43,8 @@ from app.brain.prompt import (
     SYSTEM_PROMPT,
     create_message,
     effort_for,
+    ACK_GUARDIAN,
+    ACK_SPOKEN,
     get_client,
 )
 from app.brain.tools import ToolBox
@@ -122,6 +124,7 @@ class Agent:
         max_rounds: int = 16,
         max_tokens: int = 8000,
         max_events: int = 300,
+        ack: bool = True,
     ):
         """
         tools: the ToolBox (the agent binds itself as its host).
@@ -133,6 +136,7 @@ class Agent:
         """
         self.tools = tools
         self.events_cb = events_cb
+        self.ack = ack   # say "On it!" / reply "Got it" at once for task-like requests
         self.model = model
         self.fallbacks = fallbacks
         self.history_exchanges = history_exchanges
@@ -292,6 +296,11 @@ class Agent:
         content: list[dict[str, Any]] = [{"type": "text", "text": _label(u)} for u in utterances]
         content.append({"type": "text", "text": f"World memory: {self.tools.memory_summary()}"})
         ex: list[dict[str, Any]] = [{"role": "user", "content": content}]
+        if self.ack and effort == EFFORT_TASK:   # acknowledge at once; the plan follows when Claude answers
+            if last.source == "guardian":
+                self.emit("reply", ACK_GUARDIAN, to="guardian", data={"ack": True})
+            else:
+                self.emit("say", ACK_SPOKEN, to="senior", data={"ack": True})
         status, summary, keep = "done", "", True
         try:
             for _ in range(self.max_rounds):

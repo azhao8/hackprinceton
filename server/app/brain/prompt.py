@@ -5,7 +5,7 @@ tool list form a fixed prefix that prompt caching can reuse on every call. Per-c
 (who is speaking, the world-memory summary) goes into the user message instead.
 
 Model settings (from the claude-api skill, Nov 2026):
-- `claude-opus-5-5`; thinking is always adaptive on it (we omit `thinking`).
+- `claude-sonnet-5-5` by default (env `MIGUEL_MODEL`; T-19); adaptive thinking (we omit `thinking`; disabling it is a 400 on Sonnet 5.5 and Opus 5.5).
 - `output_config.effort`: "low" for quick conversational turns, "medium" for tasks.
 - Server-side refusal fallbacks are on by default: beta `server-side-fallback-2026-07-01` with
   `fallbacks="default"` on `client.beta.messages.create`. Switch them off with the env var
@@ -20,12 +20,16 @@ from typing import Any
 
 import anthropic
 
-MODEL = "claude-opus-5-5"
+MODEL = os.environ.get("MIGUEL_MODEL", "claude-sonnet-5-5").strip() or "claude-sonnet-5-5"   # T-19: same speed as Opus in our timing, half the cost
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FALLBACKS_DEFAULT = os.environ.get("MIGUEL_LLM_FALLBACKS", "1").strip().lower() not in ("0", "false", "no", "off")
 
-EFFORT_CHAT = "low"      # small talk, one-line answers
-EFFORT_TASK = "medium"   # anything that may need several tool calls
+EFFORT_CHAT = os.environ.get("MIGUEL_EFFORT_CHAT", "low")      # small talk, one-line answers
+EFFORT_TASK = os.environ.get("MIGUEL_EFFORT_TASK", "medium")   # anything that may need several tool calls
+
+# Said at once when a task-like request arrives, before Claude answers (a voice robot must not sit silent).
+ACK_SPOKEN = "On it!"
+ACK_GUARDIAN = "Got it, I'm on it."
 
 # Words that suggest a request needs action (several tool calls), so it gets more thinking.
 _TASK_WORDS = re.compile(

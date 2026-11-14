@@ -4,6 +4,7 @@ import asyncio
 import copy
 from types import SimpleNamespace
 
+from app.brain.prompt import MODEL
 from app.arbiter import Arbiter
 from app.brain.agent import Agent, stop_requested
 from app.brain.tools import ToolBox
@@ -77,7 +78,7 @@ def make(script, factories=None, **toolbox_kw):
     runner = SkillRunner(SkillContext(arb))
     tools = ToolBox(runner, factories or {}, **toolbox_kw)
     client = FakeClient(script)
-    agent = Agent(tools, client=client)
+    agent = Agent(tools, client=client, ack=False)
     return agent, client, arb, runner
 
 
@@ -147,7 +148,7 @@ def test_multi_step_request_emits_plan_steps_say_and_reply_in_order():
     assert sum(e.kind == "reply" for e in agent.events) == 1   # final text not re-sent: already replied
 
     first = client.calls[0]
-    assert first["model"] == "claude-opus-5-5"
+    assert first["model"] == MODEL
     assert first["output_config"] == {"effort": "medium"}
     assert first["fallbacks"] == "default" and first["betas"] == ["server-side-fallback-2026-07-01"]
     assert all(t["strict"] and t["input_schema"]["additionalProperties"] is False for t in first["tools"])
@@ -329,7 +330,7 @@ def test_small_talk_is_one_call_and_spoken_and_fallbacks_can_be_switched_off():
     tools = ToolBox()
     client = FakeClient([msg(thinking(), text("I'm great, thank you!"), stop="end_turn"),
                          msg(text("Sure."), stop="end_turn")])
-    agent = Agent(tools, client=client, fallbacks=False)
+    agent = Agent(tools, client=client, fallbacks=False, ack=False)
     seen = []
     agent.events_cb = seen.append
 
@@ -363,3 +364,36 @@ def test_memory_tools_and_summary():
     assert hit.text == "pills: kitchen counter"
     assert miss.ok and "Known keys: pills" in miss.text
     assert "pills: kitchen counter" in tools.memory_summary()
+
+
+def test_task_requests_are_acknowledged_at_once_before_claude_answers():
+    from app.brain.prompt import ACK_GUARDIAN, ACK_SPOKEN
+
+    class SlowClient:
+        """Never answers: the acknowledgment must not wait for Claude."""
+        class beta:
+            class messages:
+                @staticmethod
+                async def create(**kw):
+                    await asyncio.sleep(3600)
+
+    async def scenario():
+        agent = Agent(ToolBox(), client=SlowClient())
+        await agent.handle(Utterance("guardian", "Please bring Mom her pills"))
+        await agent.handle(Utterance("operator", "hi"))           # chat: no acknowledgment
+        await asyncio.sleep(0.05)
+        evs = [(e.kind, e.text, e.to) for e in agent.events if e.data.get("ack")]
+        agent.stop("test over")
+        return evs
+
+    assert asyncio.run(scenario()) == [("reply", ACK_GUARDIAN, "guardian")]
+
+    async def senior():
+        agent = Agent(ToolBox(), client=SlowClient())
+        await agent.handle(Utterance("senior", "Miguel, can you get me some water?"))
+        await asyncio.sleep(0.05)
+        evs = [(e.kind, e.text, e.to) for e in agent.events if e.data.get("ack")]
+        agent.stop("test over")
+        return evs
+
+    assert asyncio.run(senior()) == [("say", ACK_SPOKEN, "senior")]

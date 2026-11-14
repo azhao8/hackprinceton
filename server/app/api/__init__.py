@@ -128,7 +128,8 @@ PHONE_LINES = [
     "Where did you go?", "Hello? I lost you.", "Where did my yellow thing go?",
 ]
 # Made ahead in the background at startup, so these play without waiting for Cartesia.
-STOCK_LINES = CONTROL_PRESETS + PHONE_LINES
+AGENT_LINES = ["On it!", "Okay, stopping."]   # the agent's instant acknowledgment and stop line (app/brain)
+STOCK_LINES = CONTROL_PRESETS + PHONE_LINES + AGENT_LINES
 
 
 @dataclass

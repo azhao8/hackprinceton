@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.brain.prompt import MODEL
 from app.brain.vision_check import VisionCheckError, describe_scene, matches_description
 
 
@@ -36,7 +37,7 @@ def test_match_parses_yes_and_sends_the_image():
     assert "man in a red shirt" in prompt["text"]
     assert kw["output_config"]["effort"] == "low"
     assert kw["output_config"]["format"]["type"] == "json_schema"
-    assert kw["model"] == "claude-opus-5-5"
+    assert kw["model"] == MODEL
 
 
 def test_match_parses_no():
