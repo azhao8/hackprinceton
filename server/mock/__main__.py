@@ -43,8 +43,11 @@ class MockServer(asyncio.DatagramProtocol):
                 print(f"[mock] {line}", flush=True)
 
 
-async def serve(host: str, port: int, verbose: bool = True, ready: asyncio.Event | None = None) -> None:
+async def serve(host: str, port: int, verbose: bool = True, ready: asyncio.Event | None = None,
+                armed: bool = False) -> None:
     robot = MockRobot()
+    if armed:
+        robot.handle_char("g", time.monotonic())   # as if someone pressed g while holding it
     loop = asyncio.get_running_loop()
     transport, server = await loop.create_datagram_endpoint(lambda: MockServer(robot, verbose), local_addr=(host, port))
     if verbose:
@@ -71,9 +74,10 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=4210)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--armed", action="store_true", help="start already balancing, as if someone pressed g")
     args = ap.parse_args()
     try:
-        asyncio.run(serve(args.host, args.port, verbose=not args.quiet))
+        asyncio.run(serve(args.host, args.port, verbose=not args.quiet, armed=args.armed))
     except KeyboardInterrupt:
         pass
 
