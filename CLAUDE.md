@@ -13,10 +13,9 @@ work, read firmware/README.md: its state, frame, the link it speaks, safety rule
 | Path      | What                                                           | Stack             |
 |-----------|----------------------------------------------------------------|-------------------|
 | contract/ | Messages between laptop and robot, with samples                | JSON              |
-| firmware/ | Balancing, motors, IMU, robot link, arm                        | ESP32, PlatformIO |
+| firmware/ | Balancing, motors, IMU, robot link, arm; bench tools           | ESP32, arduino-cli |
 | server/   | Robot link, mock robot, vision, speech, LLM brain, skills, API | Python            |
 | web/      | Dashboard, phone face and camera page                          | Next.js           |
-| sim/      | Balance simulation                                             | Python            |
 | docs/     | Plans, decisions, open questions, milestones, reference        | Markdown          |
 
 ## Commands (fill in as code lands)
