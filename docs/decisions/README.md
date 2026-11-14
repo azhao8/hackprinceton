@@ -36,3 +36,4 @@ New file: next number, `NNNN-short-name.md`, with Date, Status (accepted / super
 | [0028](0028-stack.md) | Stack: Python server, Next.js web app | Repo setup (S2, N1) |
 | [0029](0029-folder-layout.md) | Folder layout | Repo setup (S1, N2) |
 | [0030](0030-claude-md.md) | Rules live in CLAUDE.md | Repo setup (C3) |
+| [0031](0031-docs-is-source.md) | docs/ is the source of truth | After the first commit |
