@@ -1,7 +1,7 @@
 import type { Sample } from "@/lib/use-robot";
 
 export interface Series {
-  key: "pitchDeg" | "vl" | "vr";
+  key: "pitch" | "vl" | "vr";
   label: string;
   color: string;
 }

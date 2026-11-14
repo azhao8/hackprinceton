@@ -15,7 +15,9 @@ The phone page keeps the endpoints it already used with phone_server.py, so it w
 
 WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the robot's `tel` about
 10 times a second; it accepts `{"t":"estop","on":bool}`, `{"t":"joystick","v":..,"w":..}`,
-`{"t":"follow","on":bool}`, `{"t":"say","text":..}` and `{"t":"settings", mode?, speed?, distance?, voice?}`.
+`{"t":"follow","on":bool}`, `{"t":"say","text":..}`, `{"t":"settings", mode?, speed?, distance?, voice?}`,
+`{"t":"key","letter":"x|P|5|L|R|F|B"}` and `{"t":"arm"}` (start balancing; this laptop only, decision 0054).
+It also sends `{"t":"status", follow, link, estop, settings, lag_ms, skill}` about twice a second.
 
 Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
@@ -44,6 +46,7 @@ PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phon
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js"}
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
+KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
 
 # Follow settings, set on the control page and read by the phone page (decision 0053).
 # Ranges and defaults are John's from the phone page (MODES in index.html).
@@ -113,6 +116,37 @@ class ApiState:
             if self.skills is not None:
                 self.skills.cancel()
         log.info("E-STOP %s", "on" if on else "released")
+
+    def stop_motion(self) -> None:
+        """Before park, motors off or start: nothing may keep driving."""
+        self.set_follow(False)
+        if self.skills is not None:
+            self.skills.cancel()
+        self.arbiter.clear(Source.JOYSTICK)
+
+    def key(self, letter: str) -> bool:
+        """A one-letter robot command from the control page: x, P, 5, L, R, F, B (contract/README.md)."""
+        if letter not in KEY_LETTERS:
+            return False
+        if letter in "xP5":
+            self.stop_motion()
+        try:
+            self.link.send_letter(letter)
+        except Exception as e:  # a link without letters (tests) or a closed link
+            log.warning("sending %r failed: %s", letter, e)
+            return False
+        log.info("key %s", letter)
+        return True
+
+    def arm(self) -> bool:
+        """Start balancing (g): only from this laptop, on a person's press (decision 0054)."""
+        arm = getattr(self.link, "arm", None)
+        if arm is None:
+            return False
+        self.stop_motion()
+        arm()
+        log.info("start balancing (g) sent from the control page")
+        return True
 
     def phone_follow_active(self) -> bool:
         return self.follow and not (self.skills is not None and self.skills.running)
@@ -233,10 +267,20 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         await sock.prepare(request)
         log.info("websocket client %s connected", request.remote)
 
+        local = _local(request)
+
         async def push() -> None:
+            n = 0
             while not sock.closed:
                 if state.link.telemetry:
                     await sock.send_json(state.link.telemetry)
+                if n % 5 == 0:                       # about twice a second
+                    h = state.link.health()
+                    st = state.status()
+                    st.pop("tel")
+                    await sock.send_json({"t": "status", **st, "lag_ms": h.lag_ms,
+                                          "skill": state.skills.running if state.skills is not None else None})
+                n += 1
                 await asyncio.sleep(0.1)
 
         pusher = asyncio.create_task(push())
@@ -261,6 +305,13 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                     state.add_say(str(m.get("text", "")))
                 elif t == "settings":
                     state.set_settings(m)
+                elif t == "key":
+                    state.key(str(m.get("letter", "")))
+                elif t == "arm":
+                    if local:
+                        state.arm()
+                    else:
+                        log.warning("start balancing refused: not from this laptop (%s)", request.remote)
         finally:
             pusher.cancel()
         return sock

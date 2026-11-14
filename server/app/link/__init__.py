@@ -105,6 +105,11 @@ class UdpLink:
             raise ValueError(f"the server may not send {letter!r} (allowed: {''.join(sorted(ALLOWED_LETTERS))})")
         self._send(letter.encode())
 
+    def arm(self) -> None:
+        """Send g (start balancing). Only for a person's explicit press on this laptop's control page,
+        while someone holds the robot upright (decision 0054). Never called by skills or the agent."""
+        self._send(b"g")
+
     def _on_packet(self, data: bytes) -> None:
         try:
             msg = json.loads(data)

@@ -2,16 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FakeRobot } from "./fake-robot";
-import { parseServerMessage, type ClientMessage, type Telemetry } from "./messages";
+import { parseServerMessage, type ClientMessage, type Status, type Telemetry } from "./messages";
 
-/** Where telemetry comes from. "sample" is the in-browser fake robot. */
+/** "sample" is the in-browser fake robot (NEXT_PUBLIC_SERVER_WS_URL=sample). */
 export type Connection = "sample" | "connecting" | "open" | "closed";
 
 export interface Sample {
   /** performance.now() when the message arrived, ms. */
   at: number;
-  /** Pitch in degrees, for display. */
-  pitchDeg: number;
+  /** Pitch, degrees. */
+  pitch: number;
   vl: number;
   vr: number;
 }
@@ -19,6 +19,7 @@ export interface Sample {
 export interface RobotView {
   connection: Connection;
   telemetry: Telemetry | null;
+  status: Status | null;
   history: Sample[];
   /** performance.now() when this view was taken, ms. */
   now: number;
@@ -26,21 +27,19 @@ export interface RobotView {
   lastAt: number | null;
 }
 
-/** Set NEXT_PUBLIC_SERVER_WS_URL to use the server; unset uses sample telemetry. */
-export const SERVER_WS_URL = process.env.NEXT_PUBLIC_SERVER_WS_URL || null;
+/** The server's WebSocket. Default: the server on this laptop. "sample" uses the in-browser fake robot. */
+export const SERVER_WS_URL = process.env.NEXT_PUBLIC_SERVER_WS_URL || "ws://localhost:8080/ws";
+const SAMPLE = SERVER_WS_URL === "sample";
 
 export const HISTORY_S = 10;
-
-export function radToDeg(rad: number): number {
-  return (rad * 180) / Math.PI;
-}
 const RENDER_MS = 50; // UI refresh, independent of how fast telemetry arrives
-const FAKE_HZ = 50; // the robot sends telemetry about 50 times a second
+const FAKE_HZ = 20;
 const RECONNECT_MS = 1000;
 
 const EMPTY_VIEW: RobotView = {
-  connection: SERVER_WS_URL ? "connecting" : "sample",
+  connection: SAMPLE ? "sample" : "connecting",
   telemetry: null,
+  status: null,
   history: [],
   now: 0,
   lastAt: null,
@@ -48,13 +47,13 @@ const EMPTY_VIEW: RobotView = {
 
 export function useRobot() {
   const [view, setView] = useState<RobotView>(EMPTY_VIEW);
-  const [estop, setEstop] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
   const sendRef = useRef<(msg: ClientMessage) => boolean>(() => false);
 
   useEffect(() => {
     let connection: Connection = EMPTY_VIEW.connection;
     let latest: Telemetry | null = null;
+    let status: Status | null = null;
     let lastAt: number | null = null;
     const history: Sample[] = [];
 
@@ -62,7 +61,7 @@ export function useRobot() {
       const at = performance.now();
       latest = tel;
       lastAt = at;
-      history.push({ at, pitchDeg: radToDeg(tel.pitch), vl: tel.vl, vr: tel.vr });
+      history.push({ at, pitch: tel.pitch, vl: tel.vl, vr: tel.vr });
       const cutoff = at - HISTORY_S * 1000;
       let drop = 0;
       while (drop < history.length && history[drop].at < cutoff) drop++;
@@ -71,7 +70,7 @@ export function useRobot() {
 
     let stopSource: () => void;
 
-    if (!SERVER_WS_URL) {
+    if (SAMPLE) {
       const robot = new FakeRobot(Date.now());
       sendRef.current = (msg) => {
         robot.receive(msg);
@@ -80,14 +79,13 @@ export function useRobot() {
       const tick = setInterval(() => record(robot.step(1 / FAKE_HZ)), 1000 / FAKE_HZ);
       stopSource = () => clearInterval(tick);
     } else {
-      const url = SERVER_WS_URL;
       let ws: WebSocket | null = null;
       let retry: ReturnType<typeof setTimeout> | undefined;
       let stopped = false;
 
       const connect = () => {
         connection = "connecting";
-        const socket = new WebSocket(url);
+        const socket = new WebSocket(SERVER_WS_URL);
         ws = socket;
         socket.onopen = () => {
           connection = "open";
@@ -96,9 +94,11 @@ export function useRobot() {
           if (typeof event.data !== "string") return;
           const msg = parseServerMessage(event.data);
           if (msg?.t === "tel") record(msg);
+          else if (msg?.t === "status") status = msg;
         };
         socket.onclose = () => {
           connection = "closed";
+          status = null;
           if (!stopped) retry = setTimeout(connect, RECONNECT_MS);
         };
       };
@@ -117,7 +117,7 @@ export function useRobot() {
     }
 
     const render = setInterval(() => {
-      setView({ connection, telemetry: latest, history: history.slice(), now: performance.now(), lastAt });
+      setView({ connection, telemetry: latest, status, history: history.slice(), now: performance.now(), lastAt });
     }, RENDER_MS);
 
     return () => {
@@ -127,13 +127,12 @@ export function useRobot() {
     };
   }, []);
 
-  /** Turn the e-stop on or off. Returns false if the message couldn't be sent. */
-  const setEStop = useCallback((on: boolean) => {
-    const sent = sendRef.current({ t: "estop", on });
+  /** Send one message to the server. Returns false (and shows a warning) if there's no connection. */
+  const send = useCallback((msg: ClientMessage) => {
+    const sent = sendRef.current(msg);
     setSendFailed(!sent);
-    if (sent) setEstop(on);
     return sent;
   }, []);
 
-  return { ...view, estop, sendFailed, setEStop };
+  return { ...view, sendFailed, send };
 }

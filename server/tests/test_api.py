@@ -208,3 +208,41 @@ def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
         assert s.settings["speed"] == 0.2
         await ws.close()
     with_client(t)
+
+
+class LetterLink(FakeLink):
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+
+    def send_letter(self, letter):
+        self.sent.append(letter)
+
+    def arm(self):
+        self.sent.append("g")
+
+
+def test_websocket_keys_arm_and_status():
+    async def go():
+        link = LetterLink()
+        state = ApiState(Arbiter(), link)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        ws = await client.ws_connect("/ws")
+        got_status = False
+        for _ in range(10):
+            m = await asyncio.wait_for(ws.receive_json(), 1)
+            if m["t"] == "status":
+                got_status = True
+                assert m["link"] is True and "settings" in m and "tel" not in m
+                break
+        assert got_status
+        state.follow = True
+        await ws.send_json({"t": "key", "letter": "P"})
+        await ws.send_json({"t": "key", "letter": "g"})          # refused: g only through arm
+        await ws.send_json({"t": "arm"})                           # the test client is local
+        await asyncio.sleep(0.1)
+        assert link.sent == ["P", "g"] and state.follow is False
+        await ws.close()
+        await client.close()
+    asyncio.run(go())

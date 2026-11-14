@@ -1,4 +1,16 @@
-# web/
+# Web: the control page
+
+The laptop's control page (decision 0053): drive with WASD, start, park, STOP, follow and its settings, say lines, live telemetry. It talks only to the server's WebSocket.
+
+```bash
+cd server && uv run python -m app --robot real --someone-at-robot --no-vision --no-window   # or --robot mock
+cd web && npm install && npm run dev    # then open http://localhost:3000
+```
+
+- Keys (anywhere on the page): **W A S D** / arrows held to drive, **Space** stop and hold, **Q/E** 90° turns, **P** park, **X** motors off, **G** start balancing (asks first), **F** follow on/off.
+- `NEXT_PUBLIC_SERVER_WS_URL` changes the server (default `ws://localhost:8080/ws`); `sample` runs an in-browser fake robot.
+- The server's own simple page at `http://localhost:8080/control` still works as a backup.
+
 
 The Next.js app for Miguel.exe: the dashboard now, the phone page (camera and face) later. Lane: misc (Nick).
 
