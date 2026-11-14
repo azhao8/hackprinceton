@@ -263,12 +263,13 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <button style='font:inherit;padding:10px 14px'>Say</button></form><div id=p></div>
 <p style='color:#999'>The robot only moves after someone at the robot starts it balancing (g). Follow uses the phone page's tracking.</p>
 <script>
+const $=id=>document.getElementById(id);   // not bare ids: `stop` is the browser's window.stop()
 const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
-stop.onclick=()=>act('stop');release.onclick=()=>act('release');fon.onclick=()=>act('follow-on');foff.onclick=()=>act('follow-off');
+$('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon').onclick=()=>act('follow-on');$('foff').onclick=()=>act('follow-off');
 function say(text){fetch('/say',{method:'POST',body:JSON.stringify({text})})}
-f.onsubmit=e=>{e.preventDefault();if(t.value.trim())say(t.value.trim());t.value=''};
-for(const x of ["Hi, I'm Miguel!",'Time for your medicine.','Here is your water.','Follow me!','Hello, judges!']){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);p.appendChild(b)}
-async function show(){try{const d=await (await fetch('/tel')).json(),t=d.tel||{};
+$('f').onsubmit=e=>{e.preventDefault();const t=$('t');if(t.value.trim())say(t.value.trim());t.value=''};
+for(const x of ["Hi, I'm Miguel!",'Time for your medicine.','Here is your water.','Follow me!','Hello, judges!']){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);$('p').appendChild(b)}
+async function show(){const st=$('st');try{const d=await (await fetch('/tel')).json(),t=d.tel||{};
 st.textContent='Link: '+(d.link?'ok':'DOWN')+'   E-stop: '+(d.estop?'ON':'off')+'   Follow: '+(d.follow?'ON':'off')+'\\nRobot: '+(t.state||'?')+'  pitch '+(t.pitch??'?')+'  x '+(t.x??'?')+'  yaw '+(t.yaw??'?')}catch(e){st.textContent='server not answering'}}
 setInterval(show,500);show();
 </script>"""

@@ -182,3 +182,11 @@ def test_stop_and_phone_follow_end_a_running_server_skill():
         await client.close()
 
     asyncio.run(go())
+
+
+def test_control_page_does_not_use_bare_element_ids():
+    # Bare ids like `stop.onclick` silently bind to window.stop() in browsers, so STOP did nothing (#35).
+    from app.api import CONTROL_PAGE
+    for name in ("stop", "release", "fon", "foff"):
+        assert f"\n{name}.onclick" not in CONTROL_PAGE and f";{name}.onclick" not in CONTROL_PAGE
+    assert "$('stop').onclick" in CONTROL_PAGE
