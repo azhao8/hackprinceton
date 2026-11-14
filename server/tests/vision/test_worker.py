@@ -62,13 +62,15 @@ class FakeLock:
         self.turn_rates: list[float] = []
         self.engages = 0
         self.disengages = 0
+        self.nears: list = []
 
     @property
     def state(self) -> TargetState:
         return self._state
 
-    def engage(self, detections, image) -> TargetState:
+    def engage(self, detections, image, near=None) -> TargetState:
         self.engages += 1
+        self.nears.append(near)
         if self.engage_ok and detections.people:
             self._state = TargetState(TargetStatus.LOCKED, person=detections.people[0])
         else:
@@ -163,6 +165,25 @@ def test_engage_stays_pending_until_someone_is_found():
         det.people = [PERSON]
         assert wait_for(lambda: worker.latest().target.status is TargetStatus.LOCKED)
         assert not worker.latest().engage_pending
+    finally:
+        worker.stop()
+
+
+def test_engage_near_a_box_reaches_the_lock():
+    lock = FakeLock()
+    worker = VisionWorker(FakeSource(), FakeDetector(), lock, warmup=False)
+    worker.start()
+    try:
+        assert wait_for(lambda: worker.latest() is not None)
+        box = Box(0.1, 0.2, 0.3, 0.9)
+        seq = worker.request_engage(near=box)
+        assert wait_for(lambda: (p := worker.latest()).engaged_seq == seq and p.target.status is TargetStatus.LOCKED)
+        assert lock.nears == [box]
+        worker.disengage()
+        assert wait_for(lambda: worker.latest().target.status is TargetStatus.IDLE)
+        seq = worker.request_engage()  # no box: the lock's default pick
+        assert wait_for(lambda: worker.latest().engaged_seq == seq)
+        assert lock.nears == [box, None]
     finally:
         worker.stop()
 

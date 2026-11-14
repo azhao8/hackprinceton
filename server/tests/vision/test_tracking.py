@@ -128,9 +128,9 @@ def step(lock: TargetLock, index: int, walkers: list[Walker], visible: list[Walk
     return lock.update(dets, image, turn_rate=turn_rate)
 
 
-def engage(lock: TargetLock, index: int, walkers: list[Walker]):
+def engage(lock: TargetLock, index: int, walkers: list[Walker], near: Box | None = None):
     dets, image = render(index, walkers)
-    return lock.engage(dets, image)
+    return lock.engage(dets, image, near=near)
 
 
 def parts_of(walker: Walker, others: list[Walker] = (), index: int = 0) -> BodyParts | None:
@@ -188,6 +188,36 @@ def test_engage_with_nobody_suitable_stays_idle_and_can_be_retried():
     near = [Walker(0.4, BLUE)]
     assert step(lock, 4, near).status is IDLE
     assert engage(lock, 5, near).status is LOCKED
+
+
+def test_engage_near_a_box_picks_that_person_over_a_wider_one_nearer_the_center():
+    target = Walker(0.72, RED, w=0.2, top=0.1)  # off center and farther away
+    bystander = Walker(0.5, BLUE, w=0.3, top=-0.05)  # dead center and closer: the default pick
+    assert engage(TargetLock(), 0, [target, bystander]).person.box == bystander.box
+
+    lock = TargetLock()
+    moved = Box(target.box.x1 + 0.02, target.box.y1, target.box.x2 + 0.02, target.box.y2)  # a frame ago
+    st = engage(lock, 1, [target, bystander], near=moved)
+    assert st.status is LOCKED and st.person.box == target.box
+    assert step(lock, 2, [target, bystander]).person.box == target.box  # and keeps them
+
+
+def test_engage_near_works_off_center_and_for_narrow_boxes():
+    edge = Walker(0.88, GREEN, w=0.1, top=0.2)  # outside engage_max_offset and below engage_min_w
+    assert engage(TargetLock(), 0, [edge]).status is IDLE
+    st = engage(TargetLock(), 0, [edge], near=edge.box)
+    assert st.status is LOCKED and st.person.box == edge.box
+
+
+def test_engage_near_with_no_overlapping_person_stays_idle():
+    lock = TargetLock()
+    walkers = [Walker(0.3, RED), Walker(0.5, BLUE, w=0.3)]
+    assert engage(lock, 0, walkers, near=Box(0.75, 0.1, 0.95, 1.0)).status is IDLE
+    # A box that barely overlaps someone (IoU below engage_min_iou) doesn't count either.
+    sliver = Box(0.62, 0.0, 0.8, 1.0)
+    assert 0 < sliver.iou(walkers[1].box) < LockConfig().engage_min_iou
+    assert engage(lock, 1, walkers, near=sliver).status is IDLE
+    assert lock.appearance_model is None
 
 
 def test_disengage_goes_idle_and_stops_tracking():

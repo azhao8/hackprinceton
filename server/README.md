@@ -82,6 +82,34 @@ Without a key, the phone page speaks with Safari's built-in voice. With one, it 
 
 The server makes each line with Cartesia (`GET /tts?text=...`, an mp3), caches it, and makes the stock lines at startup. If Cartesia or the network fails, the phone falls back to Safari's voice for that line.
 
+## Voice agent (#54)
+
+Miguel's agent (Claude) takes a request in plain words, picks skills (follow, find a person, go to a place, bring something) and reports back. It needs the API (not `--no-api`). Keys in `server/.env` (type them yourself; names are in `.env.example`):
+
+| Key | Turns on |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | The agent. Without it the log says `agent: off (ANTHROPIC_API_KEY not set)` and the server runs as before |
+| `CARTESIA_API_KEY` | Miguel's voice, and hearing: the robot's phone streams its mic to `/mic` for speech-to-text |
+| `GUARDIAN_TOKEN` | Lets the family app reach the agent from another machine (`Authorization: Bearer <token>`). Without it only this laptop can. Make it long and random, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(24))"` |
+
+```bash
+uv run --env-file .env python -m app --source 0     # the log says "agent: on" and "hearing: on"
+```
+
+Talk to it:
+
+- **Control page** (`http://localhost:8080/control`): "Ask Miguel" sends a message as the operator and shows what the agent does (plan, steps, what it says, replies with a photo link).
+- **curl**, as the guardian (from this laptop no token is needed; from elsewhere add `-H "Authorization: Bearer $GUARDIAN_TOKEN"`):
+
+  ```bash
+  curl -s localhost:8080/agent/message -d '{"text": "Please bring Mom her afternoon pills"}'
+  curl -s 'localhost:8080/agent/events?after=0'
+  ```
+
+- **By voice** at the robot: start with the wake word, "Miguel, ...". `--wake-word Hey` changes it; `--wake-word ''` makes it hear everything.
+
+What it says out loud goes to the phone's say queue (the same as `/say`), and opens a few seconds where the senior can answer without the wake word. Replies to the guardian can carry a camera photo (`/agent/photo/<id>.jpg`) and, with the voice on, an `audio_url`. **bring** waits at the station until someone presses **Tray loaded** on the control page. The endpoints and messages are in `contract/web/README.md` ("Agent"). The e-stop, the joystick and STOP still win over anything the agent starts.
+
 ## Layout and owners
 
 Stay in your own folders (CLAUDE.md). A PR that touches someone else's says so and gets their OK.

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from app.arbiter import Arbiter, Source
 
 if TYPE_CHECKING:
+    from app.vision.types import Box
     from app.vision.worker import Perception
 
 
@@ -37,7 +38,7 @@ class Vision(Protocol):
 
     def latest(self) -> Perception | None: ...
 
-    def request_engage(self) -> int: ...
+    def request_engage(self, near: Box | None = None) -> int: ...
 
     def disengage(self) -> None: ...
 

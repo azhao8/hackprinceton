@@ -8,6 +8,7 @@ wait on the detector: they get whatever was published last.
     worker = VisionWorker(open_source("0"), YoloPoseDetector(), TargetLock())
     worker.start()                  # returns at once; the thread opens the camera and warms up
     worker.request_engage()         # lock onto the close person nearest the center
+    worker.request_engage(near=box) # ...or onto the person at this box (normalized coords)
     p = worker.latest()             # Perception | None, from any thread
     worker.set_turn_rate(w)         # the robot's commanded turn, for the lock's ego-motion
     worker.stop()
@@ -15,7 +16,11 @@ wait on the detector: they get whatever was published last.
 Engage and disengage are requests: the worker applies them on its next frame, because
 TargetLock isn't thread-safe and only this thread touches it. An engage request stays
 pending until the lock finds someone (`Perception.engage_pending`); a later disengage
-replaces it.
+replaces it. An engage with `near=box` is applied to each new frame's detections with that same
+box until it locks, so a caller tracking a moving person re-requests with a fresh box.
+
+Printed ArUco markers (places, see app/vision/markers.py) are detected on every frame too
+and published as `Perception.markers`. Pass `marker_detector=None` to turn that off.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from typing import Protocol
 import numpy as np
 
 from app.vision.frames import FrameSource
-from app.vision.types import Detections, Frame, Person, TargetState, TargetStatus
+from app.vision.types import Box, Detections, Frame, Marker, Person, TargetState, TargetStatus
 
 log = logging.getLogger(__name__)
 
@@ -43,13 +48,22 @@ class Detector(Protocol):
     def detect(self, frame: Frame) -> Detections: ...
 
 
+class MarkerSource(Protocol):
+    """What the worker needs from app.vision.markers.MarkerDetector."""
+
+    def detect(self, image_bgr: np.ndarray) -> list[Marker]: ...
+
+
+_DEFAULT = object()  # marker_detector default: a MarkerDetector() with default settings
+
+
 class Lock(Protocol):
     """What the worker needs from app.vision.tracking.TargetLock."""
 
     @property
     def state(self) -> TargetState: ...
 
-    def engage(self, detections: Detections, image: np.ndarray) -> TargetState: ...
+    def engage(self, detections: Detections, image: np.ndarray, near: Box | None = None) -> TargetState: ...
 
     def disengage(self) -> None: ...
 
@@ -68,6 +82,7 @@ class Perception:
     latency_s: float  # capture to publish (meaningful for live sources)
     fps: float  # frames processed per second (smoothed)
     published_at: float  # worker clock (time.monotonic) when this was published
+    markers: tuple[Marker, ...] = ()  # printed ArUco markers in this frame (sorted by id)
 
     @property
     def frame_t(self) -> float:
@@ -98,19 +113,26 @@ class VisionWorker:
         warmup: bool = True,
         read_timeout_s: float = 0.5,
         clock: Callable[[], float] = time.monotonic,
+        marker_detector: MarkerSource | None | object = _DEFAULT,
     ) -> None:
+        if marker_detector is _DEFAULT:
+            from app.vision.markers import MarkerDetector
+
+            marker_detector = MarkerDetector()
         self._source = source
         self._detector = detector
         self._lock = lock
         self._warmup = warmup
         self._read_timeout_s = read_timeout_s
         self._clock = clock
+        self._markers: MarkerSource | None = marker_detector  # type: ignore[assignment]
+        self._marker_failed = False
 
         self._mutex = threading.Lock()
         self._latest: Perception | None = None
         self._turn_rate = 0.0
         self._seq = 0  # bumped by every engage/disengage request
-        self._pending: tuple[str, int] | None = None  # ("engage" | "disengage", seq)
+        self._pending: tuple[str, int, Box | None] | None = None  # ("engage" | "disengage", seq, near box)
         self._engaged_seq = 0
         self._status = "not started"
         self._error: BaseException | None = None
@@ -145,18 +167,22 @@ class VisionWorker:
         with self._mutex:
             return self._latest
 
-    def request_engage(self) -> int:
-        """Ask the lock to engage on the next frames (until it finds someone). Returns its sequence number."""
+    def request_engage(self, near: Box | None = None) -> int:
+        """Ask the lock to engage on the next frames (until it finds someone). Returns its sequence number.
+
+        `near`: lock onto the person whose box overlaps this one (normalized coords) instead
+        of the closest person near the center (see TargetLock.engage).
+        """
         with self._mutex:
             self._seq += 1
-            self._pending = ("engage", self._seq)
+            self._pending = ("engage", self._seq, near)
             return self._seq
 
     def disengage(self) -> None:
         """Forget the target (applied on the next frame). Cancels a pending engage."""
         with self._mutex:
             self._seq += 1
-            self._pending = ("disengage", self._seq)
+            self._pending = ("disengage", self._seq, None)
 
     def set_turn_rate(self, w: float) -> None:
         """The robot's current commanded turn (rad/s, + left), so the lock can allow for ego-motion."""
@@ -215,6 +241,7 @@ class VisionWorker:
                 continue
             detections = self._detector.detect(frame)
             target, engage_pending = self._apply_lock(detections, frame.image)
+            markers = self._detect_markers(frame.image)
 
             now = self._clock()
             if last_done is not None and now > last_done:
@@ -230,6 +257,7 @@ class VisionWorker:
                 latency_s=max(0.0, now - frame.t),
                 fps=fps,
                 published_at=now,
+                markers=markers,
             )
             with self._mutex:
                 self._latest = perception
@@ -247,7 +275,7 @@ class VisionWorker:
             pending = None
 
         if pending is not None and pending[0] == "engage":
-            state = lock.engage(detections, image)
+            state = lock.engage(detections, image, near=pending[2])
             if state.status is not TargetStatus.IDLE:
                 self._engaged_seq = pending[1]
                 self._clear_pending(pending)
@@ -258,7 +286,19 @@ class VisionWorker:
             return lock.state, False
         return lock.update(detections, image, turn_rate=turn_rate), False
 
-    def _clear_pending(self, handled: tuple[str, int]) -> None:
+    def _detect_markers(self, image: np.ndarray) -> tuple[Marker, ...]:
+        """Markers in this frame; a failing marker detector never stops person tracking."""
+        if self._markers is None:
+            return ()
+        try:
+            return tuple(self._markers.detect(image))
+        except Exception:
+            if not self._marker_failed:  # log once, not every frame
+                log.exception("vision worker: marker detection failed")
+            self._marker_failed = True
+            return ()
+
+    def _clear_pending(self, handled: tuple[str, int, Box | None]) -> None:
         """Drop the request we just handled, unless a newer one arrived meanwhile."""
         with self._mutex:
             if self._pending == handled:

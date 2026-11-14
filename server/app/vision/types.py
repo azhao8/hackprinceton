@@ -140,3 +140,14 @@ class DriveCommand:
     w: float  # rad/s, left positive
     reason: str = ""  # short human-readable note, e.g. "following", "lost: searching left"
     distance_m: float | None = None  # estimated distance to the target, if known
+
+
+@dataclass(frozen=True)
+class Marker:
+    """A printed ArUco marker seen in one frame (places like the medication station are marked with one)."""
+
+    id: int  # ArUco id (see app/vision/places.py for which place each id is)
+    cx: float  # normalized center x (0..1, y down like everything else)
+    cy: float
+    size: float  # normalized side length (mean of width and height in frame fractions)
+    distance_m: float | None = None  # estimated from the known printed size, if available

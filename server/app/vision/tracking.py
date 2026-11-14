@@ -10,7 +10,9 @@ and the robot's commanded turn rate, and answers "where is my person now?" as a 
 How it works
 - Engage: among people near the horizontal center (`LockConfig.engage_max_offset`) and wide
   enough to be close (`engage_min_w`), lock onto the WIDEST one (the closest). Nobody
-  suitable -> stay IDLE.
+  suitable -> stay IDLE. Or, given a box (`engage(..., near=box)`, e.g. the person a search
+  skill picked), lock onto the person whose box overlaps it most (IoU at least
+  `engage_min_iou`), wherever they are in the frame; no such person -> stay IDLE.
 - Keep: an alpha-beta (constant-velocity) filter on the box predicts where the target
   should be. The robot's own turning shifts everything in the image, so the prediction is
   moved by the image motion the commanded turn rate causes (pinhole model, the same one as
@@ -111,6 +113,9 @@ class LockConfig:
     # Minimum box width to count as "close enough to follow". A person ~0.5 m wide (with
     # arms) at 3 m spans about 0.13 of a 67 deg frame. (guess)
     engage_min_w: float = 0.12
+    # engage(near=box): the person's box must overlap `near` at least this much (IoU). The
+    # caller's box is usually from a frame or two earlier, so this allows some motion. (guess)
+    engage_min_iou: float = 0.3
 
     # --- Motion model: alpha-beta filter on the box (cx, cy, w, h) ---
     alpha: float = 0.6  # how far the estimate moves toward each measurement (guess)
@@ -272,16 +277,31 @@ class TargetLock:
         """A copy of the stored torso and legs histograms (for tests and debug views)."""
         return None if self._model is None else self._model.copy()
 
-    def engage(self, detections: Detections, image: np.ndarray) -> TargetState:
-        """Lock onto the widest (closest) person near the center; stay IDLE if there is none."""
+    def engage(self, detections: Detections, image: np.ndarray, near: Box | None = None) -> TargetState:
+        """Lock onto someone; stay IDLE if there is nobody suitable.
+
+        Without `near`: the widest (closest) person near the center. With `near` (a box in
+        the same normalized coordinates, e.g. the person a skill picked in a recent frame):
+        the person whose box overlaps it most, if that IoU is at least `engage_min_iou`; the
+        center and width rules don't apply. If that person is too occluded to learn their
+        look, stay IDLE rather than take someone else.
+        """
         self._reset()
         cfg = self.config
-        near = [
-            p
-            for p in self._usable(detections)
-            if abs(p.box.cx - 0.5) <= cfg.engage_max_offset and p.box.w >= cfg.engage_min_w
-        ]
-        for person in sorted(near, key=lambda p: -p.box.w):
+        if near is not None:
+            scored = [(p.box.iou(near), p) for p in self._usable(detections)]
+            scored = [(iou, p) for iou, p in scored if iou >= cfg.engage_min_iou]
+            order = [max(scored, key=lambda s: s[0])[1]] if scored else []
+        else:
+            order = sorted(
+                (
+                    p
+                    for p in self._usable(detections)
+                    if abs(p.box.cx - 0.5) <= cfg.engage_max_offset and p.box.w >= cfg.engage_min_w
+                ),
+                key=lambda p: -p.box.w,
+            )
+        for person in order:
             parts = body_part_histograms(image, person, detections.people, cfg)
             if parts is None:  # too occluded to learn what they look like; try the next one
                 continue

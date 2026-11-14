@@ -36,6 +36,7 @@ Everything else is on the laptop's control page.</div>
   </div>
 </div>
 <script src="track.js"></script>
+<script src="mic.js"></script>
 <script>
 // Miguel's eye and voice. Runs on the robot's iPhone: picks the 0.5x back camera, finds the target here on the phone
 // (a person with MediaPipe, or something yellow), sends only speed and turn to the Mac, and talks through the phone's
@@ -108,6 +109,7 @@ const Voice = (() => {
   }
   const busy = () => pending > 0 || (ok && speechSynthesis.speaking);
   return {
+    busy,                                                                                // read-only: is Miguel talking? (mic.js)
     server(on) { cloud = on; },                                                          // from /tel: is /tts set up?
     unlock(text) {                                                                       // inside a tap (iOS needs one)
       ready = true;
@@ -225,7 +227,10 @@ async function start() {
   }
 }
 
-$('go').onclick = () => { Voice.unlock("Hi, I'm Miguel."); start(); $('go').style.display = 'none'; };   // the tap also unlocks the speaker
+$('go').onclick = () => {                                                // the tap also unlocks the speaker and the mic
+  Voice.unlock("Hi, I'm Miguel."); const cam = start(); $('go').style.display = 'none';
+  if (window.Mic) Mic.start(cam);                                         // asks for the mic after the camera (mic.js)
+};
 
 // Follow settings come from the laptop's control page, through the server's /tel (decision 0053)
 let appliedSettings = '';

@@ -28,16 +28,42 @@ from the control page (`POST /control/settings`, localhost only) or the WebSocke
 reads them from `/tel` (decision 0053: the phone is the robot's eye, every control is on the laptop).
 
 The API never sends `g`: starting to balance stays a person's keypress at the robot.
+
+NEW (#54, the voice agent and the guardian channel; additive, for Alex's review as W-6 owner).
+Messages in contract/web/README.md ("Agent"). "Agent auth" below = this laptop directly, or
+`Authorization: Bearer <GUARDIAN_TOKEN>`; with no GUARDIAN_TOKEN set, only this laptop. A request
+that came through a proxy or tunnel (it carries X-Forwarded-For, Forwarded, CF-Connecting-IP or
+X-Real-IP) never counts as this laptop, so a tunnel (open question T-17) needs the token.
+- NEW `POST /agent/message {text, from?: "guardian"|"operator"}` (agent auth): an Utterance for the
+  agent's inbox. `operator` (the control page) only from this laptop; anything else is `guardian`.
+  200 `{ok, last}`; 400 empty or over 1000 characters; 401 bad token; 403 no token set and not
+  local; 503 the agent is off (no ANTHROPIC_API_KEY).
+- NEW `GET /agent/events?after=N` (agent auth): `{events: [AgentEvent...], last}`, the events with
+  id > N (the last 200 are kept; after defaults to 0, all of them).
+- NEW `GET /agent/photo/{id}.jpg` (agent auth): a camera snapshot the agent attached to a `reply`
+  (its `data.photo_url`; the last 20 are kept, 404 after that). `reply` events also carry
+  `data.audio_url` = `/tts?text=...` when the voice is set up.
+- NEW `POST /control/loaded` (this laptop; the control page's Tray loaded button): the bring
+  skill, waiting at the station, goes on. `{ok: false}` if nothing was waiting.
+- NEW on `/ws`: the server also sends every agent event as `{"t":"agent", id, kind, text, to, data}`
+  (from the moment the socket connects); it accepts `{"t":"agent_message","text":..}` (operator from
+  this laptop, guardian with the token on the handshake, ignored otherwise).
+- NEW `/mic` (WebSocket, the robot's phone over HTTPS): the hearing module's handler
+  (app.speech.mic.make_mic_handler); mounted when the agent is on (without CARTESIA_API_KEY it
+  drops the audio). NEW `/mic.js`: the phone page's mic streamer (firmware/balance/phone/mic.js).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import WSMsgType, web
 
@@ -47,7 +73,8 @@ from app.link import RobotLink
 log = logging.getLogger("app.api")
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
-PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js"}
+PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js",
+               "/mic.js": "mic.js"}   # NEW (#54): the phone's mic streamer (hearing)
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
@@ -84,6 +111,12 @@ def clean_settings(old: dict, new: dict) -> dict:
 
 TTS_MAX_CHARS = 300   # the same cap as a /say line
 
+# NEW (#54) the agent's channel.
+AGENT_TEXT_MAX = 1000     # one message to the agent
+AGENT_EVENTS_KEPT = 200   # for GET /agent/events
+AGENT_PHOTOS_KEPT = 20    # snapshots for reply events, in memory
+FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real-IP")
+
 # The control page's preset buttons.
 CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
 # What the phone page says by itself: the Start tap and the Voice.event lines in talk(), copied from
@@ -107,6 +140,82 @@ class ApiState:
     follow: bool = False
     say: list[dict] = field(default_factory=list)
     settings: dict = field(default_factory=default_settings)
+    # NEW (#54) the voice agent. All None/empty when the agent is off: the routes then say so.
+    agent_inbox: asyncio.Queue | None = None   # the agent's inbox of app.brain.types.Utterance
+    guardian_token: str | None = None          # GUARDIAN_TOKEN: remote callers of /agent/* need it
+    mic: Any = None                            # aiohttp handler for the phone's /mic WebSocket
+    agent_events: list[dict] = field(default_factory=list)
+    agent_photos: OrderedDict = field(default_factory=OrderedDict)   # photo id -> JPEG bytes
+    _tray: asyncio.Event | None = field(default=None, repr=False)    # set by "Tray loaded"
+
+    # --- NEW (#54) the agent's events and photos ---
+
+    @property
+    def last_agent_event(self) -> int:
+        return self.agent_events[-1]["id"] if self.agent_events else 0
+
+    def agent_events_after(self, after: int) -> list[dict]:
+        return [e for e in self.agent_events if e["id"] > after]
+
+    def save_photo(self, jpeg: bytes) -> str:
+        """The ToolBox's save_photo: keep a camera snapshot (the last 20), return its URL for the app."""
+        pid = (next(reversed(self.agent_photos)) + 1) if self.agent_photos else 1
+        self.agent_photos[pid] = bytes(jpeg)
+        while len(self.agent_photos) > AGENT_PHOTOS_KEPT:
+            self.agent_photos.popitem(last=False)
+        return f"/agent/photo/{pid}.jpg"
+
+    def publish_agent_event(self, ev: Any) -> dict:
+        """Keep an AgentEvent (or its dict) for /agent/events and /ws. A `reply` keeps the agent's
+        `data.photo_url` (from save_photo) and gets `data.audio_url` when the voice is set up.
+        Returns the dict as clients see it."""
+        d = ev.to_dict() if hasattr(ev, "to_dict") else dict(ev)
+        d["data"] = dict(d.get("data") or {})
+        if not isinstance(d.get("id"), int) or d["id"] <= self.last_agent_event:
+            d["id"] = self.last_agent_event + 1   # ids must keep increasing: clients poll "after id"
+        if d.get("kind") == "reply":
+            text = str(d.get("text") or "").strip()
+            if self.tts is not None and 0 < len(text) <= TTS_MAX_CHARS:
+                d["data"]["audio_url"] = "/tts?text=" + quote(text, safe="")
+        self.agent_events.append(d)
+        del self.agent_events[:-AGENT_EVENTS_KEPT]
+        return d
+
+    # --- NEW (#54) the bring skill's "tray loaded" confirmation ---
+
+    async def wait_loaded(self) -> bool:
+        """The bring skill's wait_loaded: returns True once someone presses Tray loaded (after this call)."""
+        self._tray = asyncio.Event()
+        await self._tray.wait()
+        return True
+
+    def mark_loaded(self) -> bool:
+        """Tray loaded (control page). False if nothing was waiting for it."""
+        if self._tray is None or self._tray.is_set():
+            return False
+        self._tray.set()
+        log.info("tray loaded")
+        return True
+
+    def agent_message(self, text: str, source: str, channel: str) -> tuple[int, str]:
+        """Put one message in the agent's inbox. Returns (HTTP status, error or "")."""
+        text = text.strip()
+        if not text or len(text) > AGENT_TEXT_MAX:
+            return 400, f"text must be 1 to {AGENT_TEXT_MAX} characters"
+        if self.agent_inbox is None:
+            return 503, "agent off (ANTHROPIC_API_KEY not set)"
+        from app.brain.types import Utterance
+
+        hub = getattr(self.mic, "hub", None)
+        try:
+            if source == "operator" and hub is not None:
+                hub.push_to_talk(text, source="operator")   # push-to-talk: also opens the mic's answer window
+            else:
+                self.agent_inbox.put_nowait(Utterance(source, text, meta={"channel": channel}))  # type: ignore[arg-type]
+        except asyncio.QueueFull:
+            return 503, "agent busy"
+        log.info("agent: %s says %r (%s)", source, text[:80], channel)
+        return 200, ""
 
     def set_settings(self, new: dict) -> None:
         self.settings = clean_settings(self.settings, new)
@@ -189,6 +298,29 @@ def _local(request: web.Request) -> bool:
     return request.remote in LOCAL
 
 
+# NEW (#54) auth for the agent's routes.
+def _direct_local(request: web.Request) -> bool:
+    """This laptop, and not a proxy or tunnel on this laptop passing someone else's request along."""
+    return _local(request) and not any(h in request.headers for h in FORWARDED_HEADERS)
+
+
+def _guardian(request: web.Request, state: ApiState) -> bool:
+    if not state.guardian_token:
+        return False
+    scheme, _, given = request.headers.get("Authorization", "").partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(given.strip().encode(), state.guardian_token.encode())
+
+
+def _agent_auth(request: web.Request, state: ApiState) -> None:
+    """This laptop directly, or the guardian's token. Raises 403 (no token set) or 401 (wrong token)."""
+    if _direct_local(request):
+        return
+    if not state.guardian_token:
+        raise web.HTTPForbidden(text="GUARDIAN_TOKEN is not set: the agent only takes messages from this laptop")
+    if not _guardian(request, state):
+        raise web.HTTPUnauthorized(headers={"WWW-Authenticate": "Bearer"})
+
+
 async def _json(request: web.Request) -> dict:
     try:
         body = await request.json()
@@ -204,6 +336,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.get("/")
     @routes.get("/index.html")
     @routes.get("/track.js")
+    @routes.get("/mic.js")
     async def phone_page(request: web.Request) -> web.StreamResponse:
         if not request.secure and request.path == "/":
             return web.Response(text=ca_page or "Miguel.exe server. Open the HTTPS address on the phone.",
@@ -286,6 +419,8 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             state.estop(True)
         elif what == "release":
             state.estop(False)
+        elif what == "loaded":   # NEW (#54): the bring skill waits for this at the station
+            return web.json_response({"ok": state.mark_loaded()})
         else:
             raise web.HTTPNotFound()
         return web.json_response(state.status())
@@ -297,6 +432,36 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         state.set_settings(await _json(request))
         return web.json_response(state.status())
 
+    # --- NEW (#54) the voice agent and the guardian channel ---
+
+    @routes.post("/agent/message")
+    async def agent_message(request: web.Request) -> web.Response:
+        _agent_auth(request, state)
+        body = await _json(request)
+        source = "operator" if body.get("from") == "operator" and _direct_local(request) else "guardian"
+        status, error = state.agent_message(str(body.get("text", "")), source, "api")
+        if status != 200:
+            return web.json_response({"ok": False, "error": error}, status=status)
+        return web.json_response({"ok": True, "last": state.last_agent_event})
+
+    @routes.get("/agent/events")
+    async def agent_events(request: web.Request) -> web.Response:
+        _agent_auth(request, state)
+        try:
+            after = int(request.query.get("after", "0"))
+        except ValueError:
+            after = 0
+        return web.json_response({"events": state.agent_events_after(after), "last": state.last_agent_event},
+                                 headers={"Cache-Control": "no-store"})
+
+    @routes.get(r"/agent/photo/{id:\d+}.jpg")
+    async def agent_photo(request: web.Request) -> web.Response:
+        _agent_auth(request, state)
+        jpeg = state.agent_photos.get(int(request.match_info["id"]))
+        if jpeg is None:
+            raise web.HTTPNotFound()
+        return web.Response(body=jpeg, content_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
     @routes.get("/ws")
     async def ws(request: web.Request) -> web.WebSocketResponse:
         sock = web.WebSocketResponse(heartbeat=5)
@@ -304,10 +469,17 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         log.info("websocket client %s connected", request.remote)
 
         local = _local(request)
+        # NEW (#54): who an agent_message on this socket comes from (None: ignored).
+        agent_from = "operator" if _direct_local(request) else "guardian" if _guardian(request, state) else None
+        seen = state.last_agent_event   # agent events from now on; GET /agent/events has the history
 
         async def push() -> None:
+            nonlocal seen
             n = 0
             while not sock.closed:
+                for ev in state.agent_events_after(seen):   # NEW (#54)
+                    await sock.send_json({"t": "agent", **ev})
+                    seen = ev["id"]
                 if state.link.telemetry:
                     await sock.send_json(state.link.telemetry)
                 if n % 5 == 0:                       # about twice a second
@@ -348,11 +520,20 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                         state.arm()
                     else:
                         log.warning("start balancing refused: not from this laptop (%s)", request.remote)
+                elif t == "agent_message":   # NEW (#54)
+                    if agent_from is None:
+                        log.warning("agent_message refused: not this laptop and no guardian token (%s)", request.remote)
+                    else:
+                        status, error = state.agent_message(str(m.get("text", "")), agent_from, "ws")
+                        if status != 200:
+                            log.info("agent_message not taken: %s", error)
         finally:
             pusher.cancel()
         return sock
 
     app.add_routes(routes)
+    if state.mic is not None:   # NEW (#54): the phone's microphone stream, for the agent's hearing
+        app.router.add_get("/mic", state.mic)
     return app
 
 
@@ -392,7 +573,8 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <p><button id=stop style='font:inherit;padding:14px 22px;background:#b91c1c;color:#fff;border:0;border-radius:8px'>STOP</button>
 <button id=release style='font:inherit;padding:14px 18px'>Release</button>
 <button id=fon style='font:inherit;padding:14px 18px'>Follow ON</button>
-<button id=foff style='font:inherit;padding:14px 18px'>Follow off</button></p>
+<button id=foff style='font:inherit;padding:14px 18px'>Follow off</button>
+<button id=loaded style='font:inherit;padding:14px 18px'>Tray loaded</button></p>
 <pre id=st style='background:#222;padding:10px;white-space:pre-wrap'>...</pre>
 <h3>Follow settings</h3>
 <p><select id=mode style='font:inherit;padding:8px'><option value=person>Follow a person</option><option value=yellow>Follow yellow</option></select>
@@ -401,11 +583,15 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <p><label>Stop distance <input id=dist type=range step=0.05> <b id=distL></b> (bigger = stops closer)</label></p>
 <h3>Make Miguel talk</h3><form id=f><input id=t autofocus style='font:inherit;width:70%;padding:10px' placeholder='Type a line, press Enter'>
 <button style='font:inherit;padding:10px 14px'>Say</button></form><div id=p></div>
+<h3>Ask Miguel (voice agent)</h3><form id=af><input id=at style='font:inherit;width:70%;padding:10px' placeholder='Ask Miguel to do something'>
+<button style='font:inherit;padding:10px 14px'>Send</button></form>
+<div id=al style='background:#222;padding:10px;white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px'></div>
 <p style='color:#999'>The robot only moves after someone at the robot starts it balancing (g). Follow uses the phone page's tracking.</p>
 <script>
 const $=id=>document.getElementById(id);   // not bare ids: `stop` is the browser's window.stop()
 const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
 $('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon').onclick=()=>act('follow-on');$('foff').onclick=()=>act('follow-off');
+$('loaded').onclick=()=>fetch('/control/loaded',{method:'POST'});
 function say(text){fetch('/say',{method:'POST',body:JSON.stringify({text})})}
 $('f').onsubmit=e=>{e.preventDefault();const t=$('t');if(t.value.trim())say(t.value.trim());t.value=''};
 for(const x of __PRESETS__){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);$('p').appendChild(b)}
@@ -421,4 +607,12 @@ $('distL').textContent=(+s.distance).toFixed(2);$('spdL').textContent=(+s.speed)
 async function show(){const st=$('st');try{const d=await (await fetch('/tel')).json(),t=d.tel||{};
 showSettings(d.settings);st.textContent='Link: '+(d.link?'ok':'DOWN')+'   E-stop: '+(d.estop?'ON':'off')+'   Follow: '+(d.follow?'ON':'off')+'\\nRobot: '+(t.state||'?')+'  pitch '+(t.pitch??'?')+'  x '+(t.x??'?')+'  yaw '+(t.yaw??'?')}catch(e){st.textContent='server not answering'}}
 setInterval(show,500);show();
+// NEW (#54) the voice agent: send as the operator, show its events.
+let aLast=0;
+function aLine(text,href){const d=document.createElement('div');d.textContent=text;if(href){const a=document.createElement('a');a.href=href;a.target='_blank';a.textContent=' [photo]';a.style.color='#7cf';d.appendChild(a)}$('al').appendChild(d);$('al').scrollTop=1e9}
+$('af').onsubmit=async e=>{e.preventDefault();const t=$('at'),text=t.value.trim();t.value='';if(!text)return;
+const r=await fetch('/agent/message',{method:'POST',body:JSON.stringify({text,from:'operator'})});if(!r.ok)aLine('(not sent: '+((await r.json()).error||r.status)+')')};
+async function aPoll(){try{const d=await (await fetch('/agent/events?after='+aLast)).json();
+for(const e of d.events){aLine(e.kind+(e.to?' to '+e.to:'')+': '+e.text,e.data&&e.data.photo_url);aLast=e.id}}catch(e){}}
+setInterval(aPoll,1000);aPoll();
 </script>""".replace("__PRESETS__", json.dumps(CONTROL_PRESETS))
