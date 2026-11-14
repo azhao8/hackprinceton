@@ -39,6 +39,7 @@ Everything not yet decided, with a recommendation and where it came from. Add a 
 | T-10 | How video gets from the phone to the server: JPEG frames over a WebSocket, or WebRTC? | JPEG over a WebSocket first (simple; about 50-150 ms on a hotspot at 640x480, 15 fps), each frame with a timestamp so the lag is measured. Move to WebRTC only if the measured lag hurts follow-me. John's follow worked with ~0.2 s of video lag | Alex's chat, Sat |
 | T-11 | Where person detection runs: on the server (OpenCV + MediaPipe in Python, as in #3), on the phone (MediaPipe in Safari, sending only boxes), or Apple Vision (John's `follow.swift`, Mac only) | On the server, as #3 plans: one Python pipeline that the agent also uses. Reuse John's follow gains, dead zones and upper-body tracking | Alex's chat, Sat; #3 |
 | T-12 | Who creates `server/` (project file, module folders) before three lanes write into it? #3 is waiting on it | Alex creates the skeleton now: the project, a folder per lane, and stubs for the arbiter and the skill API. Grant's #3 then builds on it | #3; Alex's chat, Sat |
+| T-13 | Where speech goes in and out: the phone's mic and speaker through the phone page, or the laptop's? | The phone: it's Miguel's head, so its voice should come from there and it hears the person it faces. The phone page streams mic audio to the server and plays the replies. Push-to-talk on the dashboard as a backup for a loud venue | Alex's chat, Sat |
 
 ## Team
 
