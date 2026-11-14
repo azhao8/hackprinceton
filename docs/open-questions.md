@@ -12,6 +12,7 @@ Everything not yet decided, with a recommendation and where it came from. Add a 
 | P-5 | How does it bring medication or water without a gripper? | A tray on the robot. Meds and water wait at one "station" (a pill organizer and a bottle in a holder) that someone stocks in advance; the robot goes to the station, the item is put in its tray (by a dispenser, or by a person for the demo), and it brings it to the senior. The arm waves and points. Grabbing needs an end attachment (C-11) | Alex, Sat 2:30 pm (0052) |
 | P-6 | How does it know where the station is and where the senior is? | Named places taught once by driving there (wheel distance is good for a few meters); find the senior with person detection, the same as follow-me. Floor markers (AprilTags) only if drift is a problem | Alex, Sat 2:30 pm (0052) |
 | P-7 | What does the family app do besides sending a task? | First version: send a task, see its progress, get told when it's done (with a photo from the robot's camera). Next: a message the robot says out loud to the parent | Alex, Sat 2:30 pm (0052) |
+| P-8 | What does Miguel's face look like? | Mochi (Grant's pick): a cream face with big dark sparkly eyes set low and wide, a tiny mouth and blush cheeks; moods by eye shape (happy arcs, big round surprised, worried tilt, sleepy lines, red e-stop). Cute and cartoony on purpose: realistic eyes with whites and small pupils read as uncanny. Easy to change (one drawing module) | Grant's chat, Sat; #52 |
 
 ## Robot contract and safety
 
