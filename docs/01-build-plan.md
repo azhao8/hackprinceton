@@ -29,7 +29,7 @@ John wrote and tuned the firmware overnight, so he knows it best; who owns it fr
 
 ### Motion + integration: seams first
 
-- **Server skeleton first:** the Python project, a folder per lane, and stubs for the arbiter and the skill API, so Grant and Nick don't each create `server/` (T-12).
+- **Server skeleton first:** the Python project, a folder per lane, and stubs for the arbiter and the skill API, so Grant and Nick don't each create `server/` (decision 0050).
 - **Contract v1 with John,** starting from what the firmware already speaks (C-1). `contract/` gets schemas and samples captured from the real robot.
 - **Mock robot** that behaves like the firmware, including needing a start command before it balances.
 - **Server link and arbiter:** the UDP link and the arbiter (e-stop > manual joystick > skills), so the same server drives either the mock or the real robot.
