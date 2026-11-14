@@ -143,3 +143,42 @@ def test_phone_follow_drives_the_mock_end_to_end():
         mock.cancel()
 
     asyncio.run(go())
+
+
+def test_stop_and_phone_follow_end_a_running_server_skill():
+    from app.skills import SkillContext, SkillResult, SkillRunner
+
+    class Forever:
+        name = "follow"
+
+        async def run(self, ctx):
+            while True:
+                ctx.drive(0.2, 0.0)
+                await asyncio.sleep(0.01)
+
+    async def go():
+        arb = Arbiter()
+        runner = SkillRunner(SkillContext(arb))
+        state = ApiState(arb, FakeLink(), skills=runner)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+
+        runner.start(Forever())
+        await asyncio.sleep(0.03)
+        await client.post("/auto", json={"v": 0.5, "w": 0.0})          # phone follow is off: ignored
+        assert arb.decide().v == 0.2
+        await client.post("/control/follow-on")                         # turning phone follow on ends the server skill
+        await asyncio.sleep(0.03)
+        assert runner.running is None
+        await client.post("/auto", json={"v": 0.4, "w": 0.0})
+        assert arb.decide().v == 0.4
+
+        await client.post("/control/follow-off")
+        runner.start(Forever())
+        await asyncio.sleep(0.03)
+        await client.post("/control/stop")                              # STOP ends the server skill too
+        await asyncio.sleep(0.03)
+        assert runner.running is None and arb.decide().source == "estop"
+        await client.close()
+
+    asyncio.run(go())

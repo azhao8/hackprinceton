@@ -1,11 +1,31 @@
-"""Start the server: `uv run python -m app --robot mock` (or `--robot real`).
+"""Start the server: `uv run python -m app` (mock robot over UDP, live camera 0, debug window).
 
-One asyncio loop (open question T-7). About 20 times a second the arbiter's decision goes to the
-robot link. The API, vision and agent plug into the same loop as their lanes land.
+One asyncio loop (open question T-7) runs at 20 Hz: the arbiter picks one command (e-stop >
+joystick > skill) and the robot link sends it. Vision runs on its own thread (VisionWorker) and
+hands over its newest result; the follow skill reads it and requests motion from the arbiter. The
+OpenCV debug window is drawn from this loop (non-blocking), because macOS only allows windows on
+the main thread.
 
-`--test-drive` runs a short pattern through the arbiter (forward, turn left, stop) so you can
-see the server move the robot without a dashboard. The server never starts balancing by itself:
-someone presses g (on the real robot, while holding it upright), then the commands take effect.
+    uv run python -m mock                                                 # terminal 1: the mock robot
+    uv run python -m app --source 0                                       # terminal 2: server + camera
+    uv run python -m app --robot mock --test-drive --no-vision            # forward 2 s, turn left 2 s
+    uv run python -m app --robot real --link serial --someone-at-robot --turn-only   # robot over USB
+
+Links (contract v1, contract/README.md): `--link udp` (default) talks to the mock robot on
+127.0.0.1 or the real robot at $ROBOT_HOST / balancebot.local (`--host` overrides);
+`--link serial` talks to the robot over its USB cable (`--port`, default: auto-detect).
+
+Keys (debug window): F follow on/off, Space e-stop on/off, G arm (USB only; hold it upright),
+P park, X motors off, Q or Esc quit.
+
+Safety (CLAUDE.md, firmware/README.md "Safety rules"):
+- `--robot real` refuses to start (exit 2) without `--someone-at-robot`, before opening anything.
+- The server never starts balancing by itself. Over UDP it never sends `g` (the person at the
+  robot arms it); over USB only a person's G keypress does, after cancelling any running skill.
+- The e-stop sends `5` once when it goes on (cancels a 90-degree turn or 50 cm move), then
+  v = w = 0 every tick; the robot keeps balancing (decision 0043).
+- Quitting, Ctrl+C, SIGTERM or a crash cancels the skill, sends `x` (motors off), closes the
+  link, stops vision and closes the window.
 """
 
 from __future__ import annotations
@@ -14,14 +34,24 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
+import time
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Any
 
 from app import api
-from app.arbiter import Arbiter, Source
+from app.arbiter import Arbiter, Command
 from app.link import PORT, RobotLink, UdpLink
 from app.skills import SkillContext, SkillResult, SkillRunner
 
 SEND_HZ = 20
 log = logging.getLogger("app")
+
+ARM_REMINDER = ("Arming (g): someone must hold the robot upright (within 6 deg) and let go once it's "
+                "holding itself. Press X or P before anyone touches it.")
+UDP_ARM_NOTE = ("G: over the network the server never sends g. Arm on the robot side: the person holding "
+                "it presses g (firmware/balance/teleop.py), or start the mock with `python -m mock --armed`.")
 
 
 class TestDrive:
@@ -37,66 +67,469 @@ class TestDrive:
         return SkillResult(True, "test drive done")
 
 
+class Sender:
+    """One tick of arbiter -> link: `5` on the e-stop edge, one `cmd`, a health log every second."""
+
+    def __init__(self, arbiter: Arbiter, link: RobotLink) -> None:
+        self.arbiter = arbiter
+        self.link = link
+        self.was_estopped = False
+        self.ticks = 0
+        self.errors = 0
+
+    def step(self) -> Command:
+        cmd = self.arbiter.decide()
+        estopped = self.arbiter.estopped
+        if estopped and not self.was_estopped:
+            self._try(self.link.send_letter, "5")   # cancel any 90-degree turn or 50 cm move in progress
+        self.was_estopped = estopped
+        self._try(self.link.send_cmd, cmd.v, cmd.w, "drive")   # drive 0,0 holds position without cancelling L/R/F/B
+        if self.ticks % SEND_HZ == 0:
+            self._log(cmd)
+        self.ticks += 1
+        return cmd
+
+    def _try(self, fn: Callable[..., Any], *args: Any) -> None:
+        try:
+            fn(*args)
+        except Exception as e:   # a cable tug: the robot's 300 ms watchdog stops it; keep the loop alive
+            self.errors += 1
+            if self.errors == 1 or self.errors % SEND_HZ == 0:
+                log.warning("link send failed (%d so far): %s", self.errors, e)
+
+    def _log(self, cmd: Command) -> None:
+        try:
+            h = self.link.health()
+        except Exception:
+            return
+        tel = self.link.telemetry or {}
+        log.info("send v=%.2f w=%.2f (%s) | robot %s pitch=%s x=%s yaw=%s | link %s%s",
+                 cmd.v, cmd.w, cmd.source, tel.get("state", "?"), tel.get("pitch", "?"),
+                 tel.get("x", "?"), tel.get("yaw", "?"), "ok" if h.ok else "DOWN",
+                 f" lag {h.lag_ms:.0f} ms" if h.lag_ms is not None else "")
+
+
 async def drive_loop(arbiter: Arbiter, link: RobotLink, stop: asyncio.Event | None = None) -> None:
-    """Send the arbiter's decision to the robot, SEND_HZ times a second."""
-    was_estopped = False
-    tick = 0
+    """Send the arbiter's decision to the robot, SEND_HZ times a second (no window, no keys)."""
+    sender = Sender(arbiter, link)
     while not (stop and stop.is_set()):
-        cmd = arbiter.decide()
-        if arbiter.estopped and not was_estopped:
-            link.send_letter("5")          # cancel any 90-degree turn or 50 cm move in progress
-        was_estopped = arbiter.estopped
-        link.send_cmd(cmd.v, cmd.w, "drive")   # drive 0,0 holds position without cancelling L/R/F/B
-        if tick % SEND_HZ == 0:
-            h = link.health()
-            tel = link.telemetry or {}
-            log.info("send v=%.2f w=%.2f (%s) | robot %s pitch=%s x=%s yaw=%s | link %s%s",
-                     cmd.v, cmd.w, cmd.source, tel.get("state", "?"), tel.get("pitch", "?"),
-                     tel.get("x", "?"), tel.get("yaw", "?"), "ok" if h.ok else "DOWN",
-                     f" lag {h.lag_ms:.0f} ms" if h.lag_ms is not None else "")
-        tick += 1
+        sender.step()
         await asyncio.sleep(1 / SEND_HZ)
 
 
-async def run(robot: str, host: str | None, test_drive: bool, http_port: int = 8080, https_port: int | None = 8443) -> None:
-    arbiter = Arbiter()
-    skills = SkillRunner(SkillContext(arbiter))
-    default = "127.0.0.1" if robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
-    link = UdpLink(host or default, PORT)
-    await link.start()
-    runner, _ = await api.start(api.ApiState(arbiter, link), http_port, https_port)
-    if test_drive:
-        log.info("test drive in 3 s (forward 2 s, turn left 2 s). The robot only moves if it's balancing (g).")
+class App:
+    """The server's 20 Hz loop: arbiter -> link, keys, debug view. No I/O of its own beyond what it's given."""
 
-        async def later():
-            await asyncio.sleep(3)
-            result = await skills.start(TestDrive())
-            log.info("test drive: %s", result.detail)
+    def __init__(
+        self,
+        link: RobotLink,
+        *,
+        robot: str = "mock",
+        link_kind: str = "udp",
+        vision: Any = None,
+        follow_factory: Callable[[], Any] | None = None,
+        window: Any = None,
+        render: Callable[..., Any] | None = None,
+        hz: float = SEND_HZ,
+    ) -> None:
+        self.link = link
+        self.robot = robot
+        self.link_kind = link_kind
+        self.vision = vision
+        self.arbiter = Arbiter()
+        self.skills = SkillRunner(SkillContext(self.arbiter, vision))
+        self.sender = Sender(self.arbiter, link)
+        self._follow_factory = follow_factory
+        self._window = window
+        self._render = render
+        self.period_s = 1.0 / hz
+        self.follow: Any = None  # the current/last follow skill (for its last command)
+        self.note = ""
+        self.last: Command = Command(0.0, 0.0, "none")
+        self._quit = False
+        self._closed = False
 
-        asyncio.create_task(later())
+    # --- keys (also callable from the API later) ---
+
+    def handle_key(self, key: str) -> None:
+        key = key.lower()
+        if key in ("q", "\x1b"):
+            self.quit()
+        elif key == "f":
+            self.toggle_follow()
+        elif key == " ":
+            self.toggle_estop()
+        elif key == "g":
+            self.arm()
+        elif key == "p":
+            self.skills.cancel()
+            self._letter("P")
+            self._say("park (P) sent; skill stopped")
+        elif key == "x":
+            self.skills.cancel()
+            self._letter("x")
+            self._say("motors off (x) sent; skill stopped")
+
+    def start_skill(self, skill: Any) -> asyncio.Task:
+        task = self.skills.start(skill)
+        task.add_done_callback(self._skill_done)
+        return task
+
+    def toggle_follow(self) -> None:
+        if self.skills.running == "follow":
+            self.skills.cancel()
+            self._say("follow: stopped")
+            return
+        if self._follow_factory is None or self.vision is None:
+            self._say("follow: no vision in this run")
+            return
+        if self.arbiter.estopped:
+            self._say("follow: release the e-stop first (Space)")
+            return
+        self.follow = self._follow_factory()
+        self.start_skill(self.follow)
+        self._say("follow: started, locking onto the person in front")
+
+    def toggle_estop(self) -> None:
+        if self.arbiter.estopped:
+            self.arbiter.estop(False)
+            self._say("e-stop released")
+        else:
+            self.arbiter.estop(True)   # the next tick sends 5, then v 0 w 0
+            self.skills.cancel()       # the e-stop also ends the running skill
+            self._say("E-STOP on")
+
+    def arm(self) -> None:
+        """G: arm the robot (g) over USB only, on a person's keypress. Over UDP the robot side arms it."""
+        arm = getattr(self.link, "arm", None)
+        if self.link_kind != "serial" or arm is None:
+            self._say(UDP_ARM_NOTE)
+            return
+        print(ARM_REMINDER, flush=True)
+        if self.skills.running:
+            self.skills.cancel()  # never arm into a running skill: it would drive off while being held
+        try:
+            arm()
+        except Exception as e:
+            self._say(f"arm (g) failed: {e}")
+            return
+        self._say("arm (g) sent: hold it upright, let go once it holds itself; then F to follow")
+
+    def quit(self) -> None:
+        self._quit = True
+
+    def _letter(self, letter: str) -> None:
+        try:
+            self.link.send_letter(letter)
+        except Exception as e:
+            log.warning("sending %r failed: %s", letter, e)
+
+    def _say(self, text: str) -> None:
+        self.note = text
+        log.info("%s", text)
+
+    def _skill_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        if task.exception() is not None:
+            self._say(f"{task.get_name()}: crashed: {task.exception()!r}")
+            return
+        result = task.result()
+        if result.detail != "cancelled":
+            self._say(f"{task.get_name()}: {'done' if result.ok else 'failed'}: {result.detail}")
+
+    # --- the loop ---
+
+    def tick(self) -> Command:
+        """One step: decide and send, tell vision how the robot is turning, draw, read a key."""
+        cmd = self.sender.step()
+        self.last = cmd
+        if self.vision is not None:
+            self.vision.set_turn_rate(self._turn_rate(cmd))
+        if self._window is not None and self._render is not None:
+            key = self._window.show(self._render(self._perception(), self.hud()))
+            if key is not None and key >= 0:
+                self.handle_key(chr(key & 0xFF))
+        return cmd
+
+    def _turn_rate(self, cmd: Command) -> float:
+        # The camera only turns with the real robot, and only while it balances.
+        if self.robot != "real":
+            return 0.0
+        tel = self.link.telemetry
+        if isinstance(tel, dict) and tel.get("state") == "idle":
+            return 0.0
+        return cmd.w
+
+    def _perception(self) -> Any:
+        return self.vision.latest() if self.vision is not None else None
+
+    def robot_status(self) -> tuple[bool, Any]:
+        """(connected, telemetry for the debug view) from link.health() and the contract-v1 telemetry dict."""
+        tel = self.link.telemetry
+        if not isinstance(tel, dict):
+            return False, None
+        parts = [str(tel.get("state", "?"))]
+        if isinstance(tel.get("x"), (int, float)):
+            parts.append(f"x {tel['x']:+.2f} m")
+        if isinstance(tel.get("yaw"), (int, float)):
+            parts.append(f"yaw {tel['yaw']:+.0f} deg")
+        try:
+            h = self.link.health()
+            link = "link ok" if h.ok else "link DOWN"
+            if h.lag_ms is not None:
+                link += f" lag {h.lag_ms:.0f} ms"
+            if not h.ok and h.telemetry_age is not None:
+                link += f" (telemetry {h.telemetry_age:.1f} s old)"
+            parts.append(link)
+        except Exception:
+            pass
+        pitch = tel.get("pitch")
+        fault = tel.get("fault")
+        return True, SimpleNamespace(
+            state="  ".join(parts),
+            pitch_deg=float(pitch) if isinstance(pitch, (int, float)) else None,
+            fault=fault if isinstance(fault, str) else None,   # why the motors last turned off; null after g
+        )
+
+    def hud(self) -> Any:
+        from app.vision.debug_view import Hud
+
+        running = self.skills.running
+        connected, telemetry = self.robot_status()
+        return Hud(
+            robot=f"{self.robot}, {self.link_kind}",
+            sent_v=self.last.v,
+            sent_w=self.last.w,
+            source=self.last.source,
+            skill=running,
+            follow=getattr(self.follow, "last_command", None) if running == "follow" else None,
+            connected=connected,
+            telemetry=telemetry,
+            vision_status=getattr(self.vision, "status", "") if self.vision is not None else "off",
+            note=self.note,
+        )
+
+    async def run(self, max_ticks: int | None = None) -> None:
+        """Run until quit (or max_ticks, for tests). Always shuts down cleanly."""
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGTERM, self.quit)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # not on the main thread, or not supported here
+        next_t = time.monotonic()
+        ticks = 0
+        try:
+            while not self._quit and (max_ticks is None or ticks < max_ticks):
+                self.tick()
+                ticks += 1
+                next_t += self.period_s
+                delay = next_t - time.monotonic()
+                if delay < -0.5:  # fell far behind (a slow window?): don't try to catch up
+                    next_t = time.monotonic()
+                await asyncio.sleep(max(0.0, delay))
+        finally:
+            await self.shutdown()
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+
+    async def shutdown(self) -> None:
+        """Cancel the skill, send x, close the link, stop vision, close the window. Safe to call twice."""
+        if self._closed:
+            return
+        self._closed = True
+        task = self.skills.task
+        self.skills.cancel()
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+        self._letter("x")   # motors off: end every run with x (firmware/README.md)
+        try:
+            await self.link.close()
+        except Exception:
+            log.exception("closing the link failed")
+        if self.vision is not None:
+            close_quietly(self.vision.stop, "vision")
+        if self._window is not None:
+            close_quietly(self._window.close, "window")
+
+
+def close_quietly(fn: Callable[[], Any], what: str) -> None:
     try:
-        await drive_loop(arbiter, link)
-    finally:
-        await runner.cleanup()
-        await link.close()
+        fn()
+    except Exception:
+        log.exception("closing the %s failed", what)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(prog="python -m app", description="Miguel.exe server")
+# --- command line ---
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m app", description="Miguel.exe server",
+                                 epilog="Keys in the window: F follow, Space e-stop, G arm (USB only), P park, "
+                                        "X motors off, Q quit.")
     ap.add_argument("--robot", choices=["mock", "real"], default="mock",
-                    help="mock: the mock robot on this laptop (default); real: the robot over Wi-Fi")
-    ap.add_argument("--host", help="robot address (default: 127.0.0.1 for mock; $ROBOT_HOST or balancebot.local for real)")
+                    help="mock: the mock robot on this laptop (`python -m mock`, default); real: the robot")
+    ap.add_argument("--someone-at-robot", action="store_true",
+                    help="required with --robot real: a person is at the robot, ready to catch it")
+    ap.add_argument("--link", choices=["udp", "serial"], default="udp",
+                    help="udp: Wi-Fi, or the mock on this laptop (default); serial: the robot's USB cable")
+    ap.add_argument("--host", help="robot address for --link udp (default: 127.0.0.1 for mock; "
+                                   "$ROBOT_HOST or balancebot.local for real)")
+    ap.add_argument("--port", default=None, help="serial port for --link serial (default: auto-detect)")
     ap.add_argument("--test-drive", action="store_true", help="drive forward, then turn, through the arbiter")
+    ap.add_argument("--source", default="0", help="camera index (0, 1, ...) or a video file path")
+    ap.add_argument("--no-vision", action="store_true", help="run without camera and detector")
+    ap.add_argument("--rotate", choices=["left", "right", "180"], help="if people show up sideways")
+    ap.add_argument("--turn-only", action="store_true", help="follow only turns toward the person, never drives")
+    ap.add_argument("--camera-back", action="store_true", help="the camera faces the robot's back")
+    ap.add_argument("--height-m", type=float, default=None, help="camera height above the floor")
+    ap.add_argument("--tilt-deg", type=float, default=None, help="camera tilt, up positive")
+    ap.add_argument("--follow", action="store_true", help="start the follow skill at once (useful with --no-window)")
+    ap.add_argument("--window", action=argparse.BooleanOptionalAction, default=True,
+                    help="show the debug window (keys only work in it)")
+    ap.add_argument("--api", action=argparse.BooleanOptionalAction, default=True,
+                    help="serve the phone page, the control page and the dashboard WebSocket")
     ap.add_argument("--http-port", type=int, default=8080, help="control page, dashboard WebSocket, certificate page")
     ap.add_argument("--https-port", type=int, default=8443, help="the robot's phone page (0 = off)")
-    args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    return ap
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.robot == "real" and not args.someone_at_robot:
+        ap.error("--robot real sends motor commands: add --someone-at-robot only when a person is at the "
+                 "robot, ready to catch it (firmware/README.md, Safety rules)")
+    if args.link == "serial" and args.robot != "real":
+        ap.error("--link serial talks to the robot over its USB cable: use --robot real --someone-at-robot "
+                 "(the mock robot speaks UDP only)")
+    if args.link == "udp" and args.port is not None:
+        ap.error("--port is the serial port for --link serial; for UDP use --host")
+    if args.link == "serial" and args.host is not None:
+        ap.error("--host is for --link udp; for USB use --port")
+    return args
+
+
+def make_link(args: argparse.Namespace) -> RobotLink:
+    """The link for these flags, not started yet."""
+    if args.link == "serial":
+        from app.link.serial_link import SerialLink
+
+        return SerialLink(args.port)
+    default = "127.0.0.1" if args.robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
+    return UdpLink(args.host or default, PORT)
+
+
+def make_follow_config(args: argparse.Namespace) -> Any:
+    from app.vision.follow import CameraGeometry, FollowConfig
+
+    geo: dict[str, float] = {}
+    if args.height_m is not None:
+        geo["height_m"] = args.height_m
+    if args.tilt_deg is not None:
+        geo["tilt_deg"] = args.tilt_deg
+    return FollowConfig(camera=CameraGeometry(**geo), turn_only=args.turn_only, camera_back=args.camera_back)
+
+
+def make_vision(args: argparse.Namespace) -> Any:
+    from app.vision.detector import YoloPoseDetector
+    from app.vision.frames import open_source
+    from app.vision.tracking import TargetLock
+    from app.vision.worker import VisionWorker
+
+    detector = YoloPoseDetector()  # loads the weights now, so a missing file fails before anything starts
+    return VisionWorker(open_source(args.source, rotate=args.rotate), detector, TargetLock())
+
+
+def make_window() -> tuple[Any, Any]:
+    from app.vision.debug_view import DebugWindow, render
+
+    return DebugWindow(), render
+
+
+async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None,
+                follow_factory: Callable[[], Any] | None = None, window: Any = None,
+                render: Callable[..., Any] | None = None) -> App:
+    """Start the link, then run the App until quit. The App's shutdown closes everything."""
+    app = App(link, robot=args.robot, link_kind=args.link, vision=vision, follow_factory=follow_factory,
+              window=window, render=render)
+    try:
+        await link.start()
+    except BaseException as e:
+        app._closed = True   # the link never started: only clean up what exists
+        if vision is not None:
+            close_quietly(vision.stop, "vision")
+        if window is not None:
+            close_quietly(window.close, "window")
+        if isinstance(e, Exception):
+            raise SystemExit(f"Couldn't start the robot link: {e}") from e
+        raise
+    runner = None
+    try:
+        if args.api:
+            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills),
+                                        args.http_port, args.https_port or None)
+        if args.robot == "real":
+            if args.link == "serial":
+                print("REAL robot on USB. Nothing moves until someone holds it upright and presses G.", flush=True)
+            else:
+                print("REAL robot over Wi-Fi. Nothing moves until the person at the robot arms it (g).", flush=True)
+        if vision is not None:
+            vision.start()
+            print("Vision is starting (the detector warm-up takes several seconds).", flush=True)
+        if args.follow:
+            app.toggle_follow()
+        if args.test_drive:
+            log.info("test drive in 3 s (forward 2 s, turn left 2 s). The robot only moves if it's balancing (g).")
+
+            async def later() -> None:
+                await asyncio.sleep(3)
+                if not app._closed:
+                    app.start_skill(TestDrive())
+
+            asyncio.create_task(later())
+        await app.run()
+    finally:
+        await app.shutdown()   # already done by run() unless something failed before it: safe twice
+        if runner is not None:
+            await runner.cleanup()
+    return app
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)   # exits 2 on unsafe flags, before anything is opened
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
     if args.robot == "real":
         log.warning("REAL ROBOT: only run this with someone at the robot (CLAUDE.md).")
+
+    vision = None if args.no_vision else make_vision(args)
+    follow_factory = None
+    if vision is not None:
+        from app.skills.follow import FollowSkill
+
+        config = make_follow_config(args)
+        follow_factory = lambda: FollowSkill(config)  # noqa: E731
+
+    window = render = None
+    if args.window:
+        window, render = make_window()
+
+    link = make_link(args)
     try:
-        asyncio.run(run(args.robot, args.host, args.test_drive, args.http_port, args.https_port or None))
+        asyncio.run(serve(args, link, vision=vision, follow_factory=follow_factory, window=window, render=render))
     except KeyboardInterrupt:
         pass
+    finally:
+        # serve() shuts down on every path it reaches; this is the backstop if the loop died first.
+        if vision is not None:
+            close_quietly(vision.stop, "vision")
+        if window is not None:
+            close_quietly(window.close, "window")
 
 
 if __name__ == "__main__":

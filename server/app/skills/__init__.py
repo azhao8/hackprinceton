@@ -8,6 +8,9 @@ from the arbiter, which lets e-stop and the joystick win.
   request or the e-stop cancels it by cancelling the task (open question T-7).
 - A skill reads perception and memory through its context and sends targets with
   `ctx.drive(v, w)`, at least every 0.3 s while it wants to keep moving.
+- `ctx.perception` is vision's newest result (`app.vision.worker.Perception`, or None before
+  the first frame); `ctx.vision` is the worker itself, for `request_engage()` / `disengage()`.
+  The worker runs on its own thread, so reading these never blocks the loop.
 - It returns a `SkillResult` that the agent reads.
 """
 
@@ -15,9 +18,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from app.arbiter import Arbiter, Source
+
+if TYPE_CHECKING:
+    from app.vision.worker import Perception
 
 
 @dataclass(frozen=True)
@@ -26,13 +32,28 @@ class SkillResult:
     detail: str = ""
 
 
+class Vision(Protocol):
+    """What skills use of the vision worker (app.vision.worker.VisionWorker)."""
+
+    def latest(self) -> Perception | None: ...
+
+    def request_engage(self) -> int: ...
+
+    def disengage(self) -> None: ...
+
+
 class SkillContext:
     """What a skill can see and do. Grows as vision and memory land."""
 
-    def __init__(self, arbiter: Arbiter, perception: Any = None, memory: Any = None):
+    def __init__(self, arbiter: Arbiter, vision: Vision | None = None, memory: Any = None):
         self._arbiter = arbiter
-        self.perception = perception   # vision's latest result (#3)
+        self.vision = vision           # the vision worker (#3), or None when running without a camera
         self.memory = memory           # world memory
+
+    @property
+    def perception(self) -> Perception | None:
+        """Vision's newest result, or None (no vision, or no frame processed yet)."""
+        return self.vision.latest() if self.vision is not None else None
 
     def drive(self, v: float, w: float) -> None:
         """Ask for a speed (m/s, + forward) and turn (rad/s, + left)."""
@@ -59,6 +80,11 @@ class SkillRunner:
     @property
     def running(self) -> str | None:
         return self._task.get_name() if self._task and not self._task.done() else None
+
+    @property
+    def task(self) -> asyncio.Task[SkillResult] | None:
+        """The current (or last) skill's task, to await its result."""
+        return self._task
 
     def start(self, skill: Skill) -> asyncio.Task[SkillResult]:
         self.cancel()

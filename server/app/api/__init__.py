@@ -27,6 +27,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from aiohttp import WSMsgType, web
 
@@ -45,6 +46,7 @@ V_MAX, W_MAX = 0.6, 1.5
 class ApiState:
     arbiter: Arbiter
     link: RobotLink
+    skills: Any = None          # the server's SkillRunner, if any: STOP cancels its skill
     follow: bool = False
     say: list[dict] = field(default_factory=list)
 
@@ -56,10 +58,25 @@ class ApiState:
             log.info("say: %s", text)
 
     def set_follow(self, on: bool) -> None:
+        """The phone page's follow. Turning it on stops any server skill (for example the server's own
+        follow), so two followers never fight over the arbiter's skill slot."""
+        if on and self.skills is not None and self.skills.running:
+            self.skills.cancel()
         self.follow = on
         if not on:
             self.arbiter.clear(Source.SKILL)
-        log.info("follow %s", "ON" if on else "off")
+        log.info("phone follow %s", "ON" if on else "off")
+
+    def estop(self, on: bool) -> None:
+        self.arbiter.estop(on)
+        if on:
+            self.set_follow(False)
+            if self.skills is not None:
+                self.skills.cancel()
+        log.info("E-STOP %s", "on" if on else "released")
+
+    def phone_follow_active(self) -> bool:
+        return self.follow and not (self.skills is not None and self.skills.running)
 
     def status(self) -> dict:
         return {"tel": self.link.telemetry, "follow": self.follow, "link": self.link.health().ok,
@@ -110,7 +127,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.post("/auto")
     async def auto(request: web.Request) -> web.Response:
         body = await _json(request)
-        if state.follow:
+        if state.phone_follow_active():
             state.arbiter.request(Source.SKILL, _num(body, "v", V_MAX), _num(body, "w", W_MAX))
         return web.json_response({"follow": state.follow})
 
@@ -157,12 +174,9 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         elif what == "follow-off":
             state.set_follow(False)
         elif what == "stop":
-            state.arbiter.estop(True)
-            state.set_follow(False)
-            log.info("E-STOP on")
+            state.estop(True)
         elif what == "release":
-            state.arbiter.estop(False)
-            log.info("e-stop released")
+            state.estop(False)
         else:
             raise web.HTTPNotFound()
         return web.json_response(state.status())
@@ -192,9 +206,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                     continue
                 t = m.get("t")
                 if t == "estop":
-                    state.arbiter.estop(bool(m.get("on")))
-                    if m.get("on"):
-                        state.set_follow(False)
+                    state.estop(bool(m.get("on")))
                 elif t == "joystick":
                     state.arbiter.request(Source.JOYSTICK, _num(m, "v", V_MAX), _num(m, "w", W_MAX))
                 elif t == "follow":
