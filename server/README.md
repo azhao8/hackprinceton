@@ -64,6 +64,8 @@ Secrets go in `server/.env` (git-ignored); the names are in `.env.example`.
 
 ## The phone page, control page and dashboard (the API)
 
+**Vision runs on the server** (decision 0055). By default (`--source phone`) the robot's phone page streams its camera to `POST /frame`; YOLO pose finds people, Follow on the control page runs the server's follow skill, and the control page shows the server's view (`/video.mjpg`). First time: `uv run python -m app.vision.fetch_models` (downloads `yolo26n-pose.pt`, git-ignored). For desk testing without the phone use `--source 0` (laptop camera) or a video file; `--no-vision` turns it off.
+
 `python -m app` also starts the API (`--no-api` turns it off):
 
 1. First time on an iPhone: open `http://<laptop IP>:8080` in Safari and trust the certificate.

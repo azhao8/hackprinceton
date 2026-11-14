@@ -38,7 +38,7 @@ John wrote and tuned the firmware overnight, so he knows it best; who owns it fr
 
 ### Vision and understanding: on the desk
 
-- **Camera:** a laptop webcam or a second camera, behind a frame-source interface. The phone page plugs in later without changing anything else (T-4, T-10).
+- **Camera:** a laptop webcam or a second camera, behind a frame-source interface. The phone page plugs in later without changing anything else (T-4; frames are JPEG over HTTP, decision 0055).
 - **Perception:** MediaPipe person and hand tracking on every frame, with a debug window showing boxes and the recognized gesture.
 - **Follow-me and gestures:** the person's position and size become speed and turn targets that go to the arbiter. Start from John's follow gains and upper-body tracking (`firmware/README.md`, "Next, by lane"). The result shows on the mock robot and the dashboard. Walk around the desk to test it.
 - **Skill runner:** runs one skill at a time and sends its targets to the arbiter.

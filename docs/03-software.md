@@ -7,7 +7,7 @@ Draft. One Python server on the laptop is the hub: the phone and the dashboard f
 ![System architecture](assets/diagram-architecture.svg)
 
 - **The robot (ESP32, John's firmware)** balances itself 200 times a second and enforces its own safety (tilt cutoff, 300 ms command timeout), so a Wi-Fi hiccup can't topple it. It only takes speed and turn targets and a few named actions.
-- **The phone** opens the phone page in Safari. It shows the face, sends camera frames, mic audio and motion sensors to the server, and plays Miguel's voice. (Web page or native app is still open: T-4.)
+- **The phone** opens the phone page in Safari. It shows Miguel's face, streams its camera to the server (decision 0055) and plays Miguel's voice. Mic audio for the voice agent comes later (Grant is designing the agent). (Web page or native app is still open: T-4.)
 - **The Python server** runs everything else, in one process:
 
 | Module | Owner | Job |
@@ -65,7 +65,7 @@ Draft. One Python server on the laptop is the hub: the phone and the dashboard f
 
 ## Vision and understanding (critical path)
 
-- **Camera:** the phone page streams camera frames to the server and draws the face at the same time (Continuity Camera can't, because it takes over the phone's screen). Vision develops on a desk camera behind a frame-source interface until the phone page is ready. How video travels (T-10) and web page vs native app (T-4) are still open.
+- **Camera:** the phone page streams JPEG frames (~12 a second, 640 px) to the server's `/frame` while it shows the face; the server runs the vision and the one follow skill (decision 0055) with YOLO pose (0056). `--source 0` or a video file still works for desk testing. Web page vs native app (T-4) is still open.
 - **Voice:** the phone's mic and speaker, through the phone page (T-13), with push-to-talk on the dashboard as a backup.
 - **Perception:** person tracking and hand gestures (MediaPipe) run on every frame on the laptop. Heavier scene and object understanding uses a vision-language model on demand, a few seconds per call.
 - **Understanding:** speech to text, then an LLM that picks from a small set of robot skills. Gestures skip the LLM, so stop is instant.
