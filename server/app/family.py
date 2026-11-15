@@ -122,7 +122,8 @@ class FamilyHub:
         check_in = {k: v for k, v in self.check_in.items() if k in ("phase", "id", "started_at")}
         return {"t": "state", "mode": mode[0], "mode_note": mode[1], "since": iso(self._since),
                 "link": "up" if self._link_up() else "down",
-                "delivery": None if self.delivery is None else {k: v for k, v in self.delivery.items() if v is not None},
+                "delivery": None if self.delivery is None else {k: v for k, v in self.delivery.items()
+                                                                if v is not None and k != "by"},
                 "check_in": check_in, "alert": self.alert}
 
     async def push_state(self, force: bool = False) -> None:
