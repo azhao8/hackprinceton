@@ -104,7 +104,7 @@ Top speed is uncapped (up to the step generator's 3.2 m/s); raise the sliders sl
 
 ## 6b. Run the AI on this laptop (optional, no internet)
 
-Brain, hearing and voice can each run locally on an Apple Silicon Mac instead of Claude and Cartesia. Cloud stays the default; set any of these in `server/.env` and restart:
+Brain, hearing and voice can each run locally on an Apple Silicon Mac instead of Claude and Cartesia. Cloud stays the default; set any of these in `server/.env` and restart. (The brain can also run on Google Gemini: `MIGUEL_LLM=gemini` with `GEMINI_API_KEY`; model `MIGUEL_GEMINI_MODEL`, default `gemini-3.5-flash-lite`: first spoken sentence 0.8 s for chat, 2.6 s for a task. Like the local model, it answers the picture questions and the fall check too.)
 
 | Switch | Local model | Speed here (M5 Pro, 48 GB) |
 | --- | --- | --- |
@@ -143,6 +143,7 @@ Team workflow, lanes and decision rules: `CLAUDE.md`.
 - [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) (AGPL-3.0): the pose model; see decision 0056.
 - [PyTorch](https://pytorch.org), [OpenCV](https://opencv.org), [NumPy](https://numpy.org), [aiohttp](https://github.com/aio-libs/aiohttp), [pyserial](https://github.com/pyserial/pyserial).
 - [Anthropic Claude](https://www.anthropic.com) (API): the agent and the picture checks.
+- [Google Gemini](https://ai.google.dev) (API, optional, #99): the same brain on Gemini through its OpenAI-compatible endpoint.
 - [Cartesia](https://cartesia.ai) (API): speech to text (Ink) and Miguel's voice (Sonic).
 - [Photon](https://photon.codes) 2.0 Beta (API): Miguel on iMessage for the family (`server/bridge/`, docs/photon.md), with [python-socketio](https://github.com/miguelgrinberg/python-socketio) (MIT).
 - [Next.js](https://nextjs.org), [React](https://react.dev), [Tailwind CSS](https://tailwindcss.com), [three.js](https://threejs.org): the web apps.

@@ -53,8 +53,9 @@ TEMPERATURE = 0.2
 
 
 def backend() -> str:
-    """'local' or 'claude' (env MIGUEL_LLM; anything but 'local' means Claude)."""
-    return "local" if os.environ.get("MIGUEL_LLM", "").strip().lower() == "local" else "claude"
+    """'local', 'gemini' or 'claude' (env MIGUEL_LLM; anything else means Claude)."""
+    name = os.environ.get("MIGUEL_LLM", "").strip().lower()
+    return name if name in ("local", "gemini") else "claude"
 
 
 def local_model() -> str:

@@ -14,6 +14,7 @@ Model settings (from the claude-api skill, Nov 2026):
   Claude is still writing the rest (`stream_message`).
 - `MIGUEL_LLM=local` swaps Claude for a local model through Ollama (`get_client`, local_llm.py, #81):
   the same requests, converted; the Anthropic-only settings below are ignored there.
+  `MIGUEL_LLM=gemini` does the same with Google Gemini (gemini_llm.py, #99).
 - Effort per task without breaking the prompt cache: the top-level effort stays at EFFORT_CHAT
   and each task says its effort in an empty `role: "system"` message right after its user message
   (beta `mid-conversation-output-config-2026-07-01`). Changing the top-level effort between
@@ -76,12 +77,21 @@ _client: Any = None
 
 def get_client() -> Any:
     """The shared async client, created on first use: an AsyncAnthropic (reads ANTHROPIC_API_KEY
-    from the env), or with MIGUEL_LLM=local an Ollama-backed stand-in (app/brain/local_llm.py, #81)."""
+    from the env); with MIGUEL_LLM=local an Ollama-backed stand-in (app/brain/local_llm.py, #81);
+    with MIGUEL_LLM=gemini a Gemini-backed one (app/brain/gemini_llm.py, #99)."""
     global _client
     if _client is None:
         from app.brain.local_llm import LocalClient, backend
 
-        _client = LocalClient() if backend() == "local" else anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
+        kind = backend()
+        if kind == "local":
+            _client = LocalClient()
+        elif kind == "gemini":
+            from app.brain.gemini_llm import GeminiClient
+
+            _client = GeminiClient()
+        else:
+            _client = anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
     return _client
 
 
