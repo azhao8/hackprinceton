@@ -3,6 +3,7 @@
 import numpy as np
 
 from app.vision.face_state import FaceEvents, gaze_point
+from app.vision.follow import WAITING_REASON
 from app.vision.types import Box, Detections, DriveCommand, Frame, Keypoint, Person, TargetState, TargetStatus
 from app.vision.worker import Perception
 
@@ -83,6 +84,27 @@ def test_gave_up_fires_once_per_command_even_after_follow_stops():
     assert snap["status"] == "idle" and snap["event"] == {"id": 3, "kind": "gave_up"}
     # The next run gives up again: a new command, a new event.
     assert face.update(None, False, DriveCommand(0.0, 0.0, "lost: gave up"), 20.0)["event"]["id"] == 4
+
+
+def test_waiting_fires_once_per_wait_and_found_when_they_come_back():
+    face = FaceEvents()
+    wait = WAITING_REASON
+    got = kinds(face, [(L, "following", 0.0),
+                       (LOST, "lost: coasting", 0.1), (LOST, "lost: searching right", 0.5),
+                       (LOST, wait, 2.1), (LOST, wait, 2.2), (LOST, wait, 30.0),   # waits: once
+                       (L, "following", 31.0),                                     # back: found
+                       (LOST, "lost: holding", 32.0), (LOST, wait, 34.0),          # again: once more
+                       (L, "following", 40.0)])
+    assert got == ["found", "lost", "waiting", "found", "lost", "waiting", "found"]
+
+
+def test_waiting_needs_follow_on_and_the_person_lost():
+    face = FaceEvents()
+    wait = DriveCommand(0.0, 0.0, WAITING_REASON)
+    assert face.update(perception(LOST), False, wait, 0.0)["event"] is None
+    face.update(perception(L, at=1.0), True, DriveCommand(0.1, 0.0, "following"), 1.0)
+    # A command from the frame before they came back must not say "waiting" after "found".
+    assert face.update(perception(L, at=1.1), True, wait, 1.1)["event"]["kind"] == "found"
 
 
 def test_stale_vision_while_locked_counts_as_lost():
