@@ -135,7 +135,7 @@ dist.oninput = spd.oninput = labels;
 // The mouth follows the voice: Cartesia audio goes through a Web Audio analyser (its loudness opens the mouth);
 // Safari's voice can't be measured, so each spoken word (and a steady beat, if words aren't reported) pulses it.
 // Voice.current() is the line playing now ({text, id, n}); mic.js tells the server when it changes.
-// Voice.ping() is the short "I'm listening" sound; Voice.stopAll() silences him and drops the queued lines.
+// Voice.ping() is the short "I'm listening" sound, Voice.chime() its softer "done listening"; Voice.stopAll() silences him and drops the queued lines.
 const MOUTH_FLOOR = 0.02, MOUTH_GAIN = 6;                 // RMS (-1..1 samples) to mouth opening; a guess, tune on the phone
 function mouthFromRms(rms) { return Math.max(0, Math.min(1, (rms - MOUTH_FLOOR) * MOUTH_GAIN)); }
 const Voice = (() => {
@@ -298,26 +298,31 @@ const Voice = (() => {
     pending++;
     queue = queue.then(() => g === gen ? cartesia(text, sid) : null).finally(() => { pending--; });
   }
-  function ping() {                                       // "I'm listening": two quick soft notes, ~0.2 s
+  // Short sine notes on the voice's own AudioContext (#104: already running, so iOS doesn't clip them).
+  // notes: [[Hz, start s, length s]]; peak: loudness 0..1.
+  function tones(notes, peak) {
     if (muted || !actx || actx.state !== 'running') return;
     try {
       const t = actx.currentTime + 0.01;
-      [[880, 0], [1320, 0.09]].forEach(([f, dt]) => {
+      notes.forEach(([f, dt, len]) => {
         const o = actx.createOscillator(), gn = actx.createGain();
         o.type = 'sine'; o.frequency.value = f;
         gn.gain.setValueAtTime(0.0001, t + dt);
-        gn.gain.exponentialRampToValueAtTime(0.3, t + dt + 0.012);
-        gn.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.12);
+        gn.gain.exponentialRampToValueAtTime(peak, t + dt + 0.012);
+        gn.gain.exponentialRampToValueAtTime(0.0001, t + dt + len);
         o.connect(gn); gn.connect(actx.destination);      // straight to the speaker: the mouth stays still
-        o.start(t + dt); o.stop(t + dt + 0.13);
+        o.start(t + dt); o.stop(t + dt + len + 0.01);
       });
     } catch (e) {}
   }
+  const ping = () => tones([[880, 0, 0.12], [1320, 0.09, 0.12]], 0.3);     // "I'm listening": two quick rising notes, ~0.2 s
+  const chime = () => tones([[1320, 0, 0.12], [880, 0.09, 0.15]], 0.15);   // "done listening" (#111): the same, falling, softer, ~0.25 s
   const busy = () => pending > 0 || (ok && speechSynthesis.speaking);
   return {
     busy,                                                                                // read-only: is Miguel talking? (mic.js)
     current() { return cur; },                                                           // the line playing now (mic.js)
     ping,
+    chime,
     stopAll() { gen++; silence(); },                                                     // tap-to-talk: stop talking now
     server(on, stream) { cloud = on; streamOn = !!stream; },                             // from /tel: /tts set up? streamed?
     unlock(text) {                                                                       // inside a tap (iOS needs one)
@@ -595,14 +600,44 @@ setInterval(() => {                                         // ~12 frames a seco
 
 // ---------- listening (the server's turn-taking, server/app/speech/mic.py) ----------
 // While Miguel listens for a command (after "Miguel", a question of his, a wait for an answer, or a tap on the face)
-// the face shows a glowing ring and he pings once when it starts. The state comes over the mic socket the moment it
+// the face shows a glowing ring; he pings once when it starts and chimes softly when it stops (#111). The state comes over the mic socket the moment it
 // changes ({type: 'listen', on, why}); /tel's `listening` covers the times that socket is down.
+// ---------- listen sound rules (#111): the ping when the ring turns on, the chime when it goes off. listen.test.js reads this block. ----------
+// The ring going off for any reason (he heard the request, a second tap, the window ran out with nothing heard)
+// chimes once, CHIME_WAIT_MS later. If the ring comes back on before then, listening never really stopped (the server
+// ends a "Miguel?" turn and at once reopens listening for the request): no chime, and no second ping. Never while
+// Miguel talks (the mic would hear it, and it would overlap his voice): checked when the ring goes off and again when
+// the chime is due (the server turns the ring off just before it sends him a line).
+// s: { offAt: when the ring went off with its chime still to come (ms), or null }. talking: Voice.busy().
+const CHIME_WAIT_MS = 300;
+function ringOn(s, now) {                                     // -> { s, ping }
+  const blink = s.offAt !== null && now - s.offAt < CHIME_WAIT_MS;
+  return { s: { offAt: null }, ping: !blink };
+}
+function ringOff(s, now, talking) {                           // -> { s, wait }: call chimeDue after `wait` ms (0: don't)
+  return talking ? { s: { offAt: null }, wait: 0 } : { s: { offAt: now }, wait: CHIME_WAIT_MS };
+}
+function chimeDue(s, offAt, talking) {                        // offAt: the ringOff this check is for -> { s, chime }
+  if (s.offAt === null || s.offAt !== offAt) return { s, chime: false };   // back on since, or off again (its own check)
+  return { s: { offAt: null }, chime: !talking };
+}
+// ---------- end listen sound rules ----------
 const Listen = (() => {
   let on = false, why = null, heard = 0;                      // heard: when the server last told us
+  let snd = { offAt: null };                                  // the listen sound rules' state
   function set(next, reason, fromServer) {
     next = !!next;
     if (fromServer) heard = Date.now();
-    if (next && !on) Voice.ping();                            // listening starts: ping (once, whatever turned it on)
+    if (next && !on) {                                        // listening starts: ping (once, whatever turned it on)
+      const r = ringOn(snd, performance.now()); snd = r.s;
+      if (r.ping) Voice.ping();
+    } else if (!next && on) {                                 // listening stops: chime a moment later, unless...
+      const r = ringOff(snd, performance.now(), Voice.busy()); snd = r.s;
+      if (r.wait) {
+        const at = snd.offAt;
+        setTimeout(() => { const d = chimeDue(snd, at, Voice.busy()); snd = d.s; if (d.chime) Voice.chime(); }, r.wait);
+      }
+    }
     on = next; why = next ? (reason || why) : null;
     if (face) face.setListening(on);
   }
