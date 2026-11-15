@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from "react";
 import { clockLabel } from "@/lib/family/format";
-import { useFamily, useFamilyActions } from "@/lib/family/store";
+import { useDemoControls, useFamily, useFamilyActions } from "@/lib/family/store";
 import { FaceBadge } from "./miguel/FaceBadge";
 import { HoldToTalk } from "./HoldToTalk";
 import { PlainButton, Sheet } from "./ui";
@@ -13,6 +13,8 @@ import { PlainButton, Sheet } from "./ui";
 export function AlertLayer() {
   const s = useFamily();
   const actions = useFamilyActions();
+  // Voice clips to her (`talk`) aren't on the real server yet, so Hold to talk is demo-only.
+  const demo = useDemoControls() !== null;
   const [confirm911, setConfirm911] = useState(false);
   const [neighborSheet, setNeighborSheet] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export function AlertLayer() {
         </dl>
 
         <div className="mt-8 space-y-3">
-          {!handled && <HoldToTalk who={mom} tone="alarm" />}
+          {!handled && demo && <HoldToTalk who={mom} tone="alarm" />}
           <div className="grid grid-cols-2 gap-3">
             <PlainButton tone="paper" onClick={() => setNeighborSheet(true)}>
               Call {neighbor ? neighbor.name : "a neighbor"}
