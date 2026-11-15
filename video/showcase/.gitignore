@@ -1,0 +1,8 @@
+node_modules/
+out/
+public/capture/
+deliverables/frames/
+.env
+public/audio/mix*.wav
+public/audio/stem_*.wav
+public/audio/events-*.json

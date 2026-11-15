@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { DEMO_BY_ENV, FAMILY_TOKEN, familyWsUrl, wantsDemo } from "./config";
+import { DEMO_BY_ENV, FAMILY_TOKEN, demoTiming, familyWsUrl, wantsDemo } from "./config";
 import { seedState } from "./seed";
 import { ServerSource, serverBootState } from "./server-source";
 import { DemoSource, demoControls, demoNow, type DemoControls, type FamilySource } from "./source";
@@ -34,7 +34,7 @@ function getSource(): FamilyContextValue {
   // In the browser, one source for the whole app session, so state survives page changes.
   if (!singleton) {
     if (wantsDemo(window.location.search)) {
-      const source = new DemoSource();
+      const source = new DemoSource(undefined, demoTiming());
       singleton = { source, demo: demoControls(source) };
     } else {
       // Viewer: the seed's circle member id until per-person tokens (T-22) say who's signed in.

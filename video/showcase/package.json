@@ -1,0 +1,27 @@
+{
+  "name": "miguel-family-showcase",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "capture": "node capture/capture.mjs",
+    "build": "tools/build.sh"
+  },
+  "dependencies": {
+    "@fontsource/dm-mono": "^5.3.0",
+    "@fontsource/figtree": "^5.3.0",
+    "@fontsource/literata": "^5.3.0",
+    "@remotion/cli": "4.0.543",
+    "@types/three": "^0.187.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "remotion": "4.0.543",
+    "three": "^0.187.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "puppeteer-core": "^24.37.0",
+    "typescript": "^5.9.3"
+  }
+}

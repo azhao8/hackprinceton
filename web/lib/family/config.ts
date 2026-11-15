@@ -39,3 +39,18 @@ export function resolveMedia(path: string, origin: string): string {
   if (/^(https?:|data:|blob:)/.test(path)) return path;
   return new URL(path, `${origin}/`).toString();
 }
+
+/**
+ * Demo step lengths for filming, from NEXT_PUBLIC_DEMO_TIMING (JSON of milliseconds, e.g.
+ * {"loading":1400,"onTheWay":2900}). Anything missing or not a number keeps its default.
+ */
+export function demoTiming(raw: string | undefined = process.env.NEXT_PUBLIC_DEMO_TIMING): Record<string, number> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, v]) => typeof v === "number" && Number.isFinite(v) && v >= 0));
+  } catch {
+    return {};
+  }
+}

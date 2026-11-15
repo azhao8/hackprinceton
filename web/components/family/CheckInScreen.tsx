@@ -74,7 +74,7 @@ export function CheckInScreen() {
             // eslint-disable-next-line @next/next/no-img-element -- live frames from Miguel's camera
             <img src={frame} alt={`${name}, live through Miguel's camera`} className="block aspect-[3/4] w-full bg-ink object-cover" />
           ) : demo ? (
-            <Margaret talking={momTalking} className="block h-auto w-full" />
+            <Margaret talking={momTalking} greet className="block h-auto w-full" />
           ) : (
             <div className="flex aspect-[3/4] w-full items-center justify-center bg-ink px-8 text-center" role="status">
               <span className="fg-label !text-[11px] !text-paper/80">Opening Miguel&rsquo;s camera…</span>
