@@ -48,6 +48,10 @@ and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start
 `drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent`, `tray_waiting` (#90:
 the bring skill waits for someone to load the tray; the phone's "I put items in his tray" button
 lights up) (contract/web/README.md).
+NEW (#88): after a fall (the firmware cut the motors past 30 deg) the server starts that wait by itself,
+stricter (app/robot_watch.py FallWatch), at most 3 times in a row; env MIGUEL_AUTO_RESTART (default on).
+Never after Cut motor power, Park or e-stop, never under the e-stop, never with a drifting tilt sensor.
+`autostart` gains `fall` (bool): this wait follows a fall.
 
 NEW (#54, the voice agent and the guardian channel; additive, for Alex's review as W-6 owner).
 Messages in contract/web/README.md ("Agent"). "Agent auth" below = this laptop directly, or
@@ -101,7 +105,7 @@ from aiohttp import WSMsgType, web
 
 from app.arbiter import Arbiter, Source
 from app.link import TRIM_STEP_DEG, RobotLink
-from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch
+from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch, FallWatch
 from app.speech.timing import TurnTimer
 
 log = logging.getLogger("app.api")
@@ -216,6 +220,7 @@ STOCK_LINES = CONTROL_PRESETS + PHONE_LINES + AGENT_LINES + START_LINES
 PHONE_SEEN_S = 3.0      # the phone page polls /tel 1-8 times a second: quiet this long = not connected
 CALIBRATING_S = 3.0     # the firmware measures for 2 s after c
 DRIFT_SAY_EVERY_S = 15  # say the drift line at most this often
+DELIBERATE_STOP_S = 3.0 # a fall this soon after Cut motor power, Park or e-stop isn't auto-restarted (#88)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -265,6 +270,10 @@ class ApiState:
     agent: Any = None                          # app.brain.agent.Agent, for the chat resets
     drift: DriftWatch = field(default_factory=DriftWatch)
     autostart: AutoStart | None = None         # made in __post_init__ (it needs self.arm)
+    # NEW (#88) re-start balancing by itself after a fall, once held upright and steady (MIGUEL_AUTO_RESTART)
+    falls: FallWatch = field(default_factory=FallWatch)
+    auto_restart: bool = field(default_factory=lambda: _env_flag("MIGUEL_AUTO_RESTART", True))
+    _stopped_at: float = -1e9                  # monotonic time of the last x, P or e-stop
     on_settings: Any = None                    # (settings) -> None: e.g. a running follow takes them live
     phone_seen: float | None = None            # monotonic time of the phone page's last /tel or /frame
     log_epoch: int = 0                         # bumped by Clear log: /ws clients drop their agent log
@@ -452,6 +461,7 @@ class ApiState:
     def estop(self, on: bool) -> None:
         self.arbiter.estop(on)
         if on:
+            self._stopped_at = time.monotonic()
             self.autostart.cancel()   # STOP also ends a wait to start
             self.follow = False
             self.arbiter.clear(Source.SKILL)
@@ -472,6 +482,8 @@ class ApiState:
         if letter not in KEY_LETTERS:
             return False
         if letter in "xP5":
+            if letter in "xP":
+                self._stopped_at = time.monotonic()   # a deliberate stop: no auto-restart after it (#88)
             self.autostart.cancel()
             self.stop_motion()
         try:
@@ -594,6 +606,7 @@ class ApiState:
             self._say_drift(force=True)
             return False, "Tilt sensor drifting: recalibrate first"
         self.autostart.start(time.monotonic())
+        self.falls.restarts = 0                       # a person pressed Start: auto-restarts count from 0 (#88)
         log.info("start: waiting until the robot is held upright and steady")
         return True, self.autostart.note
 
@@ -635,11 +648,39 @@ class ApiState:
             self._say_drift()
             if self.autostart.waiting:
                 self.autostart.cancel("Tilt sensor drifting: recalibrate first")
+        if self.falls.feed(tel, now):
+            self._after_fall(now)
+        if self.autostart.waiting and self.autostart.fall and self.arbiter.estopped:
+            self.autostart.cancel()                   # never re-start by itself under the e-stop
         event = self.autostart.feed(tel, now)
         if event == "timeout":
             log.info("start: nobody held it upright in time")
         elif event == "started":
             log.info("start: balancing")
+
+    def _after_fall(self, now: float) -> None:
+        """#88: the robot fell (the firmware cut the motors past 30 deg). Wait for it to be held upright
+        and steady, then start again by itself, unless something says a person should decide."""
+        log.warning("the robot fell over (tilt > 30 deg)")
+        if not self.auto_restart:
+            return
+        if self.arbiter.estopped:
+            log.info("after the fall: the e-stop is on, no auto-restart")
+            return
+        if time.monotonic() - self._stopped_at < DELIBERATE_STOP_S:
+            log.info("after the fall: it was just stopped on purpose, no auto-restart")
+            return
+        if self.drift.on:
+            self.autostart.cancel("Tilt sensor drifting: recalibrate first")
+            return
+        if self.falls.restarts >= self.falls.max_restarts:
+            self.autostart.cancel(f"I fell {self.falls.restarts + 1} times in a row: press Start")
+            log.info("after the fall: %d auto-restarts in a row already, waiting for Start", self.falls.restarts)
+            return
+        self.falls.restarts += 1
+        self.autostart.start(now, fall=True)
+        log.info("after the fall: waiting until the robot is held upright and steady (auto-restart %d of %d)",
+                 self.falls.restarts, self.falls.max_restarts)
 
     # --- NEW (#79) the resets ---
 

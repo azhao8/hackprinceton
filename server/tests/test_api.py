@@ -609,7 +609,7 @@ def test_start_waits_for_upright_and_steady_then_sends_g():
     held(state, link, t, 1.2, pitch=-2.0, rate=2.0)              # upright and steady
     assert link.sent == ["g"]
     held(state, link, 50.0, 0.2, state_name="balance")
-    assert not state.autostart.waiting and state.status()["autostart"] == {"waiting": False, "note": ""}
+    assert not state.autostart.waiting and state.status()["autostart"] == {"waiting": False, "note": "", "fall": False}
 
 
 def test_stop_park_and_cancel_end_the_wait():
@@ -741,6 +741,129 @@ def test_resets_from_the_control_page(tmp_path):
         finally:
             await client.close()
     asyncio.run(go())
+
+
+# --- #88: auto-restart after a fall --------------------------------------------------------------------
+
+FELL = "fell over (tilt > 30 deg)"
+
+
+def fall(state, link, t0, fault=FELL):
+    """Balancing for a moment, then the firmware cuts the motors."""
+    for i, (name, f) in enumerate([("balance", None), ("balance", None), ("idle", fault)]):
+        link.telemetry = {"t": "tel", "state": name, "pitch": -3.65 if name != "idle" else 40.0, "rate": 0.0, "fault": f}
+        state.watch(t0 + i * 0.05)
+    return t0 + 0.15
+
+
+def fall_state(**kw):
+    link = LetterLink()
+    state = ApiState(Arbiter(), link, auto_restart=True, **kw)
+    return state, link
+
+
+def test_after_a_fall_it_waits_for_upright_and_steady_then_starts_by_itself():
+    state, link = fall_state()
+    t = fall(state, link, 0.0)
+    a = state.status()["autostart"]
+    assert a["waiting"] and a["fall"] and "fell" in a["note"]
+    t = held(state, link, t, 5.0, pitch=80.0)                     # lying on the floor
+    t = held(state, link, t, 1.5, pitch=-3.65, rate=0.5)         # steady, but only 1.5 s
+    t = held(state, link, t, 0.1, pitch=10.0)                     # tipped out of the window: starts over
+    assert link.sent == []
+    held(state, link, t, 2.2, pitch=-3.0, rate=0.5)              # held upright and steady
+    assert link.sent == ["g"] and state.falls.restarts == 1
+
+
+def test_no_auto_restart_after_a_deliberate_stop():
+    state, link = fall_state()
+    fall(state, link, 0.0, fault="stop command")                  # Cut motor power (x), from anywhere
+    assert not state.autostart.waiting
+    state.key("x")                                                # x from this server, then it tipped over
+    fall(state, link, 10.0)
+    assert not state.autostart.waiting
+    state, link = fall_state()
+    state.key("P")
+    fall(state, link, 0.0)
+    assert not state.autostart.waiting
+
+
+def test_no_auto_restart_under_the_estop_or_with_drift_or_switched_off():
+    state, link = fall_state()
+    state.arbiter.estop(True)                                     # e-stop held (not via state.estop: no stop time)
+    fall(state, link, 0.0)
+    assert not state.autostart.waiting
+    state, link = fall_state()
+    state.drift.on = True
+    fall(state, link, 0.0)
+    assert not state.autostart.waiting and "drifting" in state.autostart.note
+    link = LetterLink()
+    state = ApiState(Arbiter(), link, auto_restart=False)
+    fall(state, link, 0.0)
+    assert not state.autostart.waiting
+
+
+def test_estop_during_the_fall_wait_ends_it():
+    state, link = fall_state()
+    t = fall(state, link, 0.0)
+    state.arbiter.estop(True)
+    held(state, link, t, 3.0, pitch=-3.65, rate=0.0)
+    assert not state.autostart.waiting and link.sent == []
+
+
+def test_the_env_switch(monkeypatch):
+    monkeypatch.setenv("MIGUEL_AUTO_RESTART", "0")
+    assert ApiState(Arbiter(), LetterLink()).auto_restart is False
+    monkeypatch.delenv("MIGUEL_AUTO_RESTART")
+    assert ApiState(Arbiter(), LetterLink()).auto_restart is True   # default on
+
+
+def test_auto_restarts_stop_after_three_in_a_row_until_start_is_pressed():
+    state, link = fall_state()
+    t = 0.0
+    for n in range(3):
+        t = fall(state, link, t)
+        t = held(state, link, t, 2.2, pitch=-3.65, rate=0.0)
+        assert link.sent.count("g") == n + 1
+    t = fall(state, link, t)                                      # the 4th fall in a row
+    assert not state.autostart.waiting and "4 times" in state.autostart.note
+    held(state, link, t, 3.0, pitch=-3.65, rate=0.0)
+    assert link.sent.count("g") == 3
+    assert state.arm() and state.falls.restarts == 0              # a person pressed Start: counts from 0
+
+
+def test_with_the_mock_robot_end_to_end():
+    from mock.robot import MockRobot
+
+    class MockLink(LetterLink):
+        def __init__(self, robot):
+            super().__init__()
+            self.robot, self.now = robot, 0.0
+
+        def arm(self):
+            super().arm()
+            self.robot.handle_char("g", self.now)
+
+    robot = MockRobot(held=True)
+    link = MockLink(robot)
+    state = ApiState(Arbiter(), link, auto_restart=True)
+
+    def run(seconds, t):
+        for _ in range(int(seconds * 20)):
+            robot.step(0.05, t)
+            link.now, link.telemetry = t, robot.telemetry()
+            state.watch(t)
+            t += 0.05
+        return t
+
+    robot.handle_char("g", 0.0)
+    t = run(2.0, 0.0)
+    robot.fall()                                                  # motors cut, lying down
+    t = run(10.0, t)
+    assert state.autostart.waiting and state.autostart.fall and not robot.running
+    robot.held = True                                             # someone picks him up and holds him
+    run(3.0, t)
+    assert robot.running and not state.autostart.waiting and link.sent == ["g"]
 
 
 class FakeWavTTS(FakeTTS):

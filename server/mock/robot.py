@@ -143,6 +143,12 @@ class MockRobot:
         self.park_start = None
         self.vcmd = 0.0
 
+    def fall(self) -> None:
+        """Test hook (#88): it tips past 30 deg; the firmware cuts the motors and it lies on the floor."""
+        if self.running:
+            self.motors_off("fell over (tilt > 30 deg)")
+        self.held = False
+
     # ---- time
 
     def step(self, dt: float, now: float) -> None:
