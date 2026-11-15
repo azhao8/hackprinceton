@@ -54,7 +54,7 @@ def test_watcher_raises_only_when_claude_agrees():
         def update(self, p):
             return "lying down"
 
-    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, confirm=confirm, detector=Always())
+    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=confirm, detector=Always())
     assert asyncio.run(w.check_once()) is False and raised == []
     assert asyncio.run(w.check_once()) is True and raised == ["a woman is lying on the floor"]
 
@@ -69,7 +69,7 @@ def test_watcher_raises_when_claude_is_unreachable():
         def update(self, p):
             return "lying down"
 
-    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, confirm=broken, detector=Always())
+    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=broken, detector=Always())
     assert asyncio.run(w.check_once()) is True and raised == ["lying down"]
 
 
@@ -113,7 +113,7 @@ def test_cooldown_starts_only_after_a_confirmed_alert():
         return next(answers)
 
     current = [None]
-    w = FallWatcher(lambda: current[0], lambda: b"jpeg", raised.append, confirm=confirm, detector=d)
+    w = FallWatcher(lambda: current[0], lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=confirm, detector=d)
 
     def step(p, dt=0.2):
         t[0] += dt

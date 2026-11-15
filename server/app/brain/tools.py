@@ -38,6 +38,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.brain.spoken import clean_spoken
 from app.brain.types import AgentEvent, EventKind, Source, Utterance
 from app.skills import Skill, SkillResult, SkillRunner
 
@@ -128,6 +129,8 @@ class ToolBox:
         places: Any = None,
         skill_wait_s: float = 120.0,
         follow_check_s: float = 1.0,
+        clip_frames: int = 3,
+        clip_gap_s: float = 0.3,
     ):
         """
         runner: the SkillRunner shared with the rest of the server (None = no body).
@@ -142,6 +145,7 @@ class ToolBox:
         follow_check_s: follow returns after this long if it hasn't failed straight away.
         wait_tray: waits until someone confirms the tray (Tray loaded button or voice); True if confirmed.
         places: the Memory (SQLite) that learn_place saves into (set_place, place_for).
+        clip_frames, clip_gap_s: describe_scene(clip=true) sends this many frames this far apart.
         """
         self.runner = runner
         self.skill_factories: dict[str, Callable[..., Skill]] = dict(skill_factories or {})
@@ -156,6 +160,7 @@ class ToolBox:
         self.photos: OrderedDict[int, bytes] = OrderedDict()
         self.skill_wait_s = skill_wait_s
         self.follow_check_s = follow_check_s
+        self.clip_frames, self.clip_gap_s = clip_frames, clip_gap_s
         self.host: ToolHost | None = None
         self._photo_ids = itertools.count(1)
         self._skill_task: asyncio.Task[SkillResult] | None = None   # the physical action we started
@@ -302,8 +307,11 @@ class ToolBox:
           {}, self._stop, stepped=False)
         r("describe_scene",
           "Look through the camera. With a question ('what is she holding?', 'what does the label say?', "
-          "'is the stove on?') you get the answer; with null, a one or two sentence description of the scene.",
-          {"question": _nullable_str("What to find out from the picture, or null for a general description.")},
+          "'is the stove on?') you get the answer; with null, a one or two sentence description of the scene. "
+          "clip=true looks at a short clip (about a second) instead of one picture: use it when the question "
+          "is about what is happening or moving ('what is she doing?', 'is he getting up?').",
+          {"question": _nullable_str("What to find out from the picture, or null for a general description."),
+           "clip": {"type": "boolean", "description": "true for a short clip (what is happening, motion); false for one picture."}},
           self._describe_scene)
         r("wait_for_tray",
           "Wait until someone confirms they put something in your tray or took it out (the Tray loaded "
@@ -350,7 +358,7 @@ class ToolBox:
         return ToolOutcome(True, f"Plan set with {len(steps)} steps.", {"steps": steps})
 
     async def _say(self, a: dict[str, Any]) -> ToolOutcome:
-        text = str(a.get("text", "")).strip()
+        text = clean_spoken(str(a.get("text", "")))   # no emojis or markdown for the voice
         if not text:
             return ToolOutcome(False, "Nothing to say.")
         self._emit("say", text, to="senior")
@@ -452,13 +460,23 @@ class ToolBox:
         return ToolOutcome(True, f"Stopped {was}." if was else "Nothing was moving; holding still.")
 
     async def _describe_scene(self, a: dict[str, Any]) -> ToolOutcome:
-        jpeg = await self._snap()
+        if a.get("clip"):   # a short clip: CLIP_FRAMES frames CLIP_GAP_S apart, oldest first
+            frames = await self.clip()
+            jpeg = frames[-1] if frames else None
+        else:
+            jpeg = await self._snap()
+            frames = [jpeg] if jpeg is not None else []
         if jpeg is None:
             return ToolOutcome(False, "describe_scene is unavailable: no camera frame right now.")
         question = str(a.get("question") or "").strip() or None
         if self.describe is None:
             from app.brain.vision_check import describe_scene
-            return ToolOutcome(True, await describe_scene(jpeg, question=question))
+            return ToolOutcome(True, await describe_scene(frames, question=question))
+        if len(frames) > 1:   # an injected describe: it gets the clip only if it takes a list
+            try:
+                return ToolOutcome(True, await self.describe(frames, question=question))   # type: ignore[call-arg, arg-type]
+            except TypeError:
+                pass
         if question is None:
             return ToolOutcome(True, await self.describe(jpeg))
         try:
@@ -584,6 +602,12 @@ class ToolBox:
             jpeg = await jpeg
         return jpeg or None
 
+    async def clip(self, frames: int | None = None, gap_s: float | None = None) -> list[bytes]:
+        """A short clip from the camera: up to `frames` JPEGs `gap_s` apart, oldest first (a frame
+        that hasn't changed since the last one is skipped). Empty without a camera frame."""
+        return await grab_clip(self._snap, self.clip_frames if frames is None else frames,
+                               self.clip_gap_s if gap_s is None else gap_s)
+
     def _store_photo(self, jpeg: bytes) -> dict[str, Any]:
         pid = next(self._photo_ids)
         self.photos[pid] = jpeg
@@ -591,6 +615,18 @@ class ToolBox:
             self.photos.popitem(last=False)
         url = self.save_photo(jpeg) if self.save_photo is not None else None
         return {"photo_id": pid, "photo_url": url}
+
+
+async def grab_clip(snap: Callable[[], Awaitable[bytes | None]], frames: int, gap_s: float) -> list[bytes]:
+    """`frames` camera JPEGs from `snap()`, `gap_s` apart, oldest first, repeats skipped."""
+    out: list[bytes] = []
+    for i in range(max(1, frames)):
+        if i:
+            await asyncio.sleep(gap_s)
+        jpeg = await snap()
+        if jpeg is not None and (not out or jpeg != out[-1]):
+            out.append(jpeg)
+    return out
 
 
 def _from_result(name: str, r: SkillResult) -> ToolOutcome:
