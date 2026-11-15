@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass, field
 
 # Numbers from balance.ino
-TRIM = 5.6               # deg: balance point with the phone tilted up
+TRIM = -3.65             # deg: balance point since the kickstand came off (was +5.6)
 KICK_ANGLE = 11.24       # deg: resting on the kickstand
 V_LIMIT, W_LIMIT = 0.6, 1.5
 VT_ACC = 0.5             # m/s^2: how fast the speed ramps
@@ -35,7 +35,7 @@ def _clamp(x: float, lim: float) -> float:
 @dataclass
 class MockRobot:
     running: bool = False
-    pitch: float = KICK_ANGLE
+    pitch: float = TRIM       # held upright (the kickstand came off), so g works at once
     trim: float = TRIM          # deg; t / y shift it 0.25 deg, like the firmware
     rate: float = 0.0
     vt: float = 0.0          # target speed, m/s

@@ -154,7 +154,8 @@ It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `
   - KV 3.0
   - KX 2.0
   - KI 0.77 (only while holding still)
-- **Trim and lean:** trim **+5.6°** with the phone tilted up for person-follow (it was −1.25° untilted), FF_RR 0.5°, FF_CREEP 0.6°.
+- **Trim and lean:** trim **−3.65°** since the kickstand was removed (Nov 14, 9 pm; it was +5.6° with the kickstand and the phone tilted up, −1.25° untilted), FF_RR 0.5°, FF_CREEP 0.6°. The control page's Balance angle card shifts it live over Wi-Fi (`t` / `y`), until the robot reboots.
+- **⚠️ No kickstand:** `P` (park) and the 30-minute auto-park still lean onto the kickstand, so they tip the robot over. End a run by holding it and cutting the motors (`x`, Cut motor power) until the firmware is changed. `fw-known-good` still has the old trim (+5.6°) and the kickstand park.
 - **Tilt estimate:** complementary filter 0.99 with a/g compensation, gyro-only during hard moves. Accelerometer at ±4 g.
 - **Timing:** 200 Hz loop, 40 kHz step interrupt.
 

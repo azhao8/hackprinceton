@@ -48,11 +48,11 @@ def run(robot: MockRobot, start: float, seconds: float, dt: float = 0.01, feed=N
     return t
 
 
-def test_starts_idle_on_the_kickstand():
+def test_starts_idle_and_upright():
     r = MockRobot()
     tel = r.telemetry()
     check(tel)
-    assert tel["state"] == "idle" and tel["pitch"] == KICK_ANGLE and tel["ack"] == 0
+    assert tel["state"] == "idle" and tel["pitch"] == TRIM and tel["ack"] == 0
 
 
 def test_drive_is_ignored_until_g():

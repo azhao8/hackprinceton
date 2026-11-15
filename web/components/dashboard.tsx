@@ -11,7 +11,7 @@ const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.1,
 const SAY_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"];
 const CUT_CONFIRM = "Cut motor power?\n\nThe robot stops balancing and drops. Use STOP unless that isn't enough.";
 /** The firmware's default balance angle (balance.ino `trim`), before any shift from this page. */
-const FIRMWARE_TRIM = 5.6;
+const FIRMWARE_TRIM = -3.65;
 const TRIM_STEP = 0.25;
 const ARM_CONFIRM =
   "Start balancing (g)?\n\nSomeone must be holding the robot upright, within about 6°, ready to let go once it holds itself.";
@@ -353,7 +353,7 @@ function TrimCard({ shift, pitch, balancing, send }: {
   const goal = Number.parseFloat(target);
   const steps = Number.isFinite(goal) ? Math.round((goal - now) / TRIM_STEP) : 0;
   return (
-    <Card title="Balance angle (trim)" hint={`Firmware default +${FIRMWARE_TRIM}°; changes here last until the robot reboots`}>
+    <Card title="Balance angle (trim)" hint={`Firmware default ${fmtSigned(FIRMWARE_TRIM)}°; changes here last until the robot reboots`}>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <div className="text-sm">
           Target <span className="font-mono text-lg">{fmtSigned(now)}°</span>

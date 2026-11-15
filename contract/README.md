@@ -39,7 +39,7 @@ The mock robot (`cd server && uv run python -m mock`) speaks the same UDP messag
 | --- | --- |
 | `g` | Start balancing. Only works while the robot is held within 6° of upright; a person must be holding it |
 | `x` | Motors off now |
-| `P` | Park: lean back onto the kickstand, then motors off |
+| `P` | Park: lean back onto the kickstand, then motors off. **The kickstand was removed (Nov 14, 9 pm): Park tips the robot over** until the firmware is changed; hold it and send `x` instead |
 | `5` | Stop and hold here |
 | `L` / `R` | Turn exactly 90° left / right on the gyro |
 | `F` / `B` | Drive exactly 0.5 m forward / back |
@@ -57,7 +57,7 @@ The rest (gain tuning, tests) are for the bench; see the top of `balance.ino`.
 
 | Key | Meaning |
 | --- | --- |
-| `pitch` | Tilt, **degrees**, + leaning forward. Balances near +5.6 with the phone tilted up |
+| `pitch` | Tilt, **degrees**, + leaning forward. Balances near the trim: −3.65 since the kickstand came off (Nov 14, 9 pm) |
 | `rate` | Tilt rate, **degrees per second** |
 | `vl`, `vr` | Left and right wheel speed, m/s, + forward |
 | `batt` | Battery volts. Always `null` today (C-10) |

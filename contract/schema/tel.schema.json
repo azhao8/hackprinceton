@@ -7,7 +7,7 @@
   "required": ["t", "pitch", "rate", "vl", "vr", "batt", "state", "fault", "x", "yaw"],
   "properties": {
     "t": { "const": "tel" },
-    "pitch": { "type": "number", "description": "Tilt in DEGREES, + leaning forward (battery side). Balances near the trim (+5.6 with the phone tilted up)." },
+    "pitch": { "type": "number", "description": "Tilt in DEGREES, + leaning forward (battery side). Balances near the trim (-3.65 since the kickstand came off; it was +5.6 with it)." },
     "rate": { "type": "number", "description": "Tilt rate in DEGREES per second, + tipping forward." },
     "vl": { "type": "number", "description": "Left wheel speed, m/s, + forward (commanded wheel speed)." },
     "vr": { "type": "number", "description": "Right wheel speed, m/s, + forward." },
