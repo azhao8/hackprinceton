@@ -76,7 +76,7 @@ Where they come from:
 | --- | --- |
 | Vision (Grant) | `wake` (first time up), `walk` (walked with Miguel; `note` has distance), `rest` |
 | Skills (Grant) | `water`, `medication`, `delivery` (delivered), `night_light` |
-| Agent (Grant) | `medication` (her answer when reminded), `message` (a note or voice note played) |
+| Agent (Grant) | `medication` (her answer when reminded), `message` (a note or voice note played; Miguel's answer to an `ask`) |
 | Server (Alex) | `check_in` (with length), `alert` (raised, then handled) |
 
 **Walking pace** (`pace`): Miguel's wheel speed while he follows her steadily on a walk, averaged per day (telemetry `vl`/`vr`, contract v1).
@@ -93,6 +93,7 @@ Where they come from:
 | `alert` | `ref`, `id`, `action`: `handled` | Marks the alert handled by this person, tells everyone | `alert-handled.json` |
 | `routine` | `ref`, `id`, `on` | Turns a routine on or off; sends `routines` | `routine.json` |
 | `invite` | `ref`, `name`, `relation` | Adds them to the circle as invited (no real invite yet); sends `circle` | `invite.json` |
+| `ask` | `ref`, `text` (1–500 chars) | "Ask Miguel": the agent answers the question. `ack` right away; each answer arrives as an `event` with `kind: "message"`, `title` starting with "Miguel", `note` = his reply, optional `photo` | `ask.json` |
 
 ## Media (HTTP)
 
