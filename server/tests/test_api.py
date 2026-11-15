@@ -77,7 +77,7 @@ def test_auto_clamps_and_survives_junk():
         await c.post("/control/follow-on")
         await c.post("/auto", json={"v": 9, "w": "nan"})
         cmd = s.arbiter.decide()
-        assert (cmd.v, cmd.w) == (0.6, 0.0)
+        assert (cmd.v, cmd.w) == (1.0, 0.0)
         assert (await c.post("/auto", data=b"not json")).status == 200
     with_client(t)
 

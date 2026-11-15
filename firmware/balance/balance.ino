@@ -305,7 +305,7 @@ void handleJson(const char *js) {
   if (!running) return;                                  // arming is only by an explicit "g"
   if (!strcmp(mode, "balance")) { vt = 0; wt = 0; turning = false; netDriving = true; lastNetCmd = millis(); return; }
   if (!strcmp(mode, "drive")) {
-    float v = constrain(jsonNum(js, "\"v\"", 0), -0.6f, 0.6f), w = constrain(jsonNum(js, "\"w\"", 0), -1.5f, 1.5f);
+    float v = constrain(jsonNum(js, "\"v\"", 0), -VMAX, VMAX), w = constrain(jsonNum(js, "\"w\"", 0), -1.5f, 1.5f);
     if (fabsf(v) > 0.001f || fabsf(w) > 0.001f) { moving = 0; turning = false; vt = v; wt = w; }
     else if (!moving && !turning) { vt = 0; wt = 0; }
     netDriving = true; lastNetCmd = millis();

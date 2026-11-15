@@ -10,7 +10,7 @@ Priority: e-stop > manual joystick > skill (CLAUDE.md). Everything that wants th
   lurch the moment it's released. The skill runner cancels the task itself.
 - A request goes stale after `stale_after` seconds (default 0.3 s, like the robot's own watchdog),
   so a joystick or skill that stops sending stops the robot.
-- Speed and turn are clamped to the robot's limits (firmware/README.md: ±0.6 m/s, ±1.5 rad/s).
+- Speed and turn are clamped to the robot's limits (firmware/README.md: ±1.0 m/s, ±1.5 rad/s).
 
 Units are SI with ROS REP 103 directions: v in m/s (+ forward), w in rad/s (+ turning left).
 """
@@ -39,7 +39,7 @@ class Command:
     source: str       # "estop", "joystick", "skill" or "none"
 
 
-V_MAX = 0.6
+V_MAX = 1.0   # the wheels' limit (VMAX in balance.ino); uncapped Sat 10 pm, Alex tests the real top speed
 W_MAX = 1.5
 
 

@@ -66,7 +66,7 @@ from app.link import ALLOWED_LETTERS, FRESH_S, Health
 
 log = logging.getLogger("app.link")
 
-V_MAX = 0.6     # m/s, contract v1 / balance.ino handleJson clamp
+V_MAX = 1.0     # m/s, balance.ino handleJson clamp (VMAX)
 W_MAX = 1.5     # rad/s
 MODES = ("drive", "balance", "idle")    # contract/schema/cmd.schema.json
 HALF_TRACK = 0.0775   # m, wheel centre to robot centre (balance.ino), for vl / vr from v and wt

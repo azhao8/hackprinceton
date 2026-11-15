@@ -26,7 +26,7 @@ The mock robot (`cd server && uv run python -m mock`) speaks the same UDP messag
 | --- | --- |
 | `seq` | Optional counter, raised on every command. Telemetry echoes it as `ack` |
 | `mode` | `drive` (default): follow `v` and `w`. `balance`: stop and hold here. `idle`: motors off |
-| `v` | Forward speed, m/s, + forward. Clamped to ±0.6 |
+| `v` | Forward speed, m/s, + forward. Clamped to ±1.0 (the wheel limit, `VMAX`) |
 | `w` | Turn rate, rad/s, + turning left. Clamped to ±1.5 |
 
 - **No `cmd` starts balancing.** If the robot isn't balancing, `drive` and `balance` are ignored. `idle` always turns the motors off.

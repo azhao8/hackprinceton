@@ -172,7 +172,7 @@ export function Dashboard() {
                 <PadKey label="D" on={held.has("R")} onPress={(on) => pressDir("R", on)} />
               </div>
               <div className="flex flex-1 flex-col gap-3">
-                <Slider label="Top speed" unit="m/s" min={0.1} max={0.6} step={0.05} value={vmax} onChange={setVmax} />
+                <Slider label="Top speed" unit="m/s" min={0.1} max={1.0} step={0.05} value={vmax} onChange={setVmax} />
                 <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={setWmax} />
               </div>
             </div>
@@ -269,7 +269,7 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
               Voice {shown.voice ? "on" : "off"}
             </button>
           </div>
-          <Slider label="Follow speed cap" unit="m/s" min={0.05} max={0.6} step={0.05} value={shown.speed}
+          <Slider label="Follow speed cap" unit="m/s" min={0.05} max={1.0} step={0.05} value={shown.speed}
             onChange={(v) => set({ speed: v })} />
           <Slider label="Closeness (bigger = stops closer)" unit="" min={range[0]} max={range[1]} step={0.05}
             value={shown.distance} onChange={(v) => set({ distance: v })} />
