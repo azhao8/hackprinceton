@@ -432,3 +432,30 @@ def test_close_closes_own_session_only():
 
     asyncio.run(main())
     assert len(fake.requests) == 2
+
+
+def test_one_request_at_a_time_and_a_retry_when_cartesia_is_busy(monkeypatch):
+    from app.speech import tts as tts_mod
+
+    monkeypatch.setenv("CARTESIA_MAX_CONCURRENT", "1")
+    client = tts_mod.CartesiaTTS("key-xyz", DEFAULT_VOICE_ID, "sonic-3.6")
+    live, peak, calls = [0], [0], []
+
+    async def fetch(text, on_chunk):
+        calls.append(text)
+        live[0] += 1
+        peak[0] = max(peak[0], live[0])
+        await asyncio.sleep(0.01)
+        live[0] -= 1
+        if text == "Two." and calls.count("Two.") == 1:
+            raise tts_mod.TTSError('Cartesia returned HTTP 429: {"error_code":"concurrency_limited"}')
+        on_chunk(b"mp3:" + text.encode())
+
+    monkeypatch.setattr(client, "_fetch", fetch)
+
+    async def go():
+        return await asyncio.gather(client.synth("One."), client.synth("Two."), client.synth("Three."))
+
+    out = asyncio.run(go())
+    assert out == [b"mp3:One.", b"mp3:Two.", b"mp3:Three."]
+    assert peak[0] == 1 and calls.count("Two.") == 2      # never two at once; the busy one retried

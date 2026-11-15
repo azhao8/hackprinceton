@@ -266,7 +266,7 @@ class CartesiaTTS:
     async def _run(self, key: tuple, clean: str, pending: _Pending) -> None:
         error: BaseException | None = None
         try:
-            await self._fetch(clean, pending.add)
+            await self._fetch_politely(clean, pending)
         except asyncio.CancelledError:
             error = TTSError("the request was cancelled")
             raise
@@ -282,6 +282,23 @@ class CartesiaTTS:
                 while len(self._cache) > self.cache_size:
                     self._cache.popitem(last=False)
             pending.finish(error)
+
+    async def _fetch_politely(self, clean: str, pending: _Pending) -> None:
+        """At most CARTESIA_MAX_CONCURRENT requests at once (default 1, in order), and a short retry when
+        Cartesia says it's busy. Sat night: the new plan answered HTTP 429 "concurrency_limited" when
+        every sentence of a reply was prefetched at once."""
+        if getattr(self, "_sem", None) is None:
+            self._sem = asyncio.Semaphore(max(1, int(os.environ.get("CARTESIA_MAX_CONCURRENT", "1") or 1)))
+        for attempt in range(4):
+            async with self._sem:
+                try:
+                    await self._fetch(clean, pending.add)
+                    return
+                except TTSError as e:
+                    busy = "HTTP 429" in str(e)
+                    if not busy or pending.chunks or attempt == 3:
+                        raise
+            await asyncio.sleep(0.3 * (attempt + 1))   # busy: wait a moment, then try again
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

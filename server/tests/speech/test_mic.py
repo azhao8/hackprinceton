@@ -467,3 +467,21 @@ def test_mic_js_parses():
 def test_mic_js_downsampler_48k_float_to_16k_s16le():
     r = subprocess.run([NODE, "-e", DOWNSAMPLER_TEST, str(MIC_JS)], check=False, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr or r.stdout
+
+
+def test_no_ring_while_his_line_is_on_its_way():
+    """Sat night: the ring lit ~2 s before his voice, while Cartesia made the audio."""
+    clock = Clock()
+    hub = MicHub(None, asyncio.Queue(), "Miguel", clock=clock)
+    hub._ws = object()                      # a phone is connected
+    hub.note_line("Sarah would like to check in. Is now a good time?")
+    hub.set_awaiting(True)                  # Claude waits for the answer at once
+    assert not hub.listening()              # ...but the line hasn't played yet
+    hub._voice(True, "Sarah would like to check in. Is now a good time?")
+    assert not hub.listening()              # talking: mic muted
+    hub._voice(False)
+    assert hub.listening() and hub.listen_reason() == "reply"
+    hub.note_line("Okay?")
+    assert not hub.listening()
+    clock.t += 9                            # the phone never played it: listen anyway after 8 s
+    assert hub.listen_reason() == "reply"

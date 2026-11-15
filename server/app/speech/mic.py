@@ -66,6 +66,7 @@ log = logging.getLogger("app.speech.mic")
 
 DEFAULT_RATE = 16000
 ANSWER_WINDOW_S = 4.0     # no wake word needed this long after Miguel asks a question
+SPEECH_DUE_MAX_S = 8.0   # longest wait for a queued line to start playing before listening anyway
 TAP_LISTEN_S = 8.0        # listening for one utterance after a tap (or "Miguel" alone)
 SHORT_WORDS = 2           # fragments this short need the wake word or an open ear
 FILLER = {"uh", "uhh", "um", "umm", "uhm", "hmm", "hm", "hmmm", "mm", "mmm", "mhm", "er", "erm",
@@ -136,6 +137,7 @@ class MicHub:
         self.voice_busy = False                # Miguel is talking on the phone (from the page)
         self.voice_text: str | None = None     # the line he is saying, or said last
         self._queued_text: str | None = None   # the last line queued for the phone (fallback)
+        self._speech_due_until = float("-inf")  # a line is queued but not playing yet: not listening
         self._turn: dict[str, Any] | None = None     # the turn being transcribed: {opened, wake}
         self._ending: dict[str, Any] | None = None   # the turn that just ended (for on_heard)
         self._ws: web.WebSocketResponse | None = None
@@ -151,8 +153,8 @@ class MicHub:
 
     def open_reason(self) -> str | None:
         """Why Miguel takes speech without the wake word right now, or None."""
-        if self.voice_busy:
-            return None                      # he is talking (and the mic is muted)
+        if self.voice_busy or self.clock() < self._speech_due_until:
+            return None                      # he is talking (mic muted), or about to: his line is on its way
         if self.awaiting:
             return "reply"
         now = self.clock()
@@ -188,8 +190,13 @@ class MicHub:
         self._sync()
 
     def note_line(self, text: str) -> None:
-        """A line was queued for the phone (fallback for which line he said last)."""
+        """A line was queued for the phone (fallback for which line he said last). Until the phone says it
+        started playing (or SPEECH_DUE_MAX_S passes), he isn't listening: the ring used to light ~2 s
+        before his voice, while Cartesia made the audio (Sat night check-in test)."""
         self._queued_text = " ".join(str(text).split()) or None
+        if self._ws is not None:             # only when a phone is there to play it
+            self._speech_due_until = self.clock() + SPEECH_DUE_MAX_S
+        self._sync()
 
     def note_miguel_spoke(self, text: str | None = None) -> None:
         """Called after each `say` (app/__main__.py). The answer window now opens when the phone
@@ -200,6 +207,8 @@ class MicHub:
     def _voice(self, busy: bool, text: str | None = None, sid: int | None = None) -> None:
         if text:
             self.voice_text = " ".join(str(text).split())
+        if busy or self.voice_busy:          # the line started (or ended): no longer waiting for it
+            self._speech_due_until = float("-inf")
         if busy and not self.voice_busy:     # he starts talking: earlier windows are over
             self._question_until = self._once_until = float("-inf")
         if not busy and self.voice_busy:     # he finished: a question opens the answer window

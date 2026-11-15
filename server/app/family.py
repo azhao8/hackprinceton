@@ -310,6 +310,10 @@ class FamilyHub:
                     self.check_in = {"phase": "declined", "id": cid}
                 await ok(id=cid)
             elif action == "end":
+                if self.check_in.get("phase") == "asking":   # Miguel is still asking her: call it off
+                    self.state.agent_message(
+                        f"[check-in cancelled, family app] {name} cancelled the video check-in. Stop asking "
+                        f"{self.short} about it; don't call check_in_result.", "guardian", "family app")
                 self._end_call("ended")
                 await ok()
             else:

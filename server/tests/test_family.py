@@ -222,3 +222,20 @@ def test_listening_mode_follows_the_mic_hubs_listening_state(tmp_path):
     mic.set_awaiting(False)
     mic.open_once("tap")                         # she tapped his face
     assert h.snapshot_state()["mode"] == "listening"
+
+
+
+def test_ending_a_check_in_while_he_asks_calls_it_off(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
+        await until(ws, "ack")
+        await ws.send_json({"t": "check_in", "ref": "e", "action": "end"})
+        await until(ws, "ack", lambda m: m["ref"] == "e")
+        assert "cancelled the video check-in" in st.messages[-1][1] and h.check_in["phase"] == "idle"
+        await ws.send_json({"t": "check_in", "ref": "c2", "action": "request"})   # a new one starts fresh
+        await until(ws, "ack", lambda m: m["ref"] == "c2")
+        assert h.check_in["phase"] == "asking" and "check_in_result" in st.messages[-1][1]
+        await client.close()
+    asyncio.run(go())
