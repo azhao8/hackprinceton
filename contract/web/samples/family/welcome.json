@@ -1,0 +1,14 @@
+{
+  "t": "welcome",
+  "v": 1,
+  "resident": {
+    "name": "Margaret",
+    "short": "Mom"
+  },
+  "viewer": {
+    "id": "m1",
+    "name": "Sarah"
+  },
+  "tz": "America/New_York",
+  "now": "2026-11-14T16:12:00-05:00"
+}

@@ -62,7 +62,9 @@ const int STEP_R = 4, DIR_R = 5, STEP_L = 6, DIR_L = 7, EN = 15;
 const uint8_t MPU = 0x68;
 const float STEPS_PER_M = 3200.0f / (PI * 0.085f);   // 11983
 const float DT = 0.005f;                               // 200 Hz control loop
-const float VMAX = 1.0f, AMAX = 6.0f;                  // m/s, m/s^2 (VMAX was 0.8; raised with faster driving, check with T)
+const float VMAX = 3.2f, AMAX = 6.0f;                  // m/s, m/s^2. VMAX: uncapped (Alex, Sat 11 pm; was 1.0): only the step
+                                                        // generator's ceiling is left, 40 kHz / 11983 steps/m = 3.34 m/s (above it the
+                                                        // phase increment overflows). The steppers will stall before that: find it by testing
 const uint32_t RUN_MS = 1800000;                       // each g balances for at most 30 min, then parks itself (tilt cutoff and watchdog still apply)
 const float HALF_TRACK = 0.0775f;                      // wheel centre to robot centre, m (CAD)
 const uint32_t ISR_HZ = 40000;
@@ -305,7 +307,7 @@ void handleJson(const char *js) {
   if (!running) return;                                  // arming is only by an explicit "g"
   if (!strcmp(mode, "balance")) { vt = 0; wt = 0; turning = false; netDriving = true; lastNetCmd = millis(); return; }
   if (!strcmp(mode, "drive")) {
-    float v = constrain(jsonNum(js, "\"v\"", 0), -0.6f, 0.6f), w = constrain(jsonNum(js, "\"w\"", 0), -1.5f, 1.5f);
+    float v = constrain(jsonNum(js, "\"v\"", 0), -VMAX, VMAX), w = constrain(jsonNum(js, "\"w\"", 0), -1.5f, 1.5f);
     if (fabsf(v) > 0.001f || fabsf(w) > 0.001f) { moving = 0; turning = false; vt = v; wt = w; }
     else if (!moving && !turning) { vt = 0; wt = 0; }
     netDriving = true; lastNetCmd = millis();

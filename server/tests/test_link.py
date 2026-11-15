@@ -109,3 +109,63 @@ def test_mock_robot_shifts_its_trim():
     for c in "yyyyt":
         robot.handle_char(c, 0.0)
     assert robot.trim == pytest.approx(TRIM - 0.75)
+
+
+def test_reversed_link_swaps_forward_and_backward():
+    from app.link import ReversedLink
+
+    class Inner:
+        telemetry = {"t": "tel", "pitch": 2.0, "vl": 0.1, "vr": 0.3, "x": 0.5, "yaw": 10.0}
+
+        def __init__(self):
+            self.sent = []
+
+        def send_cmd(self, v, w, mode="drive"):
+            self.sent.append(("cmd", v, w, mode))
+
+        def send_letter(self, c):
+            self.sent.append(("letter", c))
+
+        def health(self):
+            return "healthy"
+
+    inner = Inner()
+    link = ReversedLink(inner)
+    link.send_cmd(0.2, 0.5)
+    for c in "FBLx":
+        link.send_letter(c)
+    assert inner.sent == [("cmd", -0.2, 0.5, "drive"), ("letter", "B"), ("letter", "F"), ("letter", "L"), ("letter", "x")]
+    tel = link.telemetry
+    assert (tel["vl"], tel["vr"], tel["x"], tel["pitch"], tel["yaw"]) == (-0.3, -0.1, -0.5, 2.0, 10.0)
+    assert link.health() == "healthy"   # everything else passes through
+
+
+def test_reversed_link_follows_a_changing_camera():
+    from app.link import ReversedLink
+
+    class Inner:
+        telemetry = {"vl": 0.2, "vr": 0.2, "x": 1.0}
+
+        def __init__(self):
+            self.v = []
+
+        def send_cmd(self, v, w, mode="drive"):
+            self.v.append(v)
+
+    settings = {"camera": "back"}
+    inner = Inner()
+    link = ReversedLink(inner, lambda: True != (settings["camera"] == "front"))   # as serve() wires it
+    link.send_cmd(0.3, 0.0)
+    settings["camera"] = "front"
+    link.send_cmd(0.3, 0.0)
+    assert inner.v == [-0.3, 0.3] and link.telemetry["x"] == 1.0
+
+
+def test_link_waits_for_a_robot_name_that_does_not_resolve_yet():
+    async def go():
+        link = UdpLink("no-such-robot.invalid", 9)
+        await link.start()                      # doesn't raise: retries in the background
+        assert link._transport is None and not link.health().ok
+        link.send_cmd(0.1, 0.0)                 # nothing to send to yet: dropped quietly
+        await link.close()
+    asyncio.run(go())

@@ -2,7 +2,8 @@
 // Cute and cartoony on purpose: no pupils, no whites, no realistic features (those look uncanny on a robot).
 //
 // Pure core (no DOM, testable in Node): Face.initialState(), Face.step(state, dt, inputs, rng), Face.draw(ctx, W, H, state).
-// Browser wrapper: Face.create(canvas) -> { setMood, lookAt, setMouth, pulseMouth, start, stop, snapshot }.
+// Browser wrapper: Face.create(canvas) -> { setMood, lookAt, setMouth, pulseMouth, setListening, start, stop, snapshot }.
+// setListening(on): a soft glowing ring around the face while Miguel listens for a command (fades in fast, out slower).
 //
 // Layout is in units of u = min(width, 1.05 * height): on the phone the face canvas is the TOP HALF of the screen
 // (about 390 x 422 pt), so u = width and the face fills it; a wide desktop window gets the same face centered.
@@ -14,7 +15,7 @@ var Face = (function () {
 
   var C = {
     bg: '#FAEEDA', bgAlarm: '#FCEBEB', eye: '#2C2C2A', eyeAlarm: '#A32D2D',
-    blush: '#F4C0D1', mouth: '#993C1D', sparkle: '#FFFFFF',
+    blush: '#F4C0D1', mouth: '#993C1D', sparkle: '#FFFFFF', ring: '#3D9BFF',
     // the suit (bottom half)
     suit: '#1B2A49', lapel: '#26385F', notch: '#142039', shirt: '#FFFFFF', collarLine: '#D3D1C7',
     tie: '#C8302E', tieKnot: '#A32523', button: '#0F1830'
@@ -27,6 +28,7 @@ var Face = (function () {
   var MOUTH_TAU_OPEN = 0.018, MOUTH_TAU_CLOSE = 0.04;   // ~90% in 40 ms opening, ~90% in 90 ms closing
   var PULSE_HOLD = 0.05, PULSE_TAU = 0.06;
   var SAC_TAU = 0.02;                        // micro-saccades are quick
+  var RING_TAU_ON = 0.05, RING_TAU_OFF = 0.18;   // the listening ring: ~150 ms in, ~0.5 s out
   var GLANCE_X = 0.06, GLANCE_Y = 0.04;      // max eye shift, in u (fraction of width on a phone)
 
   // ---- shapes (all in u) ----
@@ -70,7 +72,9 @@ var Face = (function () {
       blink: { next: 3, t: -1, amt: 0 },              // amt: 0 open .. 1 closed
       level: 0,                                       // mouth openness asked for (setMouth)
       pulse: { amp: 0, age: 0 },                      // a word pulse in progress
-      mouth: 0                                        // eased mouth openness that gets drawn
+      mouth: 0,                                       // eased mouth openness that gets drawn
+      ringOn: false,                                  // listening (setListening)
+      ring: 0                                         // eased ring strength that gets drawn, 0..1
     };
   }
 
@@ -84,13 +88,16 @@ var Face = (function () {
       wander: { x: s.wander.x, y: s.wander.y, next: s.wander.next },
       sac: { x: s.sac.x, y: s.sac.y, tx: s.sac.tx, ty: s.sac.ty, next: s.sac.next },
       blink: { next: s.blink.next, t: s.blink.t, amt: s.blink.amt },
-      level: s.level, pulse: { amp: s.pulse.amp, age: s.pulse.age }, mouth: s.mouth
+      level: s.level, pulse: { amp: s.pulse.amp, age: s.pulse.age }, mouth: s.mouth,
+      ringOn: s.ringOn, ring: s.ring
     };
   }
 
-  // inputs (all optional): { mood, look: {x, y} | null (undefined = keep), mouth: 0..1, pulse: 0..1 (one-shot) }
+  // inputs (all optional): { mood, look: {x, y} | null (undefined = keep), mouth: 0..1, pulse: 0..1 (one-shot),
+  //                          ring: bool (listening) }
   function applyInputs(s, inputs) {
     if (!inputs) return s;
+    if (inputs.ring !== undefined) s.ringOn = !!inputs.ring;
     if (inputs.mood !== undefined) s.mood = normMood(inputs.mood);
     if (inputs.look !== undefined) s.look = normLook(inputs.look);
     if (inputs.mouth !== undefined) s.level = clamp(num(inputs.mouth, 0), 0, 1);
@@ -163,6 +170,11 @@ var Face = (function () {
     var want = Math.max(s.level, p);
     s.mouth = ease(s.mouth, want, dt, want > s.mouth ? MOUTH_TAU_OPEN : MOUTH_TAU_CLOSE);
     if (Math.abs(s.mouth - want) < 1e-4) s.mouth = want;
+
+    // listening ring: fades in fast, out a little slower
+    var ringWant = s.ringOn ? 1 : 0;
+    s.ring = ease(s.ring, ringWant, dt, s.ringOn ? RING_TAU_ON : RING_TAU_OFF);
+    if (Math.abs(s.ring - ringWant) < 0.01) s.ring = ringWant;
     return s;
   }
 
@@ -187,6 +199,19 @@ var Face = (function () {
     var ox = gx * GLANCE_X * u, oy = gy * GLANCE_Y * u;             // eye shift toward the target
     var cx = W / 2, cy = FACE_CY * H + bob;
     var eyes = [{ x: cx - EYE_DX * u + ox, y: cy + oy, side: -1 }, { x: cx + EYE_DX * u + ox, y: cy + oy, side: 1 }];
+
+    // listening: a soft glowing ring around the whole face, breathing gently (behind everything else)
+    var ring = clamp(num(s.ring, 0), 0, 1);
+    if (ring > 0.01) {
+      var R = Math.min(0.47 * u, 0.47 * H);                       // around eyes and mouth, inside the canvas
+      var rcy = clamp(cy - bob + 0.08 * u, R + 0.02 * H, H - R - 0.02 * H);
+      ctx.save();
+      ctx.globalAlpha = ring * (0.75 + 0.25 * Math.sin(t * 2 * Math.PI / 1.4));
+      ctx.strokeStyle = C.ring; ctx.lineWidth = 0.035 * u;
+      ctx.shadowColor = C.ring; ctx.shadowBlur = 0.09 * u;
+      ctx.beginPath(); ctx.arc(cx, rcy, R, 0, 2 * Math.PI); ctx.stroke();
+      ctx.restore();
+    }
 
     // blush (behind the eyes), follows the gaze a little
     var blushA = 0.9 * (1 - 0.7 * w.alarm), blushK = 1 + 0.15 * w.happy;
@@ -388,6 +413,7 @@ var Face = (function () {
       lookAt: function (x, y) { state.look = x === null || x === undefined ? null : normLook({ x: x, y: y }); },
       setMouth: function (open) { state.level = clamp(num(open, 0), 0, 1); },
       pulseMouth: function (strength) { state = applyInputs(state, { pulse: strength }); },
+      setListening: function (on) { state.ringOn = !!on; },
       start: function () { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } },
       stop: function () { if (raf) cancelAnimationFrame(raf); raf = 0; },
       snapshot: function () { return clone(state); }

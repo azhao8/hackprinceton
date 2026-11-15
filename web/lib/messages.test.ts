@@ -25,7 +25,7 @@ describe("contract samples", () => {
       t: "status", follow: false, link: true, estop: false,
       settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, lag_ms: 27.4, skill: null,
       vision: { mode: "server", status: "running", camera: { frames: 120, age_s: 0.08 } },
-      trim_shift: -8.75,
+      trim_shift: -8.75, listening: false,
     });
   });
 
@@ -50,5 +50,23 @@ describe("parseServerMessage", () => {
     ["status without settings", '{"t":"status","follow":false,"link":true,"estop":false}'],
   ])("returns null for %s", (_label, raw) => {
     expect(parseServerMessage(raw)).toBeNull();
+  });
+});
+
+describe("agent events and memory", () => {
+  it("parses an agent event and a memory view", () => {
+    expect(parseServerMessage('{"t":"agent","id":4,"kind":"say","text":"On it!","to":"senior","data":{}}')).toEqual({
+      t: "agent", id: 4, kind: "say", text: "On it!", to: "senior", data: {},
+    });
+    const mem = parseServerMessage(
+      '{"t":"memory","on":true,"people":["Mom"],"places":[{"name":"water station","marker":3,"aliases":["water"],"description":""}],' +
+        '"facts":[{"key":"evening pills","value":"blue bottle","source":"agent"}]}',
+    );
+    expect(mem).toEqual({
+      t: "memory", on: true, people: ["Mom"],
+      places: [{ name: "water station", marker: 3, aliases: ["water"], description: "" }],
+      facts: [{ key: "evening pills", value: "blue bottle", source: "agent" }],
+    });
+    expect(parseServerMessage('{"t":"agent","kind":"say"}')).toBeNull();
   });
 });

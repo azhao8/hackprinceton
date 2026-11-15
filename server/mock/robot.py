@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 # Numbers from balance.ino
 TRIM = -3.65             # deg: balance point since the kickstand came off (was +5.6)
 KICK_ANGLE = 11.24       # deg: resting on the kickstand
-V_LIMIT, W_LIMIT = 0.6, 1.5
+V_LIMIT, W_LIMIT = 3.2, 1.5
 VT_ACC = 0.5             # m/s^2: how fast the speed ramps
 HALF_TRACK = 0.0775      # m
 WATCHDOG_S = 0.3
@@ -105,6 +105,8 @@ class MockRobot:
             self.turning = self.moving = False
             self.pitch, self.run_start = self.trim, now
             self._say("BALANCING")
+        elif c == "c" and not self.running:
+            self.rate = 0.0   # recalibrated: the mock's gyro has no bias anyway
         elif c in "ty":
             self.trim += 0.25 if c == "t" else -0.25
         elif c == "x":

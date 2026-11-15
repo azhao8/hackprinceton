@@ -5,9 +5,17 @@ the follow controller (app/vision/follow.py) on each new frame and requests the 
 the arbiter with `ctx.drive(v, w)` about 20 times a second. E-stop and the joystick win in
 the arbiter; cancelling the task (the F key, the stop gesture, the agent, the e-stop) stops it.
 
-It fails (returns `SkillResult(False, ...)`) when:
+Losing the person does NOT end it (Alex's call, Sat Nov 14). When they step out of view the
+robot stops, turns briefly toward the side they left (the controller's search, `search_for_s`),
+then waits in place with the lock still looking for the same clothes; the command's reason
+says "lost: waiting for you to come back". When the lock re-acquires them (same clothes only,
+app/vision/tracking.py) it follows again, starting fresh from where they are. Hard rule: while
+the person is lost the robot never drives forward or back past the controller's short coast,
+and while waiting it doesn't turn either (`_lost_guard`, on top of the controller's own rules).
+
+It ends only when it is cancelled (Follow off, "stop", the e-stop, another behavior replacing
+it), or fails (returns `SkillResult(False, ...)`) when:
 - nobody is locked within `engage_timeout_s` of the first frame;
-- the person stays lost until the controller gives up searching;
 - vision stops delivering frames for `vision_timeout_s`;
 - someone else disengaged the lock.
 
@@ -23,7 +31,7 @@ import time
 from collections.abc import Callable
 
 from app.skills import SkillContext, SkillResult
-from app.vision.follow import FollowConfig, FollowController
+from app.vision.follow import WAITING_REASON, FollowConfig, FollowController
 from app.vision.types import DriveCommand, TargetState, TargetStatus
 
 log = logging.getLogger(__name__)
@@ -98,10 +106,13 @@ class FollowSkill:
                         return SkillResult(False, "the lock was released")
                     if p.frame_index != last_index:  # the controller runs once per frame
                         last_index = p.frame_index
-                        cmd = self.controller.update(state, p.frame_t)
+                        cmd = self._lost_guard(self.controller.update(state, p.frame_t), state)
+                        if self.last_command is None or cmd.reason != self.last_command.reason:
+                            if cmd.reason == WAITING_REASON:
+                                log.info("follow: lost the person; waiting for them to come back")
+                            elif state.reacquired:
+                                log.info("follow: found them again")
                         self.last_command = cmd
-                        if self._gave_up(cmd, state):
-                            return SkillResult(False, "lost the person and gave up searching")
                     ctx.drive(cmd.v, cmd.w)  # every tick, so the arbiter never sees it as stale
 
                 await asyncio.sleep(self.period_s)
@@ -109,10 +120,15 @@ class FollowSkill:
             # The runner withdraws our arbiter request (and only if no newer skill replaced us).
             vision.disengage()
 
-    def _gave_up(self, cmd: DriveCommand, state: TargetState) -> bool:
-        if "gave up" in cmd.reason:
-            return True
+    def _lost_guard(self, cmd: DriveCommand, state: TargetState) -> DriveCommand:
+        """Never drive while the person is lost: past the coast no forward/back speed, and once
+        the search is over no turning either. The controller already does this; this keeps it
+        true whatever the controller says."""
+        if state.status is not TargetStatus.LOST:
+            return cmd
         cfg = self.config
-        # Backstop in case the controller's wording changes: lost longer than its search lasts.
-        limit = getattr(cfg, "lost_hold_s", 0.0) + getattr(cfg, "search_for_s", 5.0)
-        return state.status is TargetStatus.LOST and state.lost_for_s >= limit
+        if state.lost_for_s >= cfg.search_for_s:
+            return DriveCommand(0.0, 0.0, WAITING_REASON)
+        if state.lost_for_s >= cfg.coast_s and cmd.v != 0.0:
+            return DriveCommand(0.0, cmd.w, cmd.reason, cmd.distance_m)
+        return cmd

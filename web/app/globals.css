@@ -45,6 +45,28 @@
   --color-warn: var(--warn);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Family app fonts: the font variables live on .family-root, so these stay inline. */
+  --font-display: var(--font-serif-display), Georgia, serif;
+  --font-body: var(--font-figtree), system-ui, sans-serif;
+  --font-label: var(--font-dm-mono), ui-monospace, monospace;
+}
+
+@theme {
+  /* Family app (app/family): warm paper, soft ink, a few accents. Light only, on purpose. */
+  --color-paper: #f7f2e8;
+  --color-paper-2: #efe7d8;
+  --color-sand: #e2d7c4;
+  --color-ink: #2a2630;
+  --color-ink-2: #6b645b;
+  --color-ink-3: #a1988a;
+  --color-sun: #f2b632;
+  --color-sun-soft: #fbe6ad;
+  --color-sky: #8fb0dc;
+  --color-sky-soft: #dde7f4;
+  --color-ember: #e8865a;
+  --color-ember-soft: #f8dccb;
+  --color-alarm: #c43d2c;
+  --color-alarm-soft: #f7ddd6;
 }
 
 body {

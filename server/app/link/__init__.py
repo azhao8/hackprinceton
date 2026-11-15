@@ -22,13 +22,14 @@ import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 log = logging.getLogger("app.link")
 
 PORT = 4210
 FRESH_S = 0.5            # telemetry or ack older than this means the link is down
-ALLOWED_LETTERS = set("xP5LRFBty")   # never "g": a person arms the robot. t/y: trim +/- 0.25 deg
+ALLOWED_LETTERS = set("xP5LRFBtyc")   # never "g": a person arms the robot. t/y: trim +/- 0.25 deg; c: recalibrate the gyro
 TRIM_STEP_DEG = 0.25
 
 
@@ -61,6 +62,43 @@ class _Proto(asyncio.DatagramProtocol):
         log.debug("udp error: %s", exc)
 
 
+class ReversedLink:
+    """Any link with forward and backward swapped while `flipped()` is true (Alex, Sat 10 pm: the robot
+    drove away from people when following, and W drove it backward). The server's "forward" becomes the
+    firmware's backward for everything at once: the keyboard, follow, the agent's behaviors and the
+    F / B steps. Turning is unchanged (left is still counter-clockwise seen from above). Telemetry is
+    shown in the same frame: speeds and distance flip, and the wheels swap sides. Tilt stays in the
+    firmware's frame, so the balance angle (trim) keeps its numbers.
+
+    The server makes `flipped` follow the camera (Alex: "whichever way the camera faces is forward"),
+    so switching between the phone's back and front camera switches forward too."""
+
+    def __init__(self, link: Any, flipped: Callable[[], bool] = lambda: True):
+        self._link = link
+        self.flipped = flipped
+
+    def send_cmd(self, v: float, w: float, mode: str = "drive") -> None:
+        self._link.send_cmd(-v if self.flipped() else v, w, mode)
+
+    def send_letter(self, letter: str) -> None:
+        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter) if self.flipped() else letter)
+
+    @property
+    def telemetry(self) -> dict | None:
+        tel = self._link.telemetry
+        if not tel or not self.flipped():
+            return tel
+        out = dict(tel)
+        if isinstance(tel.get("vl"), (int, float)) and isinstance(tel.get("vr"), (int, float)):
+            out["vl"], out["vr"] = -tel["vr"], -tel["vl"]
+        if isinstance(tel.get("x"), (int, float)):
+            out["x"] = -tel["x"]
+        return out
+
+    def __getattr__(self, name: str) -> Any:   # start, close, health, arm, send_trim, ...
+        return getattr(self._link, name)
+
+
 class UdpLink:
     def __init__(self, host: str, port: int = PORT, clock=time.monotonic):
         self.host, self.port = host, port
@@ -77,13 +115,33 @@ class UdpLink:
         self._best_ack = 0
 
     async def start(self) -> None:
+        """Connect to the robot. If its name doesn't resolve yet (rebooting, or this laptop isn't on the
+        hotspot), keep going and retry every 2 s in the background instead of stopping the server."""
         loop = asyncio.get_running_loop()
+        try:
+            await self._connect(loop)
+        except OSError as e:
+            log.warning("link: can't find %s yet (%s); retrying every 2 s", self.host, e)
+            self._retry = loop.create_task(self._keep_trying(loop))
+
+    async def _connect(self, loop: asyncio.AbstractEventLoop) -> None:
         infos = await loop.getaddrinfo(self.host, self.port, type=socket.SOCK_DGRAM)  # resolves balancebot.local too
         addr = infos[0][4][:2]
         self._transport, _ = await loop.create_datagram_endpoint(lambda: _Proto(self), remote_addr=addr)
         log.info("link: UDP to %s:%d (%s)", self.host, self.port, addr[0])
 
+    async def _keep_trying(self, loop: asyncio.AbstractEventLoop) -> None:
+        while self._transport is None:
+            await asyncio.sleep(2.0)
+            try:
+                await self._connect(loop)
+            except OSError:
+                continue
+
     async def close(self) -> None:
+        retry = getattr(self, "_retry", None)
+        if retry is not None:
+            retry.cancel()
         if self._transport:
             self._transport.close()
             self._transport = None

@@ -4,6 +4,13 @@
 returns the mp3. Lines are cached in memory (LRU), and concurrent calls for the
 same line share one request, so canned lines ("On it!") cost one request each.
 
+`CartesiaTTS.stream(text)` yields the same mp3 in chunks as Cartesia sends them:
+/tts/bytes answers with a chunked body while it generates. Measured Sat Nov 14
+(sonic-3.6, mp3 44.1 kHz, from the hackathon Wi-Fi): first byte after 330-420 ms;
+the whole file after ~520 ms for a 19-character line and ~820 ms for a
+105-character one. A reader that joins late gets the chunks so far, then the rest
+(`synth` and `stream` share one request).
+
 Configure from the environment with `CartesiaTTS.from_env()` (names in
 `server/.env.example`): CARTESIA_API_KEY (required), CARTESIA_VOICE_ID,
 CARTESIA_MODEL, CARTESIA_SPEED. Without a key it returns None and the phone
@@ -18,7 +25,7 @@ import asyncio
 import logging
 import os
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 
 import aiohttp
 
@@ -35,6 +42,38 @@ _EXCERPT_CHARS = 200
 
 class TTSError(Exception):
     """Text to speech failed. The message never contains the API key."""
+
+
+class _Pending:
+    """One line being fetched: the chunks so far, and whether (and how) it ended."""
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+        self.done = False
+        self.error: BaseException | None = None
+        self._changed = asyncio.Event()
+
+    def add(self, chunk: bytes) -> None:
+        self.chunks.append(chunk)
+        self._wake()
+
+    def finish(self, error: BaseException | None = None) -> None:
+        self.done, self.error = True, error
+        self._wake()
+
+    def _wake(self) -> None:
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()                    # everyone waiting on the old event wakes up
+
+    async def changed(self) -> None:
+        await self._changed.wait()
+
+    async def result(self) -> bytes:
+        while not self.done:
+            await self.changed()
+        if self.error is not None:
+            raise self.error
+        return b"".join(self.chunks)
 
 
 def normalize_text(text: str, max_chars: int) -> str:
@@ -88,7 +127,8 @@ class CartesiaTTS:
         self._session = session
         self._own_session = False
         self._cache: OrderedDict[tuple, bytes] = OrderedDict()
-        self._inflight: dict[tuple, asyncio.Task[bytes]] = {}
+        self._inflight: dict[tuple, _Pending] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
 
     def __repr__(self) -> str:
         return (
@@ -133,21 +173,63 @@ class CartesiaTTS:
 
     async def synth(self, text: str) -> bytes:
         """Return mp3 bytes for `text`. Raises TTSError on empty text or any API failure."""
+        key, clean = self._key(text)
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+        # the fetch runs in its own task: one caller giving up never cancels it for the others
+        return await self._start(key, clean).result()
+
+    def cached(self, text: str) -> bytes | None:
+        """The mp3 for `text` if it is in the cache (no request)."""
+        try:
+            key, _ = self._key(text)
+        except TTSError:
+            return None
+        return self._cached(key)
+
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        """Yield the mp3 for `text` in chunks as they arrive (all at once if cached).
+
+        Raises TTSError before the first chunk if the request fails; a failure after audio has
+        started just ends the stream early (it is logged)."""
+        key, clean = self._key(text)
+        cached = self._cached(key)
+        if cached is not None:
+            yield cached
+            return
+        pending = self._start(key, clean)
+        sent = 0
+        while True:
+            while sent < len(pending.chunks):
+                sent += 1
+                yield pending.chunks[sent - 1]
+            if pending.done:
+                if pending.error is not None and sent == 0:
+                    raise pending.error
+                return
+            await pending.changed()
+
+    def _key(self, text: str) -> tuple[tuple, str]:
         clean = normalize_text(text, self.max_chars)
         if not clean:
             raise TTSError("nothing to say: the text is empty")
-        key = (self.model, self.voice_id, self.speed, clean)
+        return (self.model, self.voice_id, self.speed, clean), clean
+
+    def _cached(self, key: tuple) -> bytes | None:
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
-            return cached
-        task = self._inflight.get(key)
-        if task is None:
-            task = asyncio.ensure_future(self._fetch(clean))
-            self._inflight[key] = task
-            task.add_done_callback(lambda t, k=key: self._finish(k, t))
-        # shield: one caller giving up must not cancel the request others wait on
-        return await asyncio.shield(task)
+        return cached
+
+    def _start(self, key: tuple, clean: str) -> _Pending:
+        pending = self._inflight.get(key)
+        if pending is None:
+            pending = self._inflight[key] = _Pending()
+            task = asyncio.ensure_future(self._run(key, clean, pending))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        return pending
 
     async def prewarm(self, lines: Iterable[str]) -> int:
         """Synthesize each line into the cache; return how many succeeded. Never raises."""
@@ -170,6 +252,10 @@ class CartesiaTTS:
 
     async def close(self) -> None:
         """Close the HTTP session if this client created it (a given session is left open)."""
+        for task in list(self._tasks):   # lines still being fetched
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._own_session and self._session is not None:
             session, self._session, self._own_session = self._session, None, False
             if not session.closed:
@@ -177,15 +263,42 @@ class CartesiaTTS:
 
     # --- internals ------------------------------------------------------------
 
-    def _finish(self, key: tuple, task: asyncio.Task[bytes]) -> None:
-        self._inflight.pop(key, None)
-        if task.cancelled() or task.exception() is not None:
-            return
-        if self.cache_size:
-            self._cache[key] = task.result()
-            self._cache.move_to_end(key)
-            while len(self._cache) > self.cache_size:
-                self._cache.popitem(last=False)
+    async def _run(self, key: tuple, clean: str, pending: _Pending) -> None:
+        error: BaseException | None = None
+        try:
+            await self._fetch_politely(clean, pending)
+        except asyncio.CancelledError:
+            error = TTSError("the request was cancelled")
+            raise
+        except TTSError as e:
+            error = e
+        except Exception as e:  # noqa: BLE001 - anything else is a failed line, never a crash
+            error = TTSError(self._scrub(f"Cartesia request failed: {type(e).__name__}: {e}"))
+        finally:
+            self._inflight.pop(key, None)
+            if error is None and self.cache_size:
+                self._cache[key] = b"".join(pending.chunks)
+                self._cache.move_to_end(key)
+                while len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
+            pending.finish(error)
+
+    async def _fetch_politely(self, clean: str, pending: _Pending) -> None:
+        """At most CARTESIA_MAX_CONCURRENT requests at once (default 1, in order), and a short retry when
+        Cartesia says it's busy. Sat night: the new plan answered HTTP 429 "concurrency_limited" when
+        every sentence of a reply was prefetched at once."""
+        if getattr(self, "_sem", None) is None:
+            self._sem = asyncio.Semaphore(max(1, int(os.environ.get("CARTESIA_MAX_CONCURRENT", "1") or 1)))
+        for attempt in range(4):
+            async with self._sem:
+                try:
+                    await self._fetch(clean, pending.add)
+                    return
+                except TTSError as e:
+                    busy = "HTTP 429" in str(e)
+                    if not busy or pending.chunks or attempt == 3:
+                        raise
+            await asyncio.sleep(0.3 * (attempt + 1))   # busy: wait a moment, then try again
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -207,7 +320,8 @@ class CartesiaTTS:
             body["generation_config"] = {"speed": self.speed}
         return body
 
-    async def _fetch(self, text: str) -> bytes:
+    async def _fetch(self, text: str, on_chunk) -> None:
+        """POST /tts/bytes and hand each chunk of the (chunked) mp3 to on_chunk as it arrives."""
         url = f"{self.base_url}/tts/bytes"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -215,20 +329,24 @@ class CartesiaTTS:
             "Content-Type": "application/json",
         }
         timeout = aiohttp.ClientTimeout(total=self.timeout_s)
+        got = 0
         try:
             async with self._get_session().post(
                 url, json=self._body(text), headers=headers, timeout=timeout
             ) as resp:
-                data = await resp.read()
                 if resp.status != 200:
+                    data = await resp.read()
                     excerpt = " ".join(data[:_EXCERPT_CHARS].decode("utf-8", "replace").split())
                     raise TTSError(self._scrub(f"Cartesia returned HTTP {resp.status}: {excerpt}"))
                 ctype = resp.content_type or ""
                 if not (ctype.startswith("audio/") or ctype == "application/octet-stream"):
                     raise TTSError(f"Cartesia returned {ctype or 'no content type'}, not audio")
-                if not data:
+                async for chunk in resp.content.iter_any():
+                    if chunk:
+                        got += len(chunk)
+                        on_chunk(chunk)
+                if not got:
                     raise TTSError("Cartesia returned no audio")
-                return data
         except TTSError:
             raise
         except (asyncio.TimeoutError, TimeoutError):

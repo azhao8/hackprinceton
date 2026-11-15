@@ -9,7 +9,7 @@
     "t": { "const": "cmd" },
     "seq": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Counter raised on every command; echoed as ack in telemetry (#14)." },
     "mode": { "enum": ["drive", "balance", "idle"], "default": "drive", "description": "drive: follow v and w. balance: stop and hold here. idle: motors off. None of them starts balancing; only the one-letter command g does." },
-    "v": { "type": "number", "default": 0, "description": "Forward speed, m/s, + forward. The robot clamps it to +/-0.6." },
+    "v": { "type": "number", "default": 0, "description": "Forward speed, m/s, + forward. The robot clamps it to +/-3.2 (its step generator's ceiling; the steppers stall sooner)." },
     "w": { "type": "number", "default": 0, "description": "Turn rate, rad/s, + turning left. The robot clamps it to +/-1.5." }
   }
 }

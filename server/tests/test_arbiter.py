@@ -80,4 +80,4 @@ def test_clear_withdraws_a_request():
 def test_speeds_are_clamped_to_robot_limits():
     arb, _ = make()
     arb.request(Source.JOYSTICK, 5.0, -9.0)
-    assert arb.decide() == Command(0.6, -1.5, "joystick")
+    assert arb.decide() == Command(3.2, -1.5, "joystick")

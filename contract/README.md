@@ -26,7 +26,7 @@ The mock robot (`cd server && uv run python -m mock`) speaks the same UDP messag
 | --- | --- |
 | `seq` | Optional counter, raised on every command. Telemetry echoes it as `ack` |
 | `mode` | `drive` (default): follow `v` and `w`. `balance`: stop and hold here. `idle`: motors off |
-| `v` | Forward speed, m/s, + forward. Clamped to ±0.6 |
+| `v` | Forward speed, m/s, + forward. Clamped to ±3.2 (`VMAX`: only the step generator's ceiling; the steppers stall sooner) |
 | `w` | Turn rate, rad/s, + turning left. Clamped to ±1.5 |
 
 - **No `cmd` starts balancing.** If the robot isn't balancing, `drive` and `balance` are ignored. `idle` always turns the motors off.
@@ -43,6 +43,7 @@ The mock robot (`cd server && uv run python -m mock`) speaks the same UDP messag
 | `5` | Stop and hold here |
 | `L` / `R` | Turn exactly 90° left / right on the gyro |
 | `F` / `B` | Drive exactly 0.5 m forward / back |
+| `c` | Recalibrate the tilt sensor (gyro zero); only while not balancing, robot still for 2 s |
 | `t` / `y` | Raise / lower the balance angle (trim) by 0.25°. Several in one packet shift it several steps. Lost when the robot reboots |
 
 The rest (gain tuning, tests) are for the bench; see the top of `balance.ino`.

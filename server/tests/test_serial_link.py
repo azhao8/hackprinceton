@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -188,12 +189,12 @@ def test_make_cmd_matches_schema_and_newline():
 def test_send_cmd_clamps_to_firmware_limits():
     link, fake = make_link()
     try:
-        for v, w in ((5.0, -9.0), (-0.7, 1.6), (float("nan"), float("inf"))):
+        for v, w in ((5.0, -9.0), (-3.7, 1.6), (float("nan"), float("inf"))):
             link.send_cmd(v, w)
             assert link._drain()
         a, b, c = cmds(link, fake)
-        assert (a["v"], a["w"]) == (0.6, -1.5)
-        assert (b["v"], b["w"]) == (-0.6, 1.5)
+        assert (a["v"], a["w"]) == (3.2, -1.5)
+        assert (b["v"], b["w"]) == (-3.2, 1.5)
         assert (c["v"], c["w"]) == (0.0, 0.0)
     finally:
         close(link)
@@ -507,7 +508,110 @@ def test_reconnects_after_cable_tug():
         assert link.telemetry["fault"] is None            # the ESP32 rebooted: no fault
         link.send_cmd(0.1, 0.0)
         assert link._drain()
-        assert fakes[1].lines() == ["V", '{"t":"cmd","seq":%d,"v":0.1,"w":0.0,"mode":"drive"}' % link.seq]
+        # (J: the yaw poll starts again once the rebooted firmware talks)
+        assert [ln for ln in fakes[1].lines() if ln != "J"] == [
+            "V", '{"t":"cmd","seq":%d,"v":0.1,"w":0.0,"mode":"drive"}' % link.seq]
     finally:
         close(link)
     assert fakes[1].lines()[-1] == "x"
+
+
+# ---- J polling: yaw over USB (#62)
+
+def tel_reply(**changes) -> str:
+    """What balance.ino prints for J (formatTelemetry), as the sample with some values changed."""
+    return json.dumps({**json.loads(TEL_JSON), **changes}, separators=(",", ":")) + "\r\n"
+
+
+def test_j_polls_start_once_the_firmware_talks_and_j_is_not_a_public_letter():
+    link, fake = make_link(yaw_poll_hz=50)
+    try:
+        time.sleep(0.1)
+        assert fake.lines() == ["V"]                      # not heard from yet: no J
+        fake.feed(RUN_LINE)                               # printed from loop(): it reads commands
+        assert wait_for(lambda: fake.lines().count("J") >= 3)
+        assert "J" not in ALLOWED_LETTERS
+        with pytest.raises(ValueError):
+            link.send_letter("J")
+    finally:
+        close(link)
+    assert fake.lines()[-1] == "x"                        # no J after the motors-off on close
+
+
+def test_v_reply_also_starts_the_polls():
+    link, fake = make_link(yaw_poll_hz=50)
+    try:
+        fake.feed("FW balance json-serial v1\r\n")       # e.g. the status line was toggled off with i
+        assert wait_for(lambda: "J" in fake.lines())
+    finally:
+        close(link)
+
+
+def test_j_replies_give_telemetry_a_yaw_and_polling_goes_on():
+    link, fake = make_link(yaw_poll_hz=50, yaw_poll_give_up_s=0.3)
+    try:
+        fake.feed(RUN_LINE)
+        assert wait_for(lambda: "J" in fake.lines())
+        fake.feed(tel_reply(yaw=12.5))
+        assert wait_for(lambda: link.telemetry.get("yaw") == 12.5)
+        jsonschema.validate(link.telemetry, TEL_SCHEMA)
+        fake.feed(DRIVE_LINE)                             # a status line between replies keeps that yaw
+        assert wait_for(lambda: link.telemetry["pitch"] == 6.40)
+        assert link.telemetry["yaw"] == 12.5 and "ack" not in link.telemetry
+        jsonschema.validate(link.telemetry, TEL_SCHEMA)
+        fake.feed(tel_reply(yaw=-171.2, pitch=5.9))
+        assert wait_for(lambda: link.telemetry.get("yaw") == -171.2)
+        n = fake.lines().count("J")
+        time.sleep(0.5)                                   # past the give-up time: answered, so it keeps polling
+        assert fake.lines().count("J") >= n + 5
+    finally:
+        close(link)
+
+
+def test_status_lines_drop_a_stale_yaw():
+    clock = FakeClock()
+    link, fake = make_link(clock=clock, yaw_poll_hz=50)
+    try:
+        fake.feed(tel_reply(yaw=-7.0))
+        assert wait_for(lambda: link.telemetry is not None)
+        fake.feed(RUN_LINE)
+        assert wait_for(lambda: link.telemetry["pitch"] == 5.71)
+        assert link.telemetry["yaw"] == -7.0
+        clock.t += FRESH_S
+        fake.feed(DRIVE_LINE)
+        assert wait_for(lambda: link.telemetry["pitch"] == 6.40)
+        assert "yaw" not in link.telemetry                # the last reply is too old to stand for now
+    finally:
+        close(link)
+
+
+def test_j_polling_stops_when_the_firmware_never_answers(caplog):
+    caplog.set_level(logging.INFO, logger="app.link")
+    link, fake = make_link(yaw_poll_hz=50, yaw_poll_give_up_s=0.2)
+    try:
+        fake.feed(RUN_LINE)
+        assert wait_for(lambda: "J" in fake.lines())
+        assert wait_for(lambda: any("no reply to J" in r.getMessage() for r in caplog.records))
+        n = fake.lines().count("J")
+        assert 2 <= n <= 20                               # ~0.2 s of polls at 50 Hz
+        for _ in range(3):
+            fake.feed(RUN_LINE)                           # still talking, still no JSON: stays stopped
+        time.sleep(0.2)
+        assert fake.lines().count("J") == n
+        assert link.telemetry is not None and "yaw" not in link.telemetry
+        link.send_cmd(0.0, 0.0)                           # driving is unaffected
+        assert cmds(link, fake)
+    finally:
+        close(link)
+    assert sum("no reply to J" in r.getMessage() for r in caplog.records) == 1   # logged once
+
+
+def test_no_polls_when_disabled():
+    link, fake = make_link(yaw_poll_hz=0)
+    try:
+        fake.feed(RUN_LINE)
+        assert wait_for(lambda: link.telemetry is not None)
+        time.sleep(0.1)
+        assert "J" not in fake.lines()
+    finally:
+        close(link)
