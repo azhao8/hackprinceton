@@ -115,13 +115,33 @@ class UdpLink:
         self._best_ack = 0
 
     async def start(self) -> None:
+        """Connect to the robot. If its name doesn't resolve yet (rebooting, or this laptop isn't on the
+        hotspot), keep going and retry every 2 s in the background instead of stopping the server."""
         loop = asyncio.get_running_loop()
+        try:
+            await self._connect(loop)
+        except OSError as e:
+            log.warning("link: can't find %s yet (%s); retrying every 2 s", self.host, e)
+            self._retry = loop.create_task(self._keep_trying(loop))
+
+    async def _connect(self, loop: asyncio.AbstractEventLoop) -> None:
         infos = await loop.getaddrinfo(self.host, self.port, type=socket.SOCK_DGRAM)  # resolves balancebot.local too
         addr = infos[0][4][:2]
         self._transport, _ = await loop.create_datagram_endpoint(lambda: _Proto(self), remote_addr=addr)
         log.info("link: UDP to %s:%d (%s)", self.host, self.port, addr[0])
 
+    async def _keep_trying(self, loop: asyncio.AbstractEventLoop) -> None:
+        while self._transport is None:
+            await asyncio.sleep(2.0)
+            try:
+                await self._connect(loop)
+            except OSError:
+                continue
+
     async def close(self) -> None:
+        retry = getattr(self, "_retry", None)
+        if retry is not None:
+            retry.cancel()
         if self._transport:
             self._transport.close()
             self._transport = None

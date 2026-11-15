@@ -159,3 +159,13 @@ def test_reversed_link_follows_a_changing_camera():
     settings["camera"] = "front"
     link.send_cmd(0.3, 0.0)
     assert inner.v == [-0.3, 0.3] and link.telemetry["x"] == 1.0
+
+
+def test_link_waits_for_a_robot_name_that_does_not_resolve_yet():
+    async def go():
+        link = UdpLink("no-such-robot.invalid", 9)
+        await link.start()                      # doesn't raise: retries in the background
+        assert link._transport is None and not link.health().ok
+        link.send_cmd(0.1, 0.0)                 # nothing to send to yet: dropped quietly
+        await link.close()
+    asyncio.run(go())
