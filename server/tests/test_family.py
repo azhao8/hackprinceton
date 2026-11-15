@@ -506,3 +506,17 @@ def test_alert_did_keeps_the_latest_lines(tmp_path):
         h._did(f"Said: line {i}")
     h._did("Said: line 19")
     assert h.alert["did"] == [f"Said: line {i}" for i in range(12, 20)]
+
+
+def test_a_check_in_mid_delivery_keeps_the_camera(tmp_path):
+    """#69 review #4: switching to the front camera mid-bring would turn his forward around."""
+    h, st = hub(tmp_path)
+    st.skills.running = "bring"
+
+    async def go():
+        h.check_in = {"phase": "asking", "id": "c1", "by": "Sarah"}
+        h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+        h._end_call("test")
+    h._heard_yes = True   # #5's consent check (if present) is satisfied for this test
+    asyncio.run(go())
+    assert st.settings["camera"] == "back"

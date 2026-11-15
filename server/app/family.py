@@ -450,10 +450,12 @@ class FamilyHub:
             settings = getattr(self.state, "settings", None) or {}
             self._camera_before = settings.get("camera")
             self._follow_before = self._following()
+            busy = getattr(getattr(self.state, "skills", None), "running", None)
             try:
                 if hasattr(self.state, "set_follow"):
                     self.state.set_follow(False)
-                self.state.set_settings({"camera": "front"})   # look at her while they talk
+                if busy in (None, "follow"):   # not mid-delivery: switching cameras would turn him around
+                    self.state.set_settings({"camera": "front"})   # look at her while they talk
             except Exception:  # noqa: BLE001
                 log.exception("family: switching to the front camera failed")
             self._call_task = asyncio.get_running_loop().create_task(self._relay(self.check_in["id"]))

@@ -71,22 +71,46 @@ class ReversedLink:
     firmware's frame, so the balance angle (trim) keeps its numbers.
 
     The server makes `flipped` follow the camera (Alex: "whichever way the camera faces is forward"),
-    so switching between the phone's back and front camera switches forward too."""
+    so switching between the phone's back and front camera switches forward too. A change only takes
+    effect once the robot has been told to stand still for SWITCH_STILL_S (#69 review #4): switching
+    cameras mid-move must never reverse a balancing robot at once."""
 
-    def __init__(self, link: Any, flipped: Callable[[], bool] = lambda: True):
+    SWITCH_STILL_S = 0.5
+    STILL_V = 0.02   # m/s: commands below this count as standing still
+
+    def __init__(self, link: Any, flipped: Callable[[], bool] = lambda: True, clock: Callable[[], float] = time.monotonic):
         self._link = link
         self.flipped = flipped
+        self._clock = clock
+        self._active: bool | None = None          # the direction in use (None: not decided yet)
+        self._moving_at = float("-inf")           # last time a command asked for speed
+
+    def current(self) -> bool:
+        """The direction in use: the wanted one, or the old one until the robot has stood still."""
+        wanted = bool(self.flipped())
+        if self._active is None:
+            self._active = wanted
+        elif wanted != self._active and self._clock() - self._moving_at >= self.SWITCH_STILL_S:
+            log.info("link: forward switched (%s)", "flipped" if wanted else "firmware's forward")
+            self._active = wanted
+        return self._active
 
     def send_cmd(self, v: float, w: float, mode: str = "drive") -> None:
-        self._link.send_cmd(-v if self.flipped() else v, w, mode)
+        flipped = self.current()             # decided on how long he had stood still before this command
+        if abs(v) >= self.STILL_V:
+            self._moving_at = self._clock()
+        self._link.send_cmd(-v if flipped else v, w, mode)
 
     def send_letter(self, letter: str) -> None:
-        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter) if self.flipped() else letter)
+        flipped = self.current()
+        if letter in "FB":
+            self._moving_at = self._clock()
+        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter) if flipped else letter)
 
     @property
     def telemetry(self) -> dict | None:
         tel = self._link.telemetry
-        if not tel or not self.flipped():
+        if not tel or not self.current():
             return tel
         out = dict(tel)
         if isinstance(tel.get("vl"), (int, float)) and isinstance(tel.get("vr"), (int, float)):

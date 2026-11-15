@@ -154,11 +154,19 @@ def test_reversed_link_follows_a_changing_camera():
 
     settings = {"camera": "back"}
     inner = Inner()
-    link = ReversedLink(inner, lambda: True != (settings["camera"] == "front"))   # as serve() wires it
+    now = [0.0]
+    link = ReversedLink(inner, lambda: True != (settings["camera"] == "front"), clock=lambda: now[0])
     link.send_cmd(0.3, 0.0)
-    settings["camera"] = "front"
-    link.send_cmd(0.3, 0.0)
-    assert inner.v == [-0.3, 0.3] and link.telemetry["x"] == 1.0
+    settings["camera"] = "front"               # switched while driving (#69 review #4)...
+    now[0] = 0.1
+    link.send_cmd(0.3, 0.0)                    # ...keeps the old direction: no sudden reverse
+    now[0] = 0.2
+    link.send_cmd(0.0, 0.0)                    # told to stand still
+    now[0] = 0.5
+    link.send_cmd(0.0, 0.0)                    # not still for 0.5 s yet
+    now[0] = 0.75
+    link.send_cmd(0.3, 0.0)                    # still since 0.1 s ago + 0.5 s: the new direction now
+    assert inner.v == [-0.3, -0.3, -0.0, -0.0, 0.3] and link.telemetry["x"] == 1.0
 
 
 def test_link_waits_for_a_robot_name_that_does_not_resolve_yet():
