@@ -44,6 +44,10 @@ FRAME_HZ = 5
 CALL_MAX_S = 600
 ASK_TIMEOUT_S = 60.0            # Miguel asks and listens ~15 s; past this the check-in counts as declined
 SETTLE_DELAY_S = 0.3            # after a task ends, let a queued request start before deciding he's done
+STALE_ANSWER_S = 30.0           # after calling off a check-in, a new one waits this long while he's still working
+DID_KEEP = 8                    # alert.did: the latest lines only
+SAME_ITEM = {"medication": {"medication", "medicine", "meds", "pill", "pills", "tablets"},
+             "water": {"water", "drink", "glass", "bottle"}}
 STATE_MIN_GAP_S = 0.2           # at most 5 state messages a second
 MEDIA_KEEP = 40
 MEDIA_TTL_S = 24 * 3600
@@ -90,6 +94,8 @@ class FamilyHub:
         self._pump: asyncio.Task | None = None
         self._settle: asyncio.TimerHandle | None = None
         self._last_words = ""            # Miguel's last reply to the family: why a delivery failed
+        self._caller: web.WebSocketResponse | None = None   # who asked for the check-in: only they see it
+        self._called_off_at: float | None = None             # a check-in was called off while he asked
 
     # --- state ----------------------------------------------------------------------------------
 
@@ -147,7 +153,18 @@ class FamilyHub:
             await asyncio.sleep(STATE_MIN_GAP_S - gap)
             st = self.snapshot_state()
         self._last_state, self._last_sent = st, time.monotonic()
-        await self._broadcast(st)
+        for ws in list(self.clients):
+            try:
+                await ws.send_json(self._state_for(ws, st))
+            except Exception:  # noqa: BLE001 - a closed socket is cleaned up by its handler
+                pass
+
+    def _state_for(self, ws: web.WebSocketResponse, st: dict[str, Any]) -> dict[str, Any]:
+        """The check-in (and its frames) belong to the person who asked for it. Everyone else sees no
+        check-in (the mode note still says Mom is on a call); asking for another one gets `busy`."""
+        if ws is not self._caller and st["check_in"].get("phase", "idle") != "idle":
+            return {**st, "check_in": {"phase": "idle"}}
+        return st
 
     def changed(self) -> None:
         """Something in the state changed (from sync code): send it soon."""
@@ -211,10 +228,21 @@ class FamilyHub:
 
     # --- hooks from the rest of the server ------------------------------------------------------
 
-    def on_bring_step(self, stage: str, text: str) -> None:
-        """The bring behavior's progress (any bring: the family's or one Mom asked for by voice)."""
+    @staticmethod
+    def _same_item(item: str, d: dict[str, Any]) -> bool:
+        """Is this bring the family's? The family's message names the item; Mom may ask for something else."""
+        said = set(re.findall(r"[a-z]+", item.lower()))
+        ours = SAME_ITEM.get(d["item"], {d["item"]}) | set(re.findall(r"[a-z]+", d["label"].lower()))
+        return bool(said & ours)
+
+    def on_bring_step(self, stage: str, text: str, item: str | None = None) -> None:
+        """The bring behavior's progress. `item` is what that bring carries: a bring Mom asked for by voice
+        (pills while the family's water waits) doesn't move the family's delivery or read their note."""
         d = self.delivery
         if d is None or d["stage"] in ("delivered", "failed"):
+            return
+        if item is not None and not self._same_item(item, d):
+            log.info("family: a bring of %r isn't the family's %s", item, d["label"])
             return
         d["stage"] = stage
         if stage == "failed":
@@ -241,19 +269,29 @@ class FamilyHub:
                 photo = self.store_media(jpeg) if jpeg else None
             self.add_event("message", "Miguel", text, photo=photo)
             self._last_words = text
-            if self.alert is not None and self.alert.get("status") == "active" \
-                    and "Told the family" not in self.alert["did"]:
-                self.alert["did"].append("Told the family")
+            if self.alert is not None and self.alert.get("status") == "active":
+                self._did("Told the family")
         elif kind == "check_in":
             self._check_in_answer(str(data.get("answer", text)))
         elif kind == "say" and self.alert is not None and self.alert.get("status") == "active":
-            self.alert["did"].append(f"Said: {text}"[:120])
+            self._did(f"Said: {text}"[:120])
         elif kind == "heard" and ev.get("data", {}).get("source", "senior") == "senior":
             if self.alert is not None and self.alert.get("status") == "active" and text:
                 self.alert["heard"] = text[:200]
+            if self.check_in.get("phase") == "live" and text:
+                from app.brain.agent import stop_requested
+
+                if stop_requested(text):   # "stop" / "wait" from her ends the call, like hanging up
+                    self._end_call("she stopped it")
         if kind in ("task", "reply", "error") and data.get("status") != "started":
             self._settle_soon()
         self.changed()
+
+    def _did(self, line: str) -> None:
+        did = self.alert["did"]
+        if line not in did:
+            did.append(line)
+            del did[:-DID_KEEP]
 
     # --- requests the agent dropped -----------------------------------------------------------
 
@@ -349,11 +387,17 @@ class FamilyHub:
             if action == "request":
                 if self.check_in.get("phase") in ("asking", "live"):
                     return await err("busy", "A check-in is already going.")
+                if self._called_off_at is not None and time.monotonic() - self._called_off_at < STALE_ANSWER_S \
+                        and not self._agent_idle():
+                    # He may still answer the one that was called off; that answer mustn't open this one.
+                    return await err("busy", "Miguel is still finishing the last check-in. Try again in a moment.")
                 cid = f"c{next(self._ids)}"
                 self.check_in = {"phase": "asking", "id": cid, "by": name}
+                self._caller, self._called_off_at = ws, None
                 status, why = self.state.agent_message(
                     f"[check-in request, family app] {name} would like to check in on {self.short} by video. Ask "
-                    f"her by name if now is a good time, wait_for_reply(15), then call check_in_result.",
+                    f"her by name if now is a good time, wait_for_reply(15), then call check_in_result. If she "
+                    f"later says she wants to end the video call, call check_in_result('no').",
                     "guardian", "family app")
                 if status != 200:
                     self.check_in = {"phase": "declined", "id": cid}
@@ -362,9 +406,7 @@ class FamilyHub:
                 await ok(id=cid)
             elif action == "end":
                 if self.check_in.get("phase") == "asking":   # Miguel is still asking her: call it off
-                    self.state.agent_message(
-                        f"[check-in cancelled, family app] {name} cancelled the video check-in. Stop asking "
-                        f"{self.short} about it; don't call check_in_result.", "guardian", "family app")
+                    self._call_off(f"{name} cancelled the video check-in.")
                 self._end_call("ended")
                 await ok()
             else:
@@ -397,6 +439,9 @@ class FamilyHub:
     # --- check-in -------------------------------------------------------------------------------
 
     def _check_in_answer(self, answer: str) -> None:
+        if self.check_in.get("phase") == "live" and answer in ("no", "no_answer"):
+            self._end_call("she ended it")   # the agent's end-call path (see the request message)
+            return
         if self.check_in.get("phase") != "asking":
             return
         if answer == "yes":
@@ -414,6 +459,12 @@ class FamilyHub:
         else:
             self._decline("Not a good time." if answer == "no" else "No answer.")
 
+    def _call_off(self, why: str) -> None:
+        """Tell the agent to stop asking her, and hold new check-ins until he's done with this one."""
+        self._called_off_at = time.monotonic()
+        self.state.agent_message(f"[check-in cancelled, family app] {why} Stop asking {self.short} about it; "
+                                 f"don't call check_in_result.", "guardian", "family app")
+
     def _decline(self, note: str) -> None:
         self.check_in.update(phase="declined")
         self.add_event("check_in", "Check-in declined", note)
@@ -425,9 +476,7 @@ class FamilyHub:
             return
         busy = not self._agent_idle() and callable(getattr(self.state, "agent_working", None))
         if busy:   # the request may still be waiting behind something else: don't let him ask her later
-            self.state.agent_message(
-                f"[check-in cancelled, family app] Nobody answered the video check-in in time. Stop asking "
-                f"{self.short} about it; don't call check_in_result.", "guardian", "family app")
+            self._call_off("Nobody answered the video check-in in time.")
         self._decline("Miguel was busy and couldn't ask her." if busy else "No answer.")
         self.changed()
 
@@ -451,6 +500,7 @@ class FamilyHub:
             self._call_task.cancel()
             self._call_task = None
         self.check_in = {"phase": "idle"}
+        self._caller = None
         log.info("family: check-in %s", why)
         self.changed()
 
@@ -470,10 +520,18 @@ class FamilyHub:
                 if time.monotonic() - t0 > CALL_MAX_S:
                     self._end_call("timed out")
                     return
-                jpeg = await asyncio.to_thread(self.snapshot) if self.snapshot is not None else None
+                try:
+                    jpeg = await asyncio.to_thread(self.snapshot) if self.snapshot is not None else None
+                except Exception:  # noqa: BLE001 - one bad frame mustn't end the call's video
+                    log.exception("family: camera snapshot failed")
+                    jpeg = None
                 live = self.check_in.get("phase") == "live" and self.check_in.get("id") == call
-                if jpeg and live:   # consent again: the call may have ended while the JPEG was made
-                    await self._broadcast({"t": "frame", "call": call, "jpeg": base64.b64encode(jpeg).decode()})
+                caller = self._caller
+                if jpeg and live and caller is not None:   # consent again, and only to whoever asked
+                    try:
+                        await caller.send_json({"t": "frame", "call": call, "jpeg": base64.b64encode(jpeg).decode()})
+                    except Exception:  # noqa: BLE001 - their socket closing ends the call (handle)
+                        pass
                 await asyncio.sleep(1 / FRAME_HZ)
         except asyncio.CancelledError:
             pass
@@ -483,7 +541,9 @@ class FamilyHub:
     def _token_ok(self, given: Any, request: web.Request) -> bool:
         if self.token:
             return isinstance(given, str) and hmac.compare_digest(given.encode(), self.token.encode())
-        return request.remote in ("127.0.0.1", "::1") and not request.headers.get("X-Forwarded-For")
+        from app.api import _direct_local   # no token: this laptop only, never through a tunnel on it
+
+        return _direct_local(request)
 
     async def handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
@@ -499,6 +559,8 @@ class FamilyHub:
             hello = first.json() if first.type == WSMsgType.TEXT else {}
         except ValueError:
             hello = {}
+        if not isinstance(hello, dict):
+            hello = {}
         if hello.get("t") != "hello" or not self._token_ok(hello.get("token"), request):
             await ws.send_json({"t": "error", "code": "unauthorized", "message": "Sign in again."})
             await ws.close()
@@ -511,7 +573,7 @@ class FamilyHub:
             await ws.send_json({"t": "welcome", "v": 1, "resident": {"name": self.resident, "short": self.short},
                                 "viewer": {"id": viewer, "name": MEMBERS.get(viewer, "You")}, "tz": self.tz,
                                 "now": iso()})
-            await ws.send_json(self.snapshot_state())
+            await ws.send_json(self._state_for(ws, self.snapshot_state()))
             today = self.memory.today() if self.memory is not None else []
             await ws.send_json({"t": "events", "day": datetime.now().astimezone().date().isoformat(),
                                 "items": [self._wire_event(e) for e in today]})
@@ -526,6 +588,11 @@ class FamilyHub:
                     await self._request(ws, viewer, m)
         finally:
             self.clients.pop(ws, None)
+            if ws is self._caller and self.check_in.get("phase") in ("asking", "live", "declined"):
+                # The person who asked left (closed the app, lost the connection): the call ends with them.
+                if self.check_in.get("phase") == "asking":
+                    self._call_off(f"{MEMBERS.get(viewer, 'The family')} left before she answered.")
+                self._end_call("the caller left")
         return ws
 
     async def get_media(self, request: web.Request) -> web.StreamResponse:

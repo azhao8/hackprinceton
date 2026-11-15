@@ -765,8 +765,9 @@ def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Calla
 
             factories["bring"] = lambda item, person=None, **_: Bring(
                 item, person, wait_loaded, say, registry=registry, matcher=matcher, station=station_for(item),
-                on_step=on_step, **({"marker_for": memory.marker_for, "known_places": memory.known_places()}
-                                    if memory is not None else {}))
+                on_step=(lambda stage, text, _item=item: on_step(stage, text, item=_item)) if on_step else None,
+                **({"marker_for": memory.marker_for, "known_places": memory.known_places()}
+                   if memory is not None else {}))
         except Exception as e:
             log.warning("agent: bring unavailable (%s)", e)
     return factories
