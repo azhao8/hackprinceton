@@ -155,7 +155,13 @@ def test_make_link_picks_udp_host_or_serial(monkeypatch):
     made = []
     monkeypatch.setattr(serial_link, "SerialLink", lambda port: made.append(port) or "serial")
     args = parse_args(["--robot", "real", "--link", "serial", "--someone-at-robot", "--port", "/dev/cu.x"])
-    assert server.make_link(args) == "serial" and made == ["/dev/cu.x"]
+    assert server.make_link(args)._link == "serial" and made == ["/dev/cu.x"]   # wrapped: forward follows the camera
+
+
+def test_forward_follows_the_camera(monkeypatch):
+    monkeypatch.delenv("ROBOT_REVERSE_DRIVE", raising=False)
+    assert server.make_link(parse_args([])).flipped() is False
+    assert server.make_link(parse_args(["--reverse-drive"])).flipped() is True
 
 
 # --- the loop ---

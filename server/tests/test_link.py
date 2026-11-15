@@ -138,3 +138,24 @@ def test_reversed_link_swaps_forward_and_backward():
     tel = link.telemetry
     assert (tel["vl"], tel["vr"], tel["x"], tel["pitch"], tel["yaw"]) == (-0.3, -0.1, -0.5, 2.0, 10.0)
     assert link.health() == "healthy"   # everything else passes through
+
+
+def test_reversed_link_follows_a_changing_camera():
+    from app.link import ReversedLink
+
+    class Inner:
+        telemetry = {"vl": 0.2, "vr": 0.2, "x": 1.0}
+
+        def __init__(self):
+            self.v = []
+
+        def send_cmd(self, v, w, mode="drive"):
+            self.v.append(v)
+
+    settings = {"camera": "back"}
+    inner = Inner()
+    link = ReversedLink(inner, lambda: True != (settings["camera"] == "front"))   # as serve() wires it
+    link.send_cmd(0.3, 0.0)
+    settings["camera"] = "front"
+    link.send_cmd(0.3, 0.0)
+    assert inner.v == [-0.3, 0.3] and link.telemetry["x"] == 1.0

@@ -22,6 +22,7 @@ import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Protocol
 
 log = logging.getLogger("app.link")
@@ -62,26 +63,30 @@ class _Proto(asyncio.DatagramProtocol):
 
 
 class ReversedLink:
-    """Any link with forward and backward swapped (Alex, Sat 10 pm: the robot drove away from people
-    when following, and W drove it backward). The server's "forward" becomes the firmware's backward
-    for everything at once: the keyboard, follow, the agent's behaviors and the F / B steps. Turning is
-    unchanged (left is still counter-clockwise seen from above). Telemetry is shown in the new frame:
-    speeds and distance flip, and the wheels swap sides. Tilt stays in the firmware's frame, so the
-    balance angle (trim) keeps its numbers."""
+    """Any link with forward and backward swapped while `flipped()` is true (Alex, Sat 10 pm: the robot
+    drove away from people when following, and W drove it backward). The server's "forward" becomes the
+    firmware's backward for everything at once: the keyboard, follow, the agent's behaviors and the
+    F / B steps. Turning is unchanged (left is still counter-clockwise seen from above). Telemetry is
+    shown in the same frame: speeds and distance flip, and the wheels swap sides. Tilt stays in the
+    firmware's frame, so the balance angle (trim) keeps its numbers.
 
-    def __init__(self, link: Any):
+    The server makes `flipped` follow the camera (Alex: "whichever way the camera faces is forward"),
+    so switching between the phone's back and front camera switches forward too."""
+
+    def __init__(self, link: Any, flipped: Callable[[], bool] = lambda: True):
         self._link = link
+        self.flipped = flipped
 
     def send_cmd(self, v: float, w: float, mode: str = "drive") -> None:
-        self._link.send_cmd(-v, w, mode)
+        self._link.send_cmd(-v if self.flipped() else v, w, mode)
 
     def send_letter(self, letter: str) -> None:
-        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter))
+        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter) if self.flipped() else letter)
 
     @property
     def telemetry(self) -> dict | None:
         tel = self._link.telemetry
-        if not tel:
+        if not tel or not self.flipped():
             return tel
         out = dict(tel)
         if isinstance(tel.get("vl"), (int, float)) and isinstance(tel.get("vr"), (int, float)):

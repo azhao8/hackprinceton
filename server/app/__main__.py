@@ -487,8 +487,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def make_link(args: argparse.Namespace) -> RobotLink:
-    """The link for these flags, not started yet. --reverse-drive (or ROBOT_REVERSE_DRIVE=1) swaps
-    forward and backward for everything (app.link.ReversedLink)."""
+    """The link for these flags, not started yet, wrapped so forward is where the camera faces
+    (app.link.ReversedLink; serve() ties it to the camera setting). --reverse-drive (or
+    ROBOT_REVERSE_DRIVE=1) means: with the phone's BACK camera, forward is the firmware's backward
+    (how this robot's phone is mounted); the front camera is then the other way."""
     if args.link == "serial":
         from app.link.serial_link import SerialLink
 
@@ -496,12 +498,12 @@ def make_link(args: argparse.Namespace) -> RobotLink:
     else:
         default = "127.0.0.1" if args.robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
         link = UdpLink(args.host or default, PORT)
-    if args.reverse_drive:
-        from app.link import ReversedLink
+    from app.link import ReversedLink
 
-        log.info("link: forward and backward swapped (--reverse-drive)")
-        link = ReversedLink(link)
-    return link
+    back_flipped = bool(args.reverse_drive)
+    log.info("link: forward = the camera's direction (back camera %s the firmware's forward)",
+             "is opposite to" if back_flipped else "matches")
+    return ReversedLink(link, lambda: back_flipped)
 
 
 def load_calibration(path: str | None) -> Any:
@@ -883,6 +885,9 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         if args.api:
             tts = make_tts()
             state = api_state(app, link, vision, tts)
+            if hasattr(link, "flipped"):   # forward follows the camera setting (front camera: the other way)
+                back_flipped = link.flipped()
+                link.flipped = lambda: back_flipped != (state.settings.get("camera") == "front")
             state.guardian_token = os.environ.get("GUARDIAN_TOKEN") or None
             registry = make_registry() if vision is not None else None   # ONE instance for everyone (#62)
             state.this_is = make_this_is(registry, vision)
