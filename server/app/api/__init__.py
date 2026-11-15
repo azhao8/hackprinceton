@@ -61,14 +61,15 @@ SPEED_MIN, SPEED_MAX = 0.1, 0.45
 
 def default_settings(mode: str = "person") -> dict:
     m = FOLLOW_MODES[mode]
-    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True}
+    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": "back", "mirror": False}
 
 
 def clean_settings(old: dict, new: dict) -> dict:
     """Merge a partial update into the settings, keeping every value in range."""
     out = dict(old)
     if new.get("mode") in FOLLOW_MODES and new["mode"] != old["mode"]:
-        out = default_settings(new["mode"]) | {"voice": old["voice"]}   # a new mode starts from its defaults
+        keep = {k: old[k] for k in ("voice", "camera", "mirror") if k in old}
+        out = default_settings(new["mode"]) | keep   # a new mode starts from its follow defaults
     m = FOLLOW_MODES[out["mode"]]
     for key, lo, hi in (("speed", SPEED_MIN, SPEED_MAX), ("distance", m["dmin"], m["dmax"])):
         if key in new:
@@ -78,8 +79,11 @@ def clean_settings(old: dict, new: dict) -> dict:
                 continue
             if x == x:
                 out[key] = round(max(lo, min(hi, x)), 3)
-    if isinstance(new.get("voice"), bool):
-        out["voice"] = new["voice"]
+    for key in ("voice", "mirror"):
+        if isinstance(new.get(key), bool):
+            out[key] = new[key]
+    if new.get("camera") in ("back", "front"):
+        out["camera"] = new["camera"]
     return out
 
 TTS_MAX_CHARS = 300   # the same cap as a /say line
@@ -117,6 +121,8 @@ class ApiState:
 
     def set_settings(self, new: dict) -> None:
         self.settings = clean_settings(self.settings, new)
+        if self.phone_frames is not None:
+            self.phone_frames.mirror = bool(self.settings.get("mirror"))
         log.info("follow settings: %s", self.settings)
 
     def add_say(self, text: str) -> None:
