@@ -6,7 +6,7 @@ point Miguel's eyes at the person and react once to each event:
     "face": {
       "status": "idle" | "locked" | "lost",
       "target": {"cx": 0..1, "cy": 0..1, "w": 0..1} | null,      # only while locked
-      "event":  {"id": 7, "kind": "found" | "lost" | "too_close" | "gave_up"} | null
+      "event":  {"id": 7, "kind": "found" | "lost" | "waiting" | "too_close" | "gave_up"} | null
     }
 
 `target` is a gaze point in the camera frame exactly as the phone streamed it (normalized, x right,
@@ -15,10 +15,15 @@ of the confident face keypoints (nose, eyes, ears), or, without any, the box's c
 15% of the box height below its top. `w` is the locked person's box width (bigger = closer).
 
 Events, each with a new, increasing `id` (the phone reacts when `id` changes):
-- `found`: the status became locked (the first lock, or reacquired after being lost);
+- `found`: the status became locked (the first lock, or reacquired after being lost: the same
+  person, by their clothes, came back and following resumes);
 - `lost`: locked -> lost (also when vision stops delivering while locked);
+- `waiting`: the person is still gone after the short search, and Miguel now waits in place for
+  them to come back (the follow command's reason became "lost: waiting for you to come back");
+  once per time it starts waiting. Follow stays on; `found` follows when they come back;
 - `too_close`: the follow command's reason became "too close..."; at most once per 3 s;
-- `gave_up`: the follow command was "lost: gave up" (each such command once).
+- `gave_up`: a command said "lost: gave up" (each such command once). Follow no longer gives up
+  (it waits instead, Sat Nov 14), so it doesn't send this any more; kept for the contract.
 
 Pure: no threads, clocks or I/O. The server feeds it the newest vision result and the follow
 skill's last command, and reads `snapshot()`.
@@ -29,6 +34,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from app.vision.follow import WAITING_REASON
 from app.vision.types import Person, TargetStatus
 
 HEAD_KEYPOINTS = ("nose", "left_eye", "right_eye", "left_ear", "right_ear")
@@ -67,6 +73,7 @@ class FaceEvents:
         self._event: dict | None = None
         self._last_id = 0
         self._was_too_close = False
+        self._was_waiting = False
         self._last_too_close_at = -math.inf
         self._gave_up_cmd: Any = None
 
@@ -97,6 +104,11 @@ class FaceEvents:
             self._last_too_close_at = now
             self._emit("too_close")
         self._was_too_close = too_close
+
+        waiting = following and status == "lost" and reason == WAITING_REASON
+        if waiting and not self._was_waiting:
+            self._emit("waiting")
+        self._was_waiting = waiting
 
         # The skill ends right after giving up, so this is checked whether or not Follow still runs.
         if command is not None and reason.startswith("lost: gave up") and command is not self._gave_up_cmd:

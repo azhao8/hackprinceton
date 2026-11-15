@@ -260,7 +260,8 @@ class ToolBox:
           self._wait_for_reply)
         r("follow",
           "Start (on=true) or stop (on=false) following the person standing in front of you. It keeps "
-          "running after this call returns, until stopped, replaced by another action, or the person is lost.",
+          "running after this call returns, until stopped or replaced by another action. If the person "
+          "steps out of view, you stop and wait for them, and follow again when they come back.",
           {"on": {"type": "boolean", "description": "true to start following, false to stop."}},
           self._follow)
         r("this_is",
@@ -384,7 +385,8 @@ class ToolBox:
         done, _ = await asyncio.wait({task}, timeout=self.follow_check_s)
         if done:
             return _from_result("follow", task.result())
-        return ToolOutcome(True, "Following now. It keeps running until stopped or replaced.", {"skill": "follow"})
+        return ToolOutcome(True, "Following now. If they step out of view I wait for them to come back. "
+                                 "It keeps running until stopped or replaced.", {"skill": "follow"})
 
     def _physical(self, name: str, kwargs_of: Callable[[dict[str, Any]], dict[str, Any]]) -> Handler:
         async def handler(a: dict[str, Any]) -> ToolOutcome:

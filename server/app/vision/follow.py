@@ -24,7 +24,12 @@ off if too close). A box cut off at the left/right picture edge can't drive forw
 
 Lost target (follow.swift person mode): coast for ~0.3 s (speed decays, turn held), then,
 if the person was last seen off-centre, turn toward that side to find them; if they
-vanished near the centre (probably behind someone), hold still. Give up after 2 s.
+vanished near the centre (probably behind someone), hold still. After 2 s (`search_for_s`),
+stop and WAIT in place ("lost: waiting for you to come back"), for as long as it takes: the
+lock keeps looking for the same clothes, and when it re-acquires them the controller starts
+fresh from where the person is now (no speed or turn carried over from before they left).
+Past the coast it never drives forward or back while the person is lost; only the search turns.
+(follow.swift gives up after 2 s; Alex's call, Sat Nov 14: Follow stays on and waits instead.)
 
 Sources (the reference that already works on the real robot):
 - firmware/balance/follow/follow.swift on main (a20140d): person mode lines 28 (targetW
@@ -211,7 +216,7 @@ class FollowConfig:
     coast_keep: float = 0.6  # speed kept per 1/15 s while coasting (follow.swift:109)
     search_edge_x: float = 0.15  # last seen further than this from the centre -> search that way
     search_w: float = 0.5  # rad/s toward where the target was last seen (follow.swift:128)
-    search_for_s: float = 2.0  # counted from when the target was lost; then give up and stop
+    search_for_s: float = 2.0  # counted from when the target was lost; then stop and wait for them
 
     # Modes from follow.swift (--turn-only, --camera-back)
     turn_only: bool = False  # safe first test: only turn to face the person, never drive
@@ -223,6 +228,11 @@ class FollowConfig:
         if self.too_close_box_w is not None:
             return self.too_close_box_w
         return max(0.55, self.target_box_w + 0.15)
+
+
+# The command's reason while the person is gone and the robot waits in place for them. The face
+# (app/vision/face_state.py) turns it into the `waiting` event; the debug view shows it as is.
+WAITING_REASON = "lost: waiting for you to come back"
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -254,18 +264,27 @@ class FollowController:
         self._w = 0.0
         self._last_t: float | None = None
         self._ref: tuple[float, float] | None = None  # (shoulder gap, box width) when the lock was acquired
+        self._lost_for = 0.0  # how long the target had been lost at the last update (0 while locked)
 
     def update(self, state: TargetState, t: float) -> DriveCommand:
         dt = self._frame_gap(t)
         if state.status == TargetStatus.LOCKED and state.person is not None:
             if state.reacquired:  # the person came back: their pose may have changed
                 self._ref = None
+                if self._lost_for >= self.config.coast_s:
+                    # Back after the robot had stopped (searching or waiting): start fresh from
+                    # where they are now, nothing carried over from before they left.
+                    self._v = 0.0
+                    self._w = 0.0
+            self._lost_for = 0.0
             return self._follow(state.person, dt)
         if state.status == TargetStatus.IDLE:
             self._ref = None
+            self._lost_for = 0.0
             return self._stop("idle")
         # LOST (or LOCKED without a person, which shouldn't happen: treat as just lost)
         lost_for = state.lost_for_s if state.status == TargetStatus.LOST else 0.0
+        self._lost_for = lost_for
         return self._lost(lost_for, state.last_seen_cx, dt)
 
     def range_cues(self, person: Person) -> tuple[list[RangeCue], bool]:
@@ -324,8 +343,8 @@ class FollowController:
 
     def _lost(self, lost_for: float, last_seen_cx: float, dt: float) -> DriveCommand:
         cfg = self.config
-        if lost_for >= cfg.search_for_s:
-            return self._stop("lost: gave up")
+        if lost_for >= cfg.search_for_s:  # searched long enough: stay put until they come back
+            return self._stop(WAITING_REASON)
         if lost_for < cfg.coast_s:  # a brief dropout: no hard stop, let the speed die out, keep turning
             self._v *= self._keep(cfg.coast_keep, dt)
             return DriveCommand(v=self._v, w=self._w, reason="lost: coasting")
