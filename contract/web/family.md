@@ -35,6 +35,7 @@ For the weekend: one shared token in the server's `.env` as `FAMILY_TOKEN` (Alex
 | `error` | A request didn't | `ref` (if any), `code`, `message` (for people) | `error.json` |
 | `rtc` | Check-in video setup, relayed from the robot's phone page | `call`, and `sdp {type, sdp}` or `candidate` | `rtc-answer.json` |
 | `frame` | Only in the no-WebRTC fallback, while a check-in is `live` | `call`, `jpeg` (base64) | `frame.json` |
+| `phones` | After `welcome` and when one changes | `items[] {member, phone}`: the phones linked for texting Miguel (iMessage through Photon, `server/bridge/`); `phone` in E.164 | `phones.json` |
 
 ### Inside `state`
 
@@ -94,6 +95,7 @@ Where they come from:
 | `routine` | `ref`, `id`, `on` | Turns a routine on or off; sends `routines` | `routine.json` |
 | `invite` | `ref`, `name`, `relation` | Adds them to the circle as invited (no real invite yet); sends `circle` | `invite.json` |
 | `ask` | `ref`, `text` (1–500 chars) | "Ask Miguel": the agent answers the question. `ack` right away; each answer arrives as an `event` with `kind: "message"`, `title` starting with "Miguel", `note` = his reply, optional `photo` | `ask.json` |
+| `phone` | `ref`, `member` (member id), `phone` (`+12155550123`, or `""` to unlink) | Links that phone to that member, so their texts reach Miguel as them and alerts reach them; sends `phones` to every app. A number linked to someone else moves. `error` `bad_request` if it isn't a phone number | `phone.json` |
 
 ## Media (HTTP)
 
