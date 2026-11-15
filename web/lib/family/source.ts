@@ -60,6 +60,7 @@ export const DEMO_TIMING = {
   checkInAnswer: 3800,
   answer: 1800,
 };
+export type DemoTiming = typeof DEMO_TIMING;
 
 const MODE_NOTES: Record<MiguelMode, string> = {
   withMom: "In the living room with her",
@@ -88,9 +89,15 @@ export class DemoSource implements FamilySource {
   private listeners = new Set<() => void>();
   private timers: ReturnType<typeof setTimeout>[] = [];
   private seq = 0;
+  private timing: DemoTiming;
 
-  constructor(private now: () => number = () => Date.now()) {
+  /** `timing` overrides some step lengths (NEXT_PUBLIC_DEMO_TIMING, for filming at a watchable pace). */
+  constructor(
+    private now: () => number = () => Date.now(),
+    timing: Partial<DemoTiming> = {},
+  ) {
     this.state = seedState(now());
+    this.timing = { ...DEMO_TIMING, ...timing };
   }
 
   getState = (): FamilyState => this.state;
@@ -151,9 +158,9 @@ export class DemoSource implements FamilySource {
     const stage = (s: Delivery["stage"]) => {
       if (this.state.delivery?.id === delivery.id) this.set({ delivery: { ...this.state.delivery, stage: s } });
     };
-    this.later(DEMO_TIMING.loading, () => stage("loading"));
-    this.later(DEMO_TIMING.onTheWay, () => stage("onTheWay"));
-    this.later(DEMO_TIMING.delivered, () => {
+    this.later(this.timing.loading, () => stage("loading"));
+    this.later(this.timing.onTheWay, () => stage("onTheWay"));
+    this.later(this.timing.delivered, () => {
       if (this.state.delivery?.id !== delivery.id) return;
       stage("delivered");
       this.addEvent({
@@ -164,7 +171,7 @@ export class DemoSource implements FamilySource {
         note: request.message ? undefined : request.voiceNote ? "Miguel played your voice note." : "Miguel brought it to her chair.",
       });
       this.setMode("withMom");
-      this.later(DEMO_TIMING.settle, () => {
+      this.later(this.timing.settle, () => {
         if (this.state.delivery?.id === delivery.id) this.set({ delivery: null });
       });
     });
@@ -174,7 +181,7 @@ export class DemoSource implements FamilySource {
     const question = text.trim();
     if (!question) return;
     this.request("ask", { status: "ok" });
-    this.later(DEMO_TIMING.answer, () => {
+    this.later(this.timing.answer, () => {
       const last = [...this.state.events].sort((a, b) => b.at - a.at)[0];
       this.addEvent({
         kind: "message",
@@ -189,7 +196,7 @@ export class DemoSource implements FamilySource {
   requestCheckIn() {
     this.set({ checkIn: { phase: "asking" } });
     this.setMode("listening", `Asking ${this.state.resident.name} if now's a good time`);
-    this.later(DEMO_TIMING.checkInAnswer, () => {
+    this.later(this.timing.checkInAnswer, () => {
       if (this.state.checkIn.phase !== "asking") return;
       if (this.state.checkInAnswer === "yes") {
         this.set({ checkIn: { phase: "live", startedAt: this.now() } });

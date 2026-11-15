@@ -41,7 +41,7 @@ npm run build
 
 ## Family app (`/family`)
 
-The app for Mom's family: Miguel in 3D on Home, Send something, Check in, Mom's day, Manage (routines, family circle, preferences) and the possible-fall alert. It runs on seeded demo data in the browser (`lib/family/source.ts`, `DemoSource`); a server-backed source can implement the same `FamilySource` interface later.
+The app for Mom's family: Miguel in 3D on Home, Send something, Check in, Mom's day and Miguel's summary of it, Manage (routines, family circle, preferences) and the possible-fall alert. It runs on seeded demo data in the browser (`lib/family/source.ts`, `DemoSource`); a server-backed source can implement the same `FamilySource` interface later.
 
 ```bash
 npm run dev   # then http://localhost:3000/family
@@ -49,6 +49,8 @@ npm run dev   # then http://localhost:3000/family
 
 - **On an iPhone:** same Wi-Fi as the laptop, open `http://<laptop-ip>:3000/family` in Safari, then Share → Add to Home Screen. It opens full screen as "Miguel". `next.config.ts` lets the dev server run its JavaScript for the laptop's own network addresses; if you switch networks, restart the dev server. Recording a voice note needs HTTPS (`npx next dev --experimental-https`); everything else works over plain http.
 - **For filming or the demo,** run the production build instead (faster, no dev badge): `npm run build && npx next start -p 3000`.
+- **Miguel's summary** (`/family/day/summary`, from Mom's day): a short read of the day written from the timeline by `lib/family/summary.ts` (no language model), then walking pace for the week, her routine and what the family sent. It says it's Miguel's read and not a medical assessment.
+- **Filming at a watchable pace:** `NEXT_PUBLIC_DEMO_TIMING` (JSON, ms) shortens the demo's steps; see `.env.example`. The showcase video (`video/showcase/`) builds the app this way.
 - **Demo controls (hidden):** long-press Miguel's status in the top left, press `d` on a keyboard, or add `?demo` to the URL. Set his state (with Mom, delivering, charging, listening, night-light, idle, offline), choose whether Mom says yes to a check-in, trigger a possible fall, or reset the day.
 - **Miguel:** `components/family/miguel/`. `MiguelModel.tsx` rebuilds the robot from John's CAD (the GLB) as a character; `face.ts` draws his face on the phone screen; `voice.ts` plays his lines and moves his mouth from each line's loudness envelope. Drag to turn him, tap to hear him.
 - **His voice:** `node --env-file=<file with CARTESIA_API_KEY> scripts/voice.mjs` regenerates the lines in `scripts/voice.mjs` with Cartesia's "Corey" voice (the intro video's) into `public/family/voice/`; `--say` makes a macOS stand-in instead.

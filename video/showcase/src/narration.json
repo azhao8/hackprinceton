@@ -1,0 +1,59 @@
+{
+  "voice": "Corey (Cartesia, 630ed21c-2c5c-41cf-9d82-10a7fd668370)",
+  "lines": [
+    {
+      "id": "n1",
+      "scene": "day",
+      "at": 0.25,
+      "text": "I'm with your grandparents all day, so you always know how they're doing."
+    },
+    {
+      "id": "n2",
+      "scene": "day",
+      "at": 4.05,
+      "text": "Your mom's walks, her lunch, tea with Ruth. No need to call and interrupt."
+    },
+    {
+      "id": "n3",
+      "scene": "send",
+      "at": 0.3,
+      "text": "Need me to bring her something? Just let me know."
+    },
+    {
+      "id": "n4",
+      "scene": "send",
+      "at": 5.3,
+      "text": "I'll take it right to her, and give her your note."
+    },
+    {
+      "id": "n5",
+      "scene": "checkin",
+      "at": 0.35,
+      "text": "And when you miss her, I can bring you right to her."
+    },
+    {
+      "id": "n6",
+      "scene": "checkin",
+      "at": 3.75,
+      "text": "I always ask her first."
+    },
+    {
+      "id": "n7",
+      "scene": "summary",
+      "at": 0.3,
+      "text": "At the end of the day, I'll tell you how it went."
+    },
+    {
+      "id": "n8",
+      "scene": "summary",
+      "at": 4.7,
+      "text": "Every walk, every glass of water. I remember the little things, so you don't have to wonder."
+    },
+    {
+      "id": "n9",
+      "scene": "summary",
+      "at": 11.1,
+      "text": "That's what I'm here for."
+    }
+  ]
+}

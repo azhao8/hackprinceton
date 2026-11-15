@@ -1,10 +1,12 @@
 "use client";
 
 import { clockLabel, partOfDay } from "@/lib/family/format";
+import Link from "next/link";
 import { useFamily } from "@/lib/family/store";
 import type { FamilyState, TimelineEvent } from "@/lib/family/types";
 import { Glyph } from "./Glyph";
 import { EVENT_GLYPH } from "./meta";
+import { FaceBadge } from "./miguel/FaceBadge";
 import { PageTitle, SectionLabel, TopBar } from "./ui";
 
 const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -88,6 +90,17 @@ export function DayScreen() {
       <PageTitle label={s.dayLabel} title={<>{s.resident.short}&rsquo;s day</>}>
         <p className="fg-display text-[19px] leading-[1.4] text-ink">{storyOf(s)}</p>
       </PageTitle>
+
+      <Link
+        href="/family/day/summary"
+        className="fg-rise-2 mt-5 inline-flex items-center gap-2.5 rounded-full border-[1.5px] border-ink bg-[#fffaf1] py-1.5 pl-1.5 pr-4 text-[14px] font-semibold text-ink transition active:scale-[0.97]"
+      >
+        <FaceBadge expression="happy" width={24} />
+        Miguel&rsquo;s summary
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
+      </Link>
 
       <div className="fg-rise-2 mt-10 space-y-9">
         {groups.map((g) => (

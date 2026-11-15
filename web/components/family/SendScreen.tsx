@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useDemoControls, useFamily, useFamilyActions } from "@/lib/family/store";
+import { clockLabel } from "@/lib/family/format";
+import { useDemoControls, useDemoMinutes, useFamily, useFamilyActions } from "@/lib/family/store";
 import type { Delivery, DeliveryStage, ItemKind } from "@/lib/family/types";
 import { Glyph, type GlyphName } from "./Glyph";
 import { MiguelStage } from "./miguel/MiguelStage";
@@ -24,7 +25,7 @@ const CHOICES: Choice[] = [
   { item: "other", glyph: "parcel", name: "Something else", hint: "Whatever goes on his tray", tone: "#ebe1cf", tilt: -0.9 },
 ];
 
-const QUICK = ["Love you, Mom", "Drink up!", "Thinking of you", "See you Sunday"];
+const QUICK = ["Love you, Mom\u00a0❤️", "Drink up!", "Thinking of you", "See you Sunday"];
 
 const STEPS: { stage: DeliveryStage; text: string }[] = [
   { stage: "sent", text: "Miguel heads to his station" },
@@ -118,6 +119,8 @@ export function SendScreen() {
   const [sentId, setSentId] = useState<string | null>(null);
   const [seen, setSeen] = useState<Delivery | null>(null);
   const voice = useVoiceNote();
+  const minutes = useDemoMinutes();
+  const [deliveredAt, setDeliveredAt] = useState<number | null>(null);
   const mom = s.resident.short;
 
   // Pages stay mounted (hidden) after you leave; start fresh next time.
@@ -125,6 +128,7 @@ export function SendScreen() {
     () => () => {
       setSentId(null);
       setSeen(null);
+      setDeliveredAt(null);
       setChoice(null);
       setMessage("");
       setWhat("");
@@ -149,6 +153,8 @@ export function SendScreen() {
     actions.send({ item: choice.item, label, message: message.trim() || undefined, voiceNote: !!voice.clip });
     if (hasLine("onIt")) speak("onIt");
     setSentId(label);
+    // The button is at the bottom of a scrolled form; the delivery view starts at its top.
+    window.scrollTo({ top: 0 });
   };
 
   // Follow the delivery this send created (its id comes back with the request); keep the last
@@ -157,6 +163,9 @@ export function SendScreen() {
   const mine = s.delivery && request?.id && s.delivery.id === request.id ? s.delivery : null;
   if (mine && mine !== seen) setSeen(mine);
   const delivery = mine ?? (seen && seen.id === request?.id ? seen : null);
+  const delivered = delivery?.stage === "delivered";
+  // When it arrived, on the clock the family sees (kept, so it doesn't drift while you stay here).
+  if (delivered && deliveredAt === null && minutes !== null) setDeliveredAt(minutes);
 
   if (sentId && request?.status === "error") {
     return (
@@ -189,8 +198,15 @@ export function SendScreen() {
             onTap={() => hasLine("onIt") && speak("onIt")}
           />
         </div>
-        <PageTitle label="On its way" title={<>{sentId} for {mom}.</>}>
-          Miguel will hand it to her{message.trim() ? <> and say, <span className="fg-display italic text-ink">“{message.trim()}”</span></> : null}.
+        <PageTitle label={delivered ? "Delivered" : "On its way"} title={<>{sentId} for {mom}.</>}>
+          {delivered ? "Miguel handed it to her" : "Miguel will hand it to her"}
+          {message.trim() ? (
+            <>
+              {delivered ? " and said, " : " and say, "}
+              <span className="fg-display italic text-ink">“{message.trim()}”</span>
+            </>
+          ) : null}
+          .
         </PageTitle>
         <ol className="fg-rise-2 mt-7 space-y-3.5">
           {STEPS.map((step, i) => {
@@ -214,7 +230,19 @@ export function SendScreen() {
             );
           })}
         </ol>
-        {delivery?.stage === "delivered" && delivery.photo && (
+        {delivered && (
+          <div className="fg-rise mt-7 flex items-center gap-3.5 rounded-2xl border-[1.5px] border-ink bg-sun-soft px-4 py-3.5" role="status">
+            <Glyph name="heart" size={34} diecut />
+            <div className="min-w-0 flex-1">
+              <p className="text-[15.5px] font-semibold leading-tight">
+                Delivered{deliveredAt !== null ? <> at {clockLabel(deliveredAt)}</> : null}
+              </p>
+              <p className="mt-0.5 text-[13px] leading-snug text-ink-2">It&rsquo;s in {mom}&rsquo;s day now.</p>
+            </div>
+            <QuietLink href="/family/day">Her day</QuietLink>
+          </div>
+        )}
+        {delivered && delivery?.photo && (
           <figure className="fg-rise mt-7">
             {/* eslint-disable-next-line @next/next/no-img-element -- a photo from Miguel's server, not a page asset */}
             <img src={delivery.photo} alt={`${mom} with the ${delivery.label.toLowerCase()}`} className="w-full rounded-[22px] border-[1.5px] border-ink object-cover" />
