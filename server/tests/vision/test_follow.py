@@ -7,6 +7,7 @@ import math
 import pytest
 
 from app.vision.follow import (
+    WAITING_REASON,
     CameraGeometry,
     FollowConfig,
     FollowController,
@@ -456,16 +457,64 @@ def test_lost_near_the_centre_holds_still():
     assert (cmd.v, cmd.w, cmd.reason) == (0.0, 0.0, "lost: holding")
 
 
-def test_search_gives_up_after_2_s():
+def test_after_the_search_it_waits_in_place_for_good():
     assert CFG.search_for_s == 2.0
     ctrl = FollowController(CFG)
     moving(ctrl)
     still = ctrl.update(lost(1.95, last_seen_cx=0.1), 10.0)
     assert still.reason == "lost: searching left" and still.w > 0
-    gave_up = ctrl.update(lost(2.0, last_seen_cx=0.1), 10.0 + DT)
-    assert (gave_up.v, gave_up.w, gave_up.reason) == (0.0, 0.0, "lost: gave up")
+    for i, lost_for in enumerate((2.0, 5.0, 60.0, 600.0)):  # never gives up, never drives
+        cmd = ctrl.update(lost(lost_for, last_seen_cx=0.1), 10.0 + (i + 1) * DT)
+        assert (cmd.v, cmd.w, cmd.reason) == (0.0, 0.0, WAITING_REASON)
     centre = FollowController(CFG).update(lost(2.5, last_seen_cx=0.5), 0.0)
-    assert (centre.v, centre.w, centre.reason) == (0.0, 0.0, "lost: gave up")
+    assert (centre.v, centre.w, centre.reason) == (0.0, 0.0, WAITING_REASON)
+    assert WAITING_REASON == "lost: waiting for you to come back"
+
+
+def test_never_drives_forward_or_back_while_lost_past_the_coast():
+    ctrl = FollowController(CFG)
+    moving(ctrl, cx=0.9)
+    t = 30 * DT
+    for i in range(200):  # lost for ~13 s, last seen on the right
+        lost_for = CFG.coast_s + i * DT
+        cmd = ctrl.update(lost(lost_for, last_seen_cx=0.9), t + i * DT)
+        assert cmd.v == 0.0
+        if lost_for >= CFG.search_for_s:
+            assert cmd.w == 0.0
+
+
+def test_reacquired_after_waiting_starts_fresh_from_where_they_are():
+    ctrl = FollowController(CFG)
+    moving(ctrl, cx=0.75)
+    t = 30 * DT
+    for i in range(60):  # search, then wait
+        ctrl.update(lost(CFG.coast_s + i * DT, last_seen_cx=0.75), t + i * DT)
+    t += 60 * DT
+    back = person(cx=0.3, d=3.0)  # they come back on the LEFT, far away
+    first = ctrl.update(locked(back, reacquired=True), t)
+    fresh = FollowController(CFG).update(locked(back), t)  # what a brand-new Follow would do
+    assert (first.v, first.w, first.reason) == pytest.approx((fresh.v, fresh.w, fresh.reason))
+    assert first.w > 0 and first.v > 0  # toward them, nothing left over from the right turn
+
+
+def test_reacquired_mid_search_drops_the_search_turn():
+    ctrl = FollowController(CFG)
+    moving(ctrl, cx=0.75)
+    t = 30 * DT
+    for i in range(10):
+        ctrl.update(lost(CFG.coast_s + i * DT, last_seen_cx=0.9), t + i * DT)  # searching right
+    back = person(cx=0.5, d=1.0)  # right in front at the right distance
+    cmd = ctrl.update(locked(back, reacquired=True), t + 10 * DT)
+    assert (cmd.v, cmd.w) == (0.0, 0.0)
+
+
+def test_a_brief_dropout_keeps_the_smoothing():
+    ctrl = FollowController(CFG)
+    before = moving(ctrl, cx=0.75)
+    t = 30 * DT
+    ctrl.update(lost(0.01, last_seen_cx=0.75), t)  # one missed frame: coasting
+    cmd = ctrl.update(locked(person(cx=0.75, d=3.0), reacquired=True), t + DT)
+    assert cmd.v > 0.5 * before.v and cmd.w < 0.5 * before.w  # carried on, no restart from zero
 
 
 def test_idle_is_zero():
