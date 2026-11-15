@@ -9,8 +9,11 @@ One aiohttp app on the server's asyncio loop, on two ports:
 The phone page keeps the endpoints it already used with phone_server.py, so it works unchanged:
 - `POST /auto {v, w, found, cx, h}`: the page's follow command. It goes to the arbiter as a skill,
   and only while Follow is switched on (control page or WebSocket). Off by default.
-- `GET /tel`: `{tel, follow, link, estop, tts}` for the page's status line; `tts` says whether
-  `/tts` is set up (Cartesia), so the page knows whether to try it.
+- `GET /tel`: `{tel, follow, link, estop, tts, settings, vision, face}` for the page's status line;
+  `tts` says whether `/tts` is set up (Cartesia), so the page knows whether to try it. `face` (server
+  vision only, else null) is where Miguel's eyes should look and the latest follow event:
+  `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|gave_up} | null}`
+  (app/vision/face_state.py); the page reacts once per new event `id`.
 - `GET /say?after=N`: lines for the phone to speak. `POST /say {text}` adds one (localhost only).
 - `GET /tts?text=...`: the line as Cartesia speech (audio/mpeg). 400 if the text is empty or over
   300 characters, 503 if CARTESIA_API_KEY isn't set, 502 if Cartesia fails; the page then falls
@@ -21,7 +24,7 @@ WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the rob
 10 times a second; it accepts `{"t":"estop","on":bool}`, `{"t":"joystick","v":..,"w":..}`,
 `{"t":"follow","on":bool}`, `{"t":"say","text":..}`, `{"t":"settings", mode?, speed?, distance?, voice?}`,
 `{"t":"key","letter":"x|P|5|L|R|F|B"}` and `{"t":"arm"}` (start balancing; this laptop only, decision 0054).
-It also sends `{"t":"status", follow, link, estop, settings, lag_ms, skill}` about twice a second.
+It also sends `{"t":"status", follow, link, estop, settings, vision, face, tts, lag_ms, skill}` about twice a second.
 
 Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
@@ -47,7 +50,7 @@ from app.link import RobotLink
 log = logging.getLogger("app.api")
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
-PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js"}
+PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js"}
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
@@ -115,6 +118,7 @@ class ApiState:
     follow_running: Any = None  # () -> bool
     view_jpeg: Any = None       # () -> bytes | None: the server's view (frame + its boxes) as JPEG
     vision_status: Any = None   # () -> str
+    face: Any = None            # () -> dict: the phone face's gaze target and latest follow event
     follow: bool = False
     say: list[dict] = field(default_factory=list)
     settings: dict = field(default_factory=default_settings)
@@ -210,7 +214,7 @@ class ApiState:
         vision = {"mode": "server" if self.server_vision else "phone",
                   "status": self.vision_status() if self.vision_status else None, "camera": camera}
         return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
-                "vision": vision,
+                "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
                 "tts": self.tts is not None}
 
@@ -242,6 +246,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.get("/")
     @routes.get("/index.html")
     @routes.get("/track.js")
+    @routes.get("/face.js")
     async def phone_page(request: web.Request) -> web.StreamResponse:
         if not request.secure and request.path == "/":
             return web.Response(text=ca_page or "Miguel.exe server. Open the HTTPS address on the phone.",

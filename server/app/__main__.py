@@ -149,6 +149,7 @@ class App:
         self._render = render
         self.period_s = 1.0 / hz
         self.follow: Any = None  # the current/last follow skill (for its last command)
+        self.face_events: Any = None  # app.vision.face_state.FaceEvents, made on first use (vision only)
         self.note = ""
         self.last: Command = Command(0.0, 0.0, "none")
         self._quit = False
@@ -251,6 +252,10 @@ class App:
         self.last = cmd
         if self.vision is not None:
             self.vision.set_turn_rate(self._turn_rate(cmd))
+            try:
+                self.face()   # every tick, so a short lock/lost change between status polls still counts
+            except Exception:
+                log.exception("face state failed")   # never let the face stop the drive loop
         if self._window is not None and self._render is not None:
             key = self._window.show(self._render(self._perception(), self.hud()))
             if key is not None and key >= 0:
@@ -268,6 +273,19 @@ class App:
 
     def _perception(self) -> Any:
         return self.vision.latest() if self.vision is not None else None
+
+    def face(self) -> dict | None:
+        """The phone face's view (app/vision/face_state.py): where the locked person is and the latest
+        follow event. None without vision."""
+        if self.vision is None:
+            return None
+        if self.face_events is None:
+            from app.vision.face_state import FaceEvents
+
+            self.face_events = FaceEvents()
+        mirrored = bool(getattr(getattr(self.vision, "_source", None), "mirror", False))
+        return self.face_events.update(self._perception(), self.skills.running == "follow",
+                                       getattr(self.follow, "last_command", None), time.monotonic(), mirrored)
 
     def robot_status(self) -> tuple[bool, Any]:
         """(connected, telemetry for the debug view) from link.health() and the contract-v1 telemetry dict."""
@@ -485,6 +503,7 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
     state.follow_running = lambda: app.skills.running == "follow"
     state.vision_status = lambda: vision.status
     state.view_jpeg = ViewEncoder(app).jpeg
+    state.face = app.face
     return state
 
 
