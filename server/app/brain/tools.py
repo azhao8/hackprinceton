@@ -197,6 +197,38 @@ class ToolBox:
         if self.runner is not None:
             self.runner.cancel()
 
+    def people_in_view(self, max_people: int = 4, stale_s: float = 2.0) -> str | None:
+        """Who the camera sees right now, by saved look (#78): "Alex (center, near); someone I don't
+        recognize (left, far)". None when there is no camera. The mic gives words, not a speaker, so this
+        is the agent's only clue to who is talking; it knows clothes, not faces."""
+        if self.perception is None:
+            return None
+        try:
+            p = self.perception()
+        except Exception:  # noqa: BLE001 - a broken camera must not break every request
+            return None
+        if p is None or time.monotonic() - float(getattr(p, "published_at", 0.0)) > stale_s:
+            return "the camera isn't seeing anything right now"
+        people = list(getattr(p.detections, "people", []) or [])
+        if not people:
+            return "nobody"
+        people.sort(key=lambda q: q.box.x2 - q.box.x1, reverse=True)   # closest (widest) first
+        out = []
+        for person in people[:max_people]:
+            name = None
+            if self.registry is not None:
+                try:
+                    hit = self.registry.match_person(p.frame.image, person, people)
+                    name = hit[0] if hit else None
+                except Exception:  # noqa: BLE001
+                    name = None
+            cx, h = (person.box.x1 + person.box.x2) / 2, person.box.y2 - person.box.y1
+            side = "left" if cx < 0.35 else "right" if cx > 0.65 else "center"
+            dist = "near" if h > 0.6 else "middle distance" if h > 0.3 else "far"
+            out.append(f"{name or 'someone I don\'t recognize'} ({side}, {dist})")
+        extra = len(people) - max_people
+        return "; ".join(out) + (f"; and {extra} more" if extra > 0 else "")
+
     def memory_summary(self, max_items: int = 12, max_chars: int = 600) -> str:
         parts = [f"{k}: {v}" for k, v in list(self.memory.items())[-max_items:]]
         text = "; ".join(parts) if parts else "nothing yet"

@@ -435,6 +435,9 @@ class Agent:
         effort = EFFORT_TASK if EFFORT_TASK in efforts else EFFORT_CHAT
         content: list[dict[str, Any]] = [{"type": "text", "text": _label(u)} for u in utterances]
         content.append({"type": "text", "text": f"World memory: {self.tools.memory_summary()}"})
+        in_view = self.tools.people_in_view() if hasattr(self.tools, "people_in_view") else None
+        if in_view is not None:   # who might be talking (#78): the mic doesn't say
+            content.append({"type": "text", "text": f"People in view now: {in_view}."})
         ex: list[dict[str, Any]] = [{"role": "user", "content": content}]
         if self.per_message_effort:   # this task's effort, without touching the cached prefix
             ex.append({"role": "system", "content": [], "output_config": {"effort": effort}})
