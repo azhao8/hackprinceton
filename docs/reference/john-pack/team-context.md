@@ -116,7 +116,7 @@ Bring-up order for the robot: motors spin open-loop → the IMU reads sensible p
 
 - AI coding tools are allowed **if disclosed** on Devpost. Credit open-source libraries, for example FastAccelStepper.
 - Past events required most code (85 %) to be written during the event. Write all project code after hacking starts.
-- Per John's Nov 9 note, the organizers OK'd pre-building hardware and testing software at home. Save the screenshot, and disclose the pre-event hardware work on Devpost.
+- Correction (Nov 15): this note said the organizers OK'd pre-building hardware, but we never got that approval. Disclose the pre-event hardware work on Devpost and don't claim approval.
 - Inspiration: open-source balancing robots such as BracketBot. Don't reuse their code or CAD.
 
 ## 1.8 Status (Nov 13)
@@ -1623,7 +1623,7 @@ Roles get swapped based on skills. Hardware hack? Repurpose one slot as Hardware
 
 #### Decisions
 
-- Rules (per John, Nov 9): hardware pre-build is OK, and testing the software stack at home is allowed. Source not yet saved here. Keep a screenshot of the organizer reply and disclose pre-event work on Devpost.
+- Rules: correction (Nov 15): this note said the organizers OK'd pre-building hardware and testing software at home, but we never got that approval. Disclose the pre-event work on Devpost and don't claim approval.
 - Parts ordered Nov 9 (Amazon, pickup at ASUC Tue Nov 10). See shopping-list.md.
 - Team repo: _not created yet_ (John creates it; agent doesn't push without OK).
 - Idea: John proposed a modular self-balancing robot (hoverboard base, extrusion mast, IMU, camera), Nov 9. Not locked; see `ideas.md` (top pitch: #2 follow-me & fetch care robot).
