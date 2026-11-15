@@ -258,6 +258,11 @@ class ToolBox:
           "they said, or 'no answer'.",
           {"seconds": {"type": "integer", "description": "How long to wait, 5 to 60 seconds."}},
           self._wait_for_reply)
+        r("stay_silent",
+          "Say nothing and do nothing: the mic message was not meant for you (people talking to each "
+          "other, the TV, a stray fragment). Call it alone, with no text.",
+          {"reason": _str("A few words on why, for the log.")},
+          self._stay_silent, stepped=False)
         r("follow",
           "Start (on=true) or stop (on=false) following the person standing in front of you. It keeps "
           "running after this call returns, until stopped, replaced by another action, or the person is lost.",
@@ -372,6 +377,11 @@ class ToolBox:
         if u is None:
             return ToolOutcome(True, f"no answer (waited {seconds} s)", {"answer": None})
         return ToolOutcome(True, f'The senior said: "{u.text}"', {"answer": u.text})
+
+    async def _stay_silent(self, a: dict[str, Any]) -> ToolOutcome:
+        reason = str(a.get("reason", "")).strip()
+        log.info("agent stays silent: %s", reason or "not meant for Miguel")
+        return ToolOutcome(True, "Staying silent.", {"silent": True, "reason": reason})
 
     async def _follow(self, a: dict[str, Any]) -> ToolOutcome:
         if not a.get("on"):

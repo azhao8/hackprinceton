@@ -201,5 +201,5 @@ def test_agent_saves_a_look_with_this_is_then_finds_that_person_by_name():
     assert [e.text for e in agent.events if e.kind == "say"] == ["Nice to meet you, Mom!"]
     assert any(e.kind == "reply" and e.text == "Found Mom." for e in agent.events)
     assert "this_is" in [t["name"] for t in client.calls[0]["tools"]]
-    second_request = client.calls[3]["messages"][-1]["content"]
+    second_request = client.calls[3]["messages"][-2]["content"]   # (the last one sets the effort)
     assert "People you know by sight: Mom." in second_request[-1]["text"]   # the world memory note

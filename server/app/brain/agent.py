@@ -21,14 +21,29 @@ How it works (docs/03-software.md, "How an instruction becomes motion"):
 Conversation memory keeps the last `history_exchanges` tasks. Thinking blocks are dropped from
 a task once it finishes (they are only needed inside its own tool loop), so trimming old tasks
 off the front never edits the prefix a live thinking block was produced with.
+
+Voice latency (Sat Nov 14):
+- Responses are streamed. Plain text for the senior is spoken sentence by sentence as Claude
+  writes it (a `say` event per sentence), so the first sentence plays while the rest is written.
+- Prompt caching: the tools and system prompt are one cached block (a breakpoint on the system
+  prompt), the conversation so far a second (a breakpoint on the last block of the history), and
+  automatic caching covers the growing tail. Effort changes go in a per-message system message,
+  and the history is trimmed in chunks, so the cached prefix stays byte-identical between tasks.
+  Every call logs its token usage (cache reads included).
+- `stay_silent`: when a mic message was not meant for Miguel, the task ends with nothing said
+  and is left out of the history.
+- The first `say` of a task carries `data.timing` (monotonic stage times: speech end, transcript,
+  Claude's first text, the say) for the server's per-turn timing log.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import itertools
 import logging
 import re
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,8 +52,11 @@ from typing import Any
 import anthropic
 
 from app.brain.prompt import (
+    EFFORT_BETA,
     EFFORT_CHAT,
+    EFFORT_PER_MESSAGE,
     EFFORT_TASK,
+    KEEPALIVE_S,
     MODEL,
     SYSTEM_PROMPT,
     create_message,
@@ -46,6 +64,7 @@ from app.brain.prompt import (
     ACK_GUARDIAN,
     ACK_SPOKEN,
     get_client,
+    stream_message,
 )
 from app.brain.tools import ToolBox
 from app.brain.types import AgentEvent, EventKind, Source, Utterance
@@ -70,9 +89,64 @@ def stop_requested(text: str) -> bool:
     return len(words) <= 4 and any(w in _STOP_WORDS for w in core)
 
 
+# How a mic message without Miguel's name got through (app/speech/mic.py meta "via")
+_VIA_NOTES = {"question": "right after your question", "reply": "answering you", "tap": "tapped your face"}
+
+
 def _label(u: Utterance, working: bool = False) -> str:
     channel = u.meta.get("channel") or DEFAULT_CHANNEL.get(u.source, "?")
-    return f"[{u.source} via {channel}{', while you were working' if working else ''}] {u.text}"
+    notes = [n for n in (_VIA_NOTES.get(u.meta.get("via")), "while you were working" if working else None) if n]
+    return f"[{u.source} via {channel}{''.join(', ' + n for n in notes)}] {u.text}"
+
+
+_ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "vs", "etc", "jr", "sr", "e.g", "i.e", "approx"}
+# A sentence ends at . ! ? (and closing quotes) followed by a space, or at the end of what has
+# arrived so far: text comes in bursts, and waiting for the next burst to see the space can cost
+# a few hundred ms on the first sentence.
+_SENTENCE_END = re.compile(r"[.!?]+[\"'”’)\]]*(?=\s|$)")
+
+
+class _Sentences:
+    """Cuts streamed text into spoken lines: each finished sentence goes to `emit` at once."""
+
+    def __init__(self, emit: Callable[[str], None], max_chars: int = 240) -> None:
+        self.emit = emit
+        self.max_chars = max_chars
+        self.buf = ""
+        self.used = False      # any text arrived
+
+    def feed(self, delta: str) -> None:
+        self.used = True
+        self.buf += delta
+        while True:
+            cut = self._cut()
+            if cut is None:
+                return
+            line, self.buf = self.buf[:cut].strip(), self.buf[cut:]
+            if re.search(r"\w", line):   # not a stray "." (the end of an ellipsis split across bursts)
+                self.emit(line)
+
+    def flush(self) -> None:
+        line, self.buf = self.buf.strip(), ""
+        if re.search(r"\w", line):
+            self.emit(line)
+
+    def _cut(self) -> int | None:
+        for m in _SENTENCE_END.finditer(self.buf):
+            before = self.buf[: m.start()].split()
+            if m.group().startswith(".") and before and before[-1].lower().strip("(\"'") in _ABBREVIATIONS:
+                continue           # "Dr. Lee": not the end of a sentence
+            if m.end() == len(self.buf) and m.group() == "." and m.start() > 0 and self.buf[m.start() - 1].isdigit():
+                continue           # "3." may be "3.5" once the next burst arrives
+            return m.end()
+        nl = self.buf.find("\n")
+        if nl > 0 and self.buf[:nl].strip():
+            return nl + 1
+        if len(self.buf) > self.max_chars:   # no sentence end in sight: break at a comma or a space
+            head = self.buf[: self.max_chars]
+            at = max(head.rfind(", "), head.rfind(" "))
+            return (at + 1) if at > 0 else self.max_chars
+        return None
 
 
 def _btype(block: Any) -> str | None:
@@ -95,8 +169,36 @@ def _strip_thinking(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             content = [b for b in content if _btype(b) not in ("thinking", "redacted_thinking")]
             if not content:   # a turn that was only thinking: drop it (user turns may run together)
                 continue
-        out.append({"role": m["role"], "content": content})
+        out.append({**m, "content": content})   # keeps a system message's output_config
     return out
+
+
+_CACHEABLE = ("text", "tool_use", "tool_result", "image", "document")
+CACHE = {"type": "ephemeral"}
+
+
+def _as_dict(block: Any) -> dict[str, Any]:
+    if isinstance(block, dict):
+        return copy.deepcopy(block)
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):   # exactly as the SDK sends a response block back (anthropic/_utils/_json.py)
+        return dump(mode="json", exclude_unset=True, by_alias=True, exclude=getattr(block, "__api_exclude__", None))
+    return dict(vars(block))
+
+
+def _with_breakpoint(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The history with a cache breakpoint on its last cacheable block (copies only that message),
+    so the conversation so far is read from the cache by every call of the next task too."""
+    for i in range(len(history) - 1, -1, -1):
+        content = history[i]["content"]
+        if not isinstance(content, list):
+            continue
+        for j in range(len(content) - 1, -1, -1):
+            if _btype(content[j]) in _CACHEABLE:
+                block = {**_as_dict(content[j]), "cache_control": CACHE}
+                msg = {**history[i], "content": [*content[:j], block, *content[j + 1:]]}
+                return [*history[:i], msg, *history[i + 1:]]
+    return history
 
 
 @dataclass
@@ -109,6 +211,8 @@ class _TaskState:
     replied: bool = False
     plan: list[str] = field(default_factory=list)
     steps: dict[int, str] = field(default_factory=dict)   # index -> "running" | "done" | "failed"
+    marks: dict[str, float] = field(default_factory=dict) # timing: speech_end, final, llm_start, first_text
+    timed: bool = False                                   # the first say already carried the timing
 
 
 class Agent:
@@ -121,25 +225,41 @@ class Agent:
         *,
         fallbacks: bool | None = None,
         history_exchanges: int = 20,
+        history_trim: int = 6,
         max_rounds: int = 16,
         max_tokens: int = 8000,
         max_events: int = 300,
         ack: bool = True,
+        per_message_effort: bool | None = None,
+        keepalive_s: float | None = None,
     ):
         """
         tools: the ToolBox (the agent binds itself as its host).
         events_cb: called with every AgentEvent (sync; keep it quick).
         client: an AsyncAnthropic (default: the shared one, created on first call).
         fallbacks: server-side refusal fallbacks (None = env MIGUEL_LLM_FALLBACKS, default on).
-        history_exchanges: how many past tasks the conversation keeps.
+        history_exchanges: how many past tasks the conversation keeps at most.
+        history_trim: past the limit, drop this many more at once, so the cached prefix changes
+            once every few tasks instead of on every task.
         max_rounds: LLM calls per task before giving up.
+        per_message_effort: say each task's effort in a system message (keeps the cache);
+            None = env MIGUEL_EFFORT_PER_MESSAGE (default on). Off: top-level effort per task.
+        keepalive_s: while `run()` runs, warm the prompt cache at start and refresh it after this
+            many idle seconds (the cache lives 5 minutes); None = env MIGUEL_LLM_KEEPALIVE_S
+            (default 240), 0 = off.
         """
         self.tools = tools
         self.events_cb = events_cb
         self.ack = ack   # say "On it!" / reply "Got it" at once for task-like requests
         self.model = model
         self.fallbacks = fallbacks
+        self.per_message_effort = EFFORT_PER_MESSAGE if per_message_effort is None else per_message_effort
         self.history_exchanges = history_exchanges
+        self.history_trim = max(0, min(history_trim, history_exchanges - 1))
+        self.last_usage: dict[str, Any] = {}   # the last call's token usage (for the log and tests)
+        self.keepalive_s = KEEPALIVE_S if keepalive_s is None else max(0.0, keepalive_s)
+        self._last_call = float("-inf")
+        self._warm_task: asyncio.Task[None] | None = None
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
         self.inbox: asyncio.Queue[Utterance] = asyncio.Queue()
@@ -188,7 +308,9 @@ class Agent:
         return self._task is not None and not self._task.done()
 
     async def run(self) -> None:
-        """Consume the inbox forever."""
+        """Consume the inbox forever (and keep the prompt cache warm, see keepalive_s)."""
+        if self.keepalive_s > 0 and self._warm_task is None:
+            self._warm_task = asyncio.create_task(self._keep_warm(), name="agent-cache-warm")
         while True:
             u = await self.inbox.get()
             try:
@@ -245,7 +367,12 @@ class Agent:
 
     def emit(self, kind: EventKind, text: str = "", *, to: Source | None = None,
              data: dict[str, Any] | None = None) -> AgentEvent:
-        ev = AgentEvent(next(self._event_ids), kind, text, to, dict(data or {}))
+        data = dict(data or {})
+        st = self._state
+        if kind == "say" and st is not None and not st.timed and not data.get("ack"):
+            st.timed = True   # the task's first real line: carries the stage times for the timing log
+            data["timing"] = {**st.marks, "say": time.monotonic()}
+        ev = AgentEvent(next(self._event_ids), kind, text, to, data)
         self._events.append(ev)
         if self.events_cb is not None:
             try:
@@ -268,6 +395,9 @@ class Agent:
                 return u
         fut: asyncio.Future[Utterance | None] = asyncio.get_running_loop().create_future()
         self._reply_waiter = fut
+        # the mic listens without the wake word while we wait (app/speech/mic.py, via the API)
+        self.emit("listen", f"waiting up to {seconds:g} s for the senior's answer",
+                  data={"on": True, "seconds": seconds})
         try:
             return await asyncio.wait_for(fut, seconds)
         except TimeoutError:
@@ -275,6 +405,7 @@ class Agent:
         finally:
             if self._reply_waiter is fut:
                 self._reply_waiter = None
+            self.emit("listen", "stopped waiting for an answer", data={"on": False})
 
     async def wait_interjection(self) -> None:
         await self._interject.wait()
@@ -290,21 +421,28 @@ class Agent:
             await asyncio.wait({after})   # let it finish and write its history first
         last = utterances[-1]
         st = _TaskState(f"task-{next(self._task_ids)}", " / ".join(u.text for u in utterances), last.source)
+        st.marks = {"heard": last.t, **{k: last.meta[k] for k in ("t_speech_end", "t_final")
+                                        if isinstance(last.meta.get(k), (int, float))}}
         self._state = st
         efforts = {effort_for(u.text, u.source) for u in utterances}
         effort = EFFORT_TASK if EFFORT_TASK in efforts else EFFORT_CHAT
         content: list[dict[str, Any]] = [{"type": "text", "text": _label(u)} for u in utterances]
         content.append({"type": "text", "text": f"World memory: {self.tools.memory_summary()}"})
         ex: list[dict[str, Any]] = [{"role": "user", "content": content}]
-        if self.ack and effort == EFFORT_TASK:   # acknowledge at once; the plan follows when Claude answers
+        if self.per_message_effort:   # this task's effort, without touching the cached prefix
+            ex.append({"role": "system", "content": [], "output_config": {"effort": effort}})
+        # acknowledge at once; the plan follows when Claude answers. Not for mic speech without his
+        # name (an answer window, no wake word set): it may not be meant for Miguel at all.
+        if self.ack and effort == EFFORT_TASK and last.meta.get("addressed", True) is not False:
             if last.source == "guardian":
                 self.emit("reply", ACK_GUARDIAN, to="guardian", data={"ack": True})
             else:
                 self.emit("say", ACK_SPOKEN, to="senior", data={"ack": True})
         status, summary, keep = "done", "", True
         try:
-            for _ in range(self.max_rounds):
-                resp = await self._call(ex, effort)
+            for rounds in range(self.max_rounds):
+                speech = _Sentences(lambda line: self._speak_streamed(st, line))
+                resp = await self._call(ex, effort, st, speech)
                 stop_reason = resp.stop_reason
                 if stop_reason == "refusal":
                     details = getattr(resp, "stop_details", None)
@@ -328,7 +466,14 @@ class Agent:
                     continue
                 if not uses:
                     summary = _text_of(resp.content)
-                    self._final_text(st, summary)
+                    if not speech.used or st.requester == "guardian":   # streamed text was spoken already
+                        self._final_text(st, summary)
+                    break
+                if rounds == 0 and [b.name for b in uses] == ["stay_silent"]:
+                    # not meant for Miguel: nothing said, no follow-up call, and not kept in the history
+                    reason = str((uses[0].input or {}).get("reason", "")).strip()
+                    log.info("agent: stayed silent on %r (%s)", st.request[:80], reason or "no reason")
+                    status, summary, keep = "done", "stayed silent", False
                     break
                 results = [await self._exec(st, b) for b in uses]
                 ex.append({"role": "user", "content": results + self._drain_pending(st)})
@@ -357,19 +502,102 @@ class Agent:
             self._interject.clear()
             self._start(pending)
 
-    async def _call(self, ex: list[dict[str, Any]], effort: str) -> Any:
-        messages = [m for exchange in self._history for m in exchange] + ex
-        return await create_message(
+    def _speak_streamed(self, st: _TaskState, line: str) -> None:
+        """A finished sentence of Claude's plain text: say it now (the senior or operator asked).
+        Not when Claude already used say() in this task: then its text is only a log note."""
+        if st.requester != "guardian" and not st.said:
+            self.emit("say", line, to="senior", data={"streamed": True})
+
+    def _params(self, effort: str) -> dict[str, Any]:
+        """What every call shares, byte for byte: model, tools, system prompt (cached), effort."""
+        params: dict[str, Any] = {
+            "model": self.model,
+            # the tools and the system prompt: one cached block, the same on every call
+            "system": [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": CACHE}],
+            "tools": self.tools.definitions(),
+        }
+        if self.per_message_effort:
+            params["betas"] = [EFFORT_BETA]
+            # pinned: a top-level effort change would invalidate the cached conversation
+            params["output_config"] = {"effort": EFFORT_CHAT}
+        else:
+            params["output_config"] = {"effort": effort}
+        return params
+
+    async def prewarm(self) -> bool:
+        """Write or refresh the cached prefix (tools, system prompt, the conversation so far) with a
+        max_tokens=0 request: nothing is generated, it bills a cache write or read. True if it ran."""
+        if self.busy:
+            return False
+        history = [m for exchange in self._history for m in exchange]
+        self._last_call = time.monotonic()
+        try:
+            resp = await create_message(
+                self.client,
+                fallbacks=self.fallbacks,   # the same betas as the real calls
+                **self._params(EFFORT_CHAT),
+                max_tokens=0,
+                # the breakpoint on the last block the next real request shares; the placeholder is never answered
+                messages=_with_breakpoint(history) + [{"role": "user", "content": [{"type": "text", "text": "."}]}],
+            )
+        except Exception as e:  # noqa: BLE001 - warming is an optimization; never break the brain for it
+            log.info("llm cache warm-up failed: %s: %s", type(e).__name__, getattr(e, "message", e))
+            return False
+        self._log_usage(resp, self._last_call, None, "cache warm-up")
+        return True
+
+    async def _keep_warm(self) -> None:
+        await self.prewarm()
+        while True:
+            await asyncio.sleep(min(5.0, self.keepalive_s))
+            if not self.busy and time.monotonic() - self._last_call >= self.keepalive_s:
+                await self.prewarm()
+
+    async def _call(self, ex: list[dict[str, Any]], effort: str, st: _TaskState | None = None,
+                    speech: _Sentences | None = None) -> Any:
+        history = [m for exchange in self._history for m in exchange]
+
+        def on_event(kind: str, value: Any) -> None:
+            if kind == "text" and value:
+                if st is not None and "first_text" not in st.marks:
+                    st.marks["first_text"] = time.monotonic()
+                if speech is not None:
+                    speech.feed(value)
+            elif kind == "block_stop" and speech is not None:
+                speech.flush()           # the end of a text block ends its last sentence
+
+        t0 = self._last_call = time.monotonic()
+        if st is not None:
+            st.marks.setdefault("llm_start", t0)
+        resp = await stream_message(
             self.client,
             fallbacks=self.fallbacks,
-            model=self.model,
+            on_event=on_event,
             max_tokens=self.max_tokens,
-            system=SYSTEM_PROMPT,
-            tools=self.tools.definitions(),
-            messages=messages,
-            output_config={"effort": effort},
-            cache_control={"type": "ephemeral"},
+            # the conversation so far: a second cached block, shared by every call of this task and the next
+            messages=_with_breakpoint(history) + ex,
+            cache_control=CACHE,   # automatic caching for the growing tail of this task
+            **self._params(effort),
         )
+        if speech is not None:
+            speech.flush()
+        self._last_call = time.monotonic()
+        self._log_usage(resp, t0, st)
+        return resp
+
+    def _log_usage(self, resp: Any, t0: float, st: _TaskState | None, what: str = "llm") -> None:
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return
+        u = {k: getattr(usage, k, None) or 0 for k in
+             ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")}
+        self.last_usage = u
+        first = st.marks.get("first_text") if st is not None else None
+        log.info("%s: %d ms%s; tokens: %d new + %d cache read + %d cache write in, %d out; stop %s",
+                 what, 1000 * (time.monotonic() - t0),
+                 f" (first text at {1000 * (first - t0):.0f} ms)" if first is not None and first >= t0 else "",
+                 u["input_tokens"], u["cache_read_input_tokens"], u["cache_creation_input_tokens"],
+                 u["output_tokens"], getattr(resp, "stop_reason", "?"))
 
     async def _exec(self, st: _TaskState, block: Any) -> dict[str, Any]:
         name = block.name
@@ -461,6 +689,7 @@ class Agent:
                 exchange.append({"role": "user", "content": [{"type": "text", "text": self._stop_note}]})
             self._history.append(exchange)
         self._stop_note = None
-        del self._history[: max(0, len(self._history) - self.history_exchanges)]
+        if len(self._history) > self.history_exchanges:   # trim in a chunk: the cached prefix moves rarely
+            del self._history[: len(self._history) - (self.history_exchanges - self.history_trim)]
         if self._state is st:
             self._state = None

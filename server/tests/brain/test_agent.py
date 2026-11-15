@@ -149,8 +149,13 @@ def test_multi_step_request_emits_plan_steps_say_and_reply_in_order():
 
     first = client.calls[0]
     assert first["model"] == MODEL
-    assert first["output_config"] == {"effort": "medium"}
-    assert first["fallbacks"] == "default" and first["betas"] == ["server-side-fallback-2026-07-01"]
+    # effort: pinned at the top level (keeps the cache), the task's own in a system message
+    assert first["output_config"] == {"effort": "low"}
+    assert first["messages"][1] == {"role": "system", "content": [], "output_config": {"effort": "medium"}}
+    assert first["fallbacks"] == "default"
+    assert first["betas"] == ["server-side-fallback-2026-07-01", "mid-conversation-output-config-2026-07-01"]
+    assert first["system"][0]["cache_control"] == {"type": "ephemeral"}   # tools + system: one cached block
+    assert first["cache_control"] == {"type": "ephemeral"}
     assert all(t["strict"] and t["input_schema"]["additionalProperties"] is False for t in first["tools"])
     assert "thinking" not in first and "tool_choice" not in first
     content = first["messages"][0]["content"]
@@ -213,11 +218,12 @@ def test_senior_stop_cancels_the_skill_without_an_llm_call():
     assert tasks == ["started", "cancelled"]
     assert any(e.kind == "say" and e.text == "Okay, stopping." for e in agent.events)
     msgs = client.calls[1]["messages"]
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "user", "user"]
-    results = msgs[2]["content"]
+    assert [m["role"] for m in msgs] == ["user", "system", "assistant", "user", "user", "user", "system"]
+    results = msgs[3]["content"]
     assert [r["tool_use_id"] for r in results] == ["t1", "t2"] and all(r["is_error"] for r in results)
-    assert msgs[3]["content"][0]["text"].startswith("[stop]")
-    assert client.calls[1]["output_config"] == {"effort": "low"}   # small talk
+    assert msgs[4]["content"][0]["text"].startswith("[stop]")
+    assert msgs[4]["content"][0]["cache_control"] == {"type": "ephemeral"}   # the end of the history
+    assert msgs[-1]["output_config"] == {"effort": "low"}   # small talk
 
 
 def test_one_physical_task_new_request_is_handed_to_the_running_task():
@@ -295,7 +301,8 @@ def test_wait_for_reply_times_out_with_no_answer():
 
     tools_out = asyncio.run(asyncio.wait_for(scenario(), 10))
     assert tools_out.ok and tools_out.text.startswith("no answer")
-    assert agent.events == []
+    # the mic listened without the wake word while it waited
+    assert [(e.kind, e.data["on"]) for e in agent.events] == [("listen", True), ("listen", False)]
 
 
 def test_reply_without_camera_still_sends():
@@ -323,7 +330,7 @@ def test_refusal_is_reported_without_crashing_and_left_out_of_history():
     err = next(e for e in agent.events if e.kind == "error")
     assert "cyber" in err.text
     assert any(e.kind == "say" and e.text.startswith("Sorry") for e in agent.events)
-    assert len(client.calls[1]["messages"]) == 1   # the refused exchange was dropped
+    assert len(client.calls[1]["messages"]) == 2   # the refused exchange was dropped (user + effort)
 
 
 def test_small_talk_is_one_call_and_spoken_and_fallbacks_can_be_switched_off():
@@ -345,12 +352,13 @@ def test_small_talk_is_one_call_and_spoken_and_fallbacks_can_be_switched_off():
     q = asyncio.run(scenario())
     assert kinds(agent) == ["say", "reply"]   # no task events for chat
     assert agent.events[1].text == "I'm great, thank you!" and agent.events[1].to == "senior"
-    assert "betas" not in client.calls[0] and "fallbacks" not in client.calls[0]
+    assert client.calls[0]["betas"] == ["mid-conversation-output-config-2026-07-01"]
+    assert "fallbacks" not in client.calls[0]
     assert client.calls[0]["output_config"] == {"effort": "low"}
     assert len(seen) == len(agent.events) == q.qsize()
     # finished tasks keep no thinking blocks in the history
     history = client.calls[1]["messages"]
-    assert [b.type for b in history[1]["content"]] == ["text"]
+    assert [b["type"] for b in history[2]["content"]] == ["text"]   # (the breakpoint copy is a dict)
 
 
 def test_memory_tools_and_summary():
