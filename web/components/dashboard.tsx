@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { HISTORY_S, SERVER_WS_URL, useRobot, type Connection } from "@/lib/use-robot";
-import type { AgentEvent, ClientMessage, FollowSettings, KeyLetter, MemoryView } from "@/lib/messages";
+import type { AgentEvent, ClientMessage, FollowSettings, KeyLetter, MemoryView, Status, Telemetry } from "@/lib/messages";
 import { LineChart } from "./line-chart";
 
 const STALE_MS = 1000;
@@ -13,8 +13,12 @@ const CUT_CONFIRM = "Cut motor power?\n\nThe robot stops balancing and drops. Us
 /** The firmware's default balance angle (balance.ino `trim`), before any shift from this page. */
 const FIRMWARE_TRIM = -3.65;
 const TRIM_STEP = 0.25;
-const ARM_CONFIRM =
-  "Start balancing (g)?\n\nSomeone must be holding the robot upright, within about 6°, ready to let go once it holds itself.";
+/** Server defaults (server/app/api: DRIVE_SPEED_DEFAULT, TURN_RATE_DEFAULT), until its first status. */
+const DRIVE_SPEED = 1.1;
+const TURN_RATE = 1.0;
+const RECAL_CONFIRM = "Recalibrate the tilt sensor?\n\nLay the robot down so it can't move and don't touch it for 3 s. Not while it balances.";
+const ERASE_CONFIRM =
+  "Erase Miguel's saved memory?\n\nFacts, places (back to the demo sign cards), the people he knows by sight and today's family timeline are deleted, and he starts a new conversation. This can't be undone.";
 
 type Dir = "U" | "D" | "L" | "R";
 const KEY_DIR: Record<string, Dir> = { w: "U", arrowup: "U", s: "D", arrowdown: "D", a: "L", arrowleft: "L", d: "R", arrowright: "R" };
@@ -28,15 +32,27 @@ export function Dashboard() {
   const ageMs = robot.lastAt === null ? null : robot.now - robot.lastAt;
   const stale = robot.connection !== "sample" && (ageMs === null || ageMs > STALE_MS);
 
-  const [vmax, setVmax] = useState(0.3);
-  const [wmax, setWmax] = useState(1.0);
+  // Top speed and turn rate live on the server (#79), so a reload keeps them and the voice agent's move uses them.
+  const [driveDraft, setDriveDraft] = useState<{ drive_speed?: number; turn_rate?: number }>({});
+  const vmax = driveDraft.drive_speed ?? status?.settings.drive_speed ?? DRIVE_SPEED;
+  const wmax = driveDraft.turn_rate ?? status?.settings.turn_rate ?? TURN_RATE;
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setDrive = (s: { drive_speed?: number; turn_rate?: number }) => {
+    setDriveDraft((d) => ({ ...d, ...s }));
+    send({ t: "settings", ...s });
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => setDriveDraft({}), 800);
+  };
   const [held, setHeld] = useState<Set<Dir>>(new Set());
   const heldRef = useRef(held);
   const speedRef = useRef({ vmax, wmax });
 
   const key = (letter: KeyLetter) => send({ t: "key", letter });
-  const arm = () => {
-    if (window.confirm(ARM_CONFIRM)) send({ t: "arm" });
+  // Start (#79): no confirm. The server waits until someone holds it upright and steady, then balances.
+  const waiting = status?.autostart.waiting ?? false;
+  const arm = () => send(waiting ? { t: "cancel_start" } : { t: "arm" });
+  const recalibrate = () => {
+    if (window.confirm(RECAL_CONFIRM)) send({ t: "recalibrate" });
   };
   // STOP: all movement stops (driving, turns, follow) and stays stopped until Resume; it keeps balancing.
   const stop = () => {
@@ -120,18 +136,10 @@ export function Dashboard() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Miguel.exe</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <ConnectionBadge connection={robot.connection} stale={stale} />
-            <Badge tone={status?.link ? "ok" : "danger"}>
-              Robot {status ? (status.link ? "connected" : "not connected") : "?"}
-              {status?.lag_ms != null && ` · ${Math.round(status.lag_ms)} ms`}
-            </Badge>
-            <Badge tone={tel?.state === "idle" ? "muted" : "ok"}>{stateLabel(tel?.state)}</Badge>
-            {tel?.fault && <Badge tone="danger">Last stop: {tel.fault}</Badge>}
-          </div>
+          <StatusBar connection={robot.connection} stale={stale} status={status} tel={tel} />
         </div>
         <div className="flex items-center gap-2">
-          <Action k="G" tone="ok" onClick={arm}>Start</Action>
+          <Action k="G" tone={waiting ? "danger" : "ok"} onClick={arm}>{waiting ? "Cancel start" : "Start"}</Action>
           <Action k="P" onClick={() => key("P")}>Park</Action>
           {stopped ? (
             <button type="button" onClick={resume}
@@ -147,6 +155,23 @@ export function Dashboard() {
         </div>
       </header>
 
+      {waiting && (
+        <p role="status" className="rounded-md border border-ok bg-ok/10 px-3 py-2 text-sm font-medium text-ok">
+          {status?.autostart.note || "Hold it upright and steady"}: it starts balancing by itself once it&apos;s upright and still (within 3° for 1 s).
+        </p>
+      )}
+      {!waiting && status?.autostart.note && (
+        <p role="status" className="rounded-md border border-line px-3 py-2 text-sm text-muted">{status.autostart.note}</p>
+      )}
+      {status?.drift && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
+          <span>
+            Tilt sensor drifting{status.drift_rate != null && ` (${status.drift_rate.toFixed(1)}°/s while still)`}. Start is blocked.
+            Lay the robot down flat and still, then recalibrate.
+          </span>
+          <Action tone="danger" onClick={recalibrate}>Recalibrate tilt sensor</Action>
+        </div>
+      )}
       {stopped && (
         <p role="status" className="rounded-md border border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
           Stopped. Driving and follow are blocked; the robot keeps balancing. Press Resume to drive again.
@@ -172,8 +197,8 @@ export function Dashboard() {
                 <PadKey label="D" on={held.has("R")} onPress={(on) => pressDir("R", on)} />
               </div>
               <div className="flex flex-1 flex-col gap-3">
-                <Slider label="Top speed" unit="m/s" min={0.1} max={3.2} step={0.05} value={vmax} onChange={setVmax} />
-                <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={setWmax} />
+                <Slider label="Top speed" unit="m/s" min={0.1} max={3.2} step={0.05} value={vmax} onChange={(v) => setDrive({ drive_speed: v })} />
+                <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={(v) => setDrive({ turn_rate: v })} />
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -193,14 +218,15 @@ export function Dashboard() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <MiguelCard events={robot.agent} listening={status?.listening ?? false} send={send} />
+        <MiguelCard events={robot.agent} listening={status?.listening ?? false} agentOn={status?.agent ?? false} send={send} />
         <MemoryCard memory={robot.memory} send={send} />
       </div>
 
       <SayCard send={send} />
 
-      <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null} rate={tel?.rate ?? null}
-        balancing={tel?.state === "balance" || tel?.state === "drive"} send={send} />
+      <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null} drift={status?.drift ?? false}
+        calibrating={status?.calibrating ?? false} balancing={tel?.state === "balance" || tel?.state === "drive"}
+        send={send} onRecalibrate={recalibrate} />
 
       <details className="rounded-xl border border-line bg-panel p-4 shadow-sm">
         <summary className="cursor-pointer font-semibold">Details: telemetry and charts</summary>
@@ -355,7 +381,9 @@ const AGENT_LABEL: Record<string, string> = {
 };
 
 /** The voice agent: talk to Miguel as the operator, watch what he hears, says and does. */
-function MiguelCard({ events, listening, send }: { events: AgentEvent[]; listening: boolean; send: (m: ClientMessage) => boolean }) {
+function MiguelCard({ events, listening, agentOn, send }: {
+  events: AgentEvent[]; listening: boolean; agentOn: boolean; send: (m: ClientMessage) => boolean;
+}) {
   const [text, setText] = useState("");
   const shown = events.filter((e) => e.kind !== "step").slice(-10).reverse();
   return (
@@ -378,8 +406,15 @@ function MiguelCard({ events, listening, send }: { events: AgentEvent[]; listeni
           Test fall alert
         </Action>
       </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Action onClick={() => send({ t: "reset_chat" })}>New conversation</Action>
+        <Action onClick={() => send({ t: "clear_log" })}>Clear log</Action>
+        <span className="text-xs text-muted">
+          {agentOn ? "New conversation stops his task and forgets the chat; his memory stays." : "Voice agent off (no ANTHROPIC_API_KEY)."}
+        </span>
+      </div>
       <ul className="mt-3 flex max-h-64 flex-col gap-1.5 overflow-y-auto text-sm">
-        {shown.length === 0 && <li className="text-muted">Nothing yet. With ANTHROPIC_API_KEY set, his events show here.</li>}
+        {shown.length === 0 && <li className="text-muted">{agentOn ? "Nothing yet." : "Nothing yet. With ANTHROPIC_API_KEY set, his events show here."}</li>}
         {shown.map((e) => (
           <li key={e.id} className="rounded-md border border-line px-2 py-1">
             <span className="mr-2 text-xs font-semibold text-muted">{AGENT_LABEL[e.kind] ?? e.kind}</span>
@@ -402,6 +437,12 @@ function MemoryCard({ memory, send }: { memory: MemoryView | null; send: (m: Cli
     <Card title="Memory" hint="What Miguel knows; kept across restarts">
       {!memory ? <p className="text-sm text-muted">Waiting for the server…</p> : (
         <div className="flex flex-col gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Action tone="danger" onClick={() => { if (window.confirm(ERASE_CONFIRM)) send({ t: "reset_memory" }); }}>
+              Erase memory and timeline
+            </Action>
+            <span className="text-xs text-muted">Back to the demo setup: only the sign-card places stay.</span>
+          </div>
           <section>
             <h3 className="mb-1 font-medium">People he knows by sight</h3>
             <ul className="mb-2 flex flex-wrap gap-2">
@@ -465,8 +506,9 @@ function MemoryCard({ memory, send }: { memory: MemoryView | null; send: (m: Cli
 }
 
 /** The balance angle (trim): the tilt the robot treats as upright. Live changes (firmware t / y) last until it reboots. */
-function TrimCard({ shift, pitch, rate, balancing, send }: {
-  shift: number; pitch: number | null; rate: number | null; balancing: boolean; send: (m: ClientMessage) => boolean;
+function TrimCard({ shift, pitch, drift, calibrating, balancing, send, onRecalibrate }: {
+  shift: number; pitch: number | null; drift: boolean; calibrating: boolean; balancing: boolean;
+  send: (m: ClientMessage) => boolean; onRecalibrate: () => void;
 }) {
   const now = FIRMWARE_TRIM + shift;
   const [target, setTarget] = useState("");
@@ -479,18 +521,14 @@ function TrimCard({ shift, pitch, rate, balancing, send }: {
           Target <span className="font-mono text-lg">{fmtSigned(now)}°</span>
           <span className="ml-2 text-xs text-muted">(shifted {fmtSigned(shift)}° from here)</span>
           <div className="text-xs text-muted">Tilt now: {pitch === null ? "—" : `${fmtSigned(pitch)}°`}
-            {rate !== null && Math.abs(rate) > 3 && !balancing && (
-              <span className="ml-2 font-medium text-danger">Tilt sensor drifting ({Math.round(rate)}°/s while still?): recalibrate</span>
-            )}
+            {calibrating ? <span className="ml-2 font-medium">Recalibrating: keep it still…</span>
+              : drift && <span className="ml-2 font-medium text-danger">Tilt sensor drifting: recalibrate</span>}
           </div>
         </div>
         <div className="flex gap-2">
           <Action onClick={() => send({ t: "trim", steps: -1 })}>−0.25°</Action>
           <Action onClick={() => send({ t: "trim", steps: 1 })}>+0.25°</Action>
-          <Action onClick={() => {
-            if (!balancing && window.confirm("Recalibrate the tilt sensor?\n\nLay the robot down so it can't move and don't touch it for 3 s. Not while it balances."))
-              send({ t: "recalibrate" });
-          }}>Recalibrate tilt sensor</Action>
+          <Action onClick={() => { if (!balancing) onRecalibrate(); }}>Recalibrate tilt sensor</Action>
         </div>
         <form className="flex items-center gap-2" onSubmit={(e) => {
           e.preventDefault();
@@ -575,6 +613,37 @@ function Badge({ tone, children }: { tone: "ok" | "danger" | "muted"; children: 
   return <span className={`rounded-full border px-3 py-1 text-xs font-medium ${cls}`}>{children}</span>;
 }
 
+/** Everything at a glance (#79): server, robot, motors, tilt sensor, family app, phone. */
+function StatusBar({ connection, stale, status, tel }: {
+  connection: Connection; stale: boolean; status: Status | null; tel: Telemetry | null;
+}) {
+  const known = !!status && connection === "open";
+  const motorsOn = tel?.state === "balance" || tel?.state === "drive";
+  const camLive = (status?.vision?.camera?.age_s ?? null) !== null && (status?.vision?.camera?.age_s ?? 99) < 2;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <ConnectionBadge connection={connection} stale={stale} />
+      <Badge tone={!known ? "muted" : status.link ? "ok" : "danger"}>
+        Robot {!known ? "?" : status.link ? "connected" : "not connected"}
+        {known && status.link && status.lag_ms != null && ` · ${Math.round(status.lag_ms)} ms`}
+      </Badge>
+      <Badge tone={!tel ? "muted" : motorsOn ? "ok" : "muted"}>
+        Motors {!tel ? "?" : motorsOn ? `on · ${tel.state === "drive" ? "moving" : "balancing"}` : "off"}
+      </Badge>
+      {tel?.fault && <Badge tone="danger">Last stop: {tel.fault}</Badge>}
+      <Badge tone={!known || !tel ? "muted" : status.drift ? "danger" : "ok"}>
+        Tilt sensor {!known || !tel ? "?" : status.calibrating ? "calibrating…" : status.drift ? "drifting" : "OK"}
+      </Badge>
+      <Badge tone={!known ? "muted" : status.family > 0 ? "ok" : "muted"}>
+        Family app {!known ? "?" : status.family > 0 ? `connected${status.family > 1 ? ` · ${status.family}` : ""}` : "not connected"}
+      </Badge>
+      <Badge tone={!known ? "muted" : status.phone ? "ok" : "danger"}>
+        Phone {!known ? "?" : status.phone ? (status.vision?.mode === "server" ? (camLive ? "connected · camera live" : "connected · no camera") : "connected") : "not connected"}
+      </Badge>
+    </div>
+  );
+}
+
 function ConnectionBadge({ connection, stale }: { connection: Connection; stale: boolean }) {
   if (connection === "sample") return <Badge tone="muted">Sample robot</Badge>;
   if (connection === "open") return <Badge tone={stale ? "danger" : "ok"}>Server {stale ? "· no telemetry" : "connected"}</Badge>;
@@ -591,13 +660,6 @@ function Stat({ label, value, unit, danger }: { label: string; value: string; un
       </div>
     </div>
   );
-}
-
-function stateLabel(state: string | undefined): string {
-  if (state === "balance") return "Balancing";
-  if (state === "drive") return "Moving";
-  if (state === "idle") return "Motors off / parked";
-  return "No robot data";
 }
 
 function fmt(v: number | null | undefined, digits: number): string {

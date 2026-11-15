@@ -183,6 +183,16 @@ class FamilyHub:
         except RuntimeError:
             pass
 
+    def timeline_cleared(self) -> None:
+        """The control page erased the memory (#79): every open app gets today's (now empty) timeline."""
+        today = self.memory.today() if self.memory is not None else []
+        msg = {"t": "events", "day": datetime.now().astimezone().date().isoformat(),
+               "items": [self._wire_event(e) for e in today]}
+        try:
+            asyncio.get_running_loop().create_task(self._broadcast(msg))
+        except RuntimeError:
+            pass
+
     async def _broadcast(self, msg: dict[str, Any]) -> None:
         for ws in list(self.clients):
             try:

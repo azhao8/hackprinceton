@@ -28,6 +28,29 @@
   #suit.on { display: block; }
   #face.on ~ #hud { top: auto; bottom: 0; font-size: 11px; opacity: 0.6; background: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  /* Robot controls (#79): the faint ⋯ button opens the sheet (tapping the face stays tap-to-talk). The status line and
+     the drift banner stack at the top, over the face. Everything here stays hidden until /tel has the fields. */
+  #top { position: absolute; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); display: flex;
+         flex-direction: column; align-items: center; gap: 10px; pointer-events: none; }   /* taps go through to the face */
+  #wrap:not(.faceon) #top { top: 35%; }                                                   /* phone vision: the hud is at the top */
+  #status { display: none; max-width: 100%; box-sizing: border-box; padding: 8px 14px; border-radius: 12px; background: #000b;
+            color: #fff; font-size: 17px; text-align: center; }
+  #status.warn { background: #9a3412e6; }
+  #drift { display: none; width: 100%; box-sizing: border-box; padding: 16px; border-radius: 16px; background: #b45309;
+           color: #fff; font-size: 22px; font-weight: 600; line-height: 1.3; text-align: center; pointer-events: auto; }
+  #driftRecal { margin-top: 12px; font-size: 22px; padding: 14px 28px; background: #fff; color: #7c2d12; font-weight: 700; }
+  #ctlBtn { position: absolute; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 12px); width: 44px; height: 44px;
+            padding: 0; border-radius: 50%; background: #ffffff14; color: #fff8; font-size: 22px; line-height: 44px; display: none; }
+  #sheet { position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 64px); display: none;
+           flex-direction: column; gap: 8px; padding: 12px; border-radius: 16px; background: #111e; }
+  #sheet button { font-size: 18px; padding: 14px; }
+  #sheet button:disabled { opacity: 0.35; }
+  #cal { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+         gap: 28px; padding: 0 16px; background: #000d; text-align: center; }
+  #calMsg { font-size: 40px; font-weight: 700; }
+  #calCancel { font-size: 22px; padding: 14px 36px; }
+  #status.on, #drift.on, #ctlBtn.on { display: block; }
+  #sheet.on, #cal.on { display: flex; }
 </style>
 </head>
 <body>
@@ -47,6 +70,20 @@ Everything else is on the laptop's control page.</div>
     <label>Stop distance <input id="dist" type="range" step="0.05"><b id="distL"></b></label>
     <label>Speed <input id="spd" type="range" min="0.1" max="0.45" step="0.05"><b id="spdL"></b></label>
   </div>
+  <!-- Robot controls (#79), main server only: see Ctl in the script -->
+  <div id="top">
+    <div id="status"></div>
+    <div id="drift">Tilt sensor drifting. Lay me down flat and still, then recalibrate.<br>
+      <button id="driftRecal">Recalibrate</button></div>
+  </div>
+  <button id="ctlBtn" aria-label="Robot controls">⋯</button>
+  <div id="sheet">
+    <button id="actStart">Start balancing</button>
+    <button id="actPark">Park</button>
+    <button id="actRecal">Recalibrate tilt sensor</button>
+    <button id="actClose">Close</button>
+  </div>
+  <div id="cal"><div id="calMsg"></div><button id="calCancel">Cancel</button></div>
 </div>
 <script src="track.js"></script>
 <script src="face.js"></script>   <!-- Miguel's face (global Face); the bench tool doesn't serve it, the page works without it -->
@@ -542,6 +579,114 @@ setInterval(async () => {
   } catch (e) {}
 }, 600);
 
+// ---------- robot controls (#79): Start balancing, Park, Recalibrate tilt sensor; the drift warning ----------
+// The faint ⋯ button (bottom right) opens a sheet; tapping the face stays tap-to-talk. From /tel (main server only):
+//   drift        the tilt sensor drifts (latched by the server): he must be recalibrated before he can balance
+//   autostart    {waiting, note}: Start was pressed, the server waits for him to be held upright and steady, then balances
+//   calibrating  true for ~3 s after a recalibrate was sent
+// phone_server.py sends none of these: everything here stays hidden. Actions: POST /phone/action {action} -> {ok, note}.
+// Recalibrate counts down "Hands off" first: touching the phone shakes the robot, and the sensor needs him still.
+const Ctl = (() => {
+  const SHEET_MS = 8000, COUNT = 3, NOTE_MS = 2500, CAL_MIN_MS = 3000, CAL_MAX_MS = 10000;
+  let has = false, drift = false, waiting = false, waitNote = '', calibrating = false, balancing = false;
+  let sheetTimer = 0, flash = '', flashWarn = false, flashTimer = 0;
+  let cal = null;                                            // the recalibrate flow: {phase: count|send|cal, n, timer, t0, saw}
+  const sheetOpen = () => $('sheet').classList.contains('on');
+  function armSheet() { clearTimeout(sheetTimer); sheetTimer = setTimeout(closeSheet, SHEET_MS); }   // 8 s without a tap: hide
+  function openSheet() { $('sheet').classList.add('on'); armSheet(); render(); }
+  function closeSheet() { clearTimeout(sheetTimer); $('sheet').classList.remove('on'); }
+  function note(text, warn) {                                // a short line in the status line, ~2.5 s
+    if (!text) return;
+    flash = text; flashWarn = !!warn; clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { flash = ''; render(); }, NOTE_MS);
+    render();
+  }
+  async function act(action) {                               // resolves true when the server took it
+    let ok = false, msg = '';
+    try {
+      const res = await post('/phone/action', { action });
+      let j = {}; try { j = await res.json(); } catch (e) {}
+      ok = res.ok && j.ok !== false;
+      msg = typeof j.note === 'string' && j.note ? j.note : typeof j.detail === 'string' ? j.detail
+          : ok ? '' : res.status === 403 ? "Only the robot's phone can do that" : 'Refused (' + res.status + ')';
+    } catch (e) { msg = 'Mac not reachable'; }
+    note(msg, !ok);
+    log({ event: 'phone action', action, ok, note: msg });
+    return ok;
+  }
+  function recal() {                                         // the sheet's or the banner's Recalibrate
+    if (cal || balancing) return;
+    closeSheet();
+    cal = { phase: 'count', n: COUNT, timer: 0, t0: 0, saw: false };
+    countdown();
+  }
+  function countdown() {                                     // "Hands off: 3… 2… 1…", then send it
+    if (!cal || cal.phase !== 'count') return;
+    if (cal.n <= 0) { send(); return; }
+    render();
+    cal.timer = setTimeout(() => { if (cal && cal.phase === 'count') { cal.n--; countdown(); } }, 1000);
+  }
+  async function send() {
+    const c = cal; c.phase = 'send'; render();
+    const ok = await act('recalibrate');
+    if (cal !== c) return;
+    if (!ok) { cal = null; render(); return; }               // refused: act() showed the note
+    c.phase = 'cal'; c.t0 = Date.now(); render();
+    c.timer = setInterval(() => {                            // "keep still" until /tel's calibrating goes true, then false
+      if (calibrating) c.saw = true;
+      const dt = Date.now() - c.t0;
+      if ((c.saw && !calibrating) || (!c.saw && dt > CAL_MIN_MS) || dt > CAL_MAX_MS) {
+        clearInterval(c.timer); if (cal === c) { cal = null; render(); }
+      }
+    }, 200);
+  }
+  function cancel() {                                        // only during the countdown: once sent, it's sent
+    if (!cal || cal.phase !== 'count') return;
+    clearTimeout(cal.timer); cal = null; render();
+  }
+  function render() {
+    $('ctlBtn').classList.toggle('on', has);
+    if (!has) closeSheet();
+    const s = $('actStart');
+    s.textContent = waiting ? 'Cancel start' : 'Start balancing';
+    s.disabled = balancing;                                  // already balancing
+    $('actRecal').disabled = balancing || !!cal;             // the firmware ignores it while balancing
+    $('drift').classList.toggle('on', has && drift && !balancing && !cal);
+    const w = waiting ? (waitNote || 'Hold me upright and steady') : '';
+    const st = flash || (has && w ? (/[.!?…]$/.test(w) ? w : w + '…') : '');
+    $('status').textContent = st;
+    $('status').classList.toggle('on', !!st);
+    $('status').classList.toggle('warn', !!flash && flashWarn);
+    $('cal').classList.toggle('on', !!cal);
+    if (cal) {
+      $('calMsg').textContent = cal.phase === 'count' ? 'Hands off: ' + cal.n + '…' : 'Recalibrating, keep still';
+      $('calCancel').style.display = cal.phase === 'count' ? '' : 'none';
+    }
+  }
+  function update(d) {                                       // every /tel answer; missing fields = false / empty
+    const a = d.autostart || {}, t = d.tel || {};
+    has = d.drift !== undefined || d.autostart !== undefined;
+    drift = !!d.drift; calibrating = !!d.calibrating;
+    waiting = !!a.waiting; waitNote = typeof a.note === 'string' ? a.note : '';
+    balancing = t.state === 'balance' || t.state === 'drive';
+    if (balancing && cal && cal.phase === 'count') { cancel(); note("I'm balancing: park me first", true); }
+    render();
+  }
+  $('ctlBtn').onclick = () => { if (sheetOpen()) closeSheet(); else openSheet(); };
+  $('sheet').addEventListener('pointerdown', armSheet);      // any tap in the sheet restarts the 8 s
+  $('actStart').onclick = async () => {
+    const a = waiting ? 'cancel_start' : 'start';
+    if (await act(a)) { waiting = a === 'start'; closeSheet(); render(); }   // /tel confirms on the next poll
+  };
+  $('actPark').onclick = async () => { if (await act('park')) closeSheet(); };
+  $('actRecal').onclick = recal;
+  $('actClose').onclick = closeSheet;
+  $('driftRecal').onclick = recal;
+  $('calCancel').onclick = cancel;
+  return { update, fast: () => sheetOpen() || waiting || !!cal };   // fast: poll /tel ~8 Hz even with the face off
+})();
+let ctlErrLogged = false;
+
 (async function pollTel() {                                // robot state, from drive.py through the Mac
   try {
     const d = await (await fetch('/tel')).json(), t = d.tel || {};
@@ -553,8 +698,10 @@ setInterval(async () => {
     if (!(window.Mic && Mic.connected) && 'listening' in d) Listen.set(d.listening, null);   // mic socket down: /tel
     robot = 'Robot: ' + (t.state || '?') + (typeof t.pitch === 'number' ? '  pitch ' + t.pitch.toFixed(1) : '') +
             '   Follow ' + (d.follow ? 'ON' : 'off (turn it on: control page, or F on the drive page)');
+    try { Ctl.update(d); }                                  // the robot controls (#79): never let them break the rest
+    catch (e) { if (!ctlErrLogged) { ctlErrLogged = true; log({ event: 'robot controls error', error: String(e) }); } }
   } catch (e) { robot = 'Robot: no answer from the Mac'; }
-  setTimeout(pollTel, serverVision ? 125 : 1000);           // ~8 Hz while the face is on: fresh targets for the eyes
+  setTimeout(pollTel, serverVision || Ctl.fast() ? 125 : 1000);   // ~8 Hz while the face is on (fresh targets for the eyes) or a control is in use
 })();
 
 setInterval(() => {

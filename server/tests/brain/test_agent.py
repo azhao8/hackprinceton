@@ -156,7 +156,8 @@ def test_multi_step_request_emits_plan_steps_say_and_reply_in_order():
     assert first["betas"] == ["server-side-fallback-2026-07-01", "mid-conversation-output-config-2026-07-01"]
     assert first["system"][0]["cache_control"] == {"type": "ephemeral"}   # tools + system: one cached block
     assert first["cache_control"] == {"type": "ephemeral"}
-    assert all(t["strict"] and t["input_schema"]["additionalProperties"] is False for t in first["tools"])
+    assert all(t["input_schema"]["additionalProperties"] is False for t in first["tools"])
+    assert 0 < sum(t["strict"] for t in first["tools"]) <= 20   # the API's limit (#79)
     assert "thinking" not in first and "tool_choice" not in first
     content = first["messages"][0]["content"]
     assert content[0]["text"].startswith("[guardian via app] Bring Mom")

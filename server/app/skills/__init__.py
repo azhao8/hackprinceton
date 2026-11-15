@@ -60,6 +60,11 @@ class SkillContext:
         self._telemetry = telemetry    # e.g. `lambda: link.telemetry`; None = no robot link wired in
 
     @property
+    def estopped(self) -> bool:
+        """STOP is on: a skill should end (#79: move checks it every tick)."""
+        return self._arbiter.estopped
+
+    @property
     def perception(self) -> Perception | None:
         """Vision's newest result, or None (no vision, or no frame processed yet)."""
         return self.vision.latest() if self.vision is not None else None

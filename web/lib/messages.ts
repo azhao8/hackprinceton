@@ -34,6 +34,15 @@ export interface FollowSettings {
   camera?: "back" | "front";
   /** Flip the phone's frames left-right before vision (front cameras can send mirrored frames). */
   mirror?: boolean;
+  /** The Drive card's top speed (m/s) and turn rate (rad/s); the voice agent's move uses them too. */
+  drive_speed?: number;
+  turn_rate?: number;
+}
+
+/** Start waits until the robot is held upright and steady, then balances (server/app/robot_watch.py). */
+export interface AutoStartInfo {
+  waiting: boolean;
+  note: string;
 }
 
 /** Who does the seeing: "server" (the phone streams its camera; Alex's design) or "phone" (the phone tracks). */
@@ -58,6 +67,24 @@ export interface Status {
   trim_shift: number;
   /** Miguel is listening for a command (after his name, a question of his, a tap, or wait_for_reply). */
   listening: boolean;
+  /** The tilt sensor is drifting (a steady rate while still): recalibrate before it can balance. */
+  drift: boolean;
+  /** The drifting rate, deg/s, while drift is on. */
+  drift_rate: number | null;
+  autostart: AutoStartInfo;
+  /** A recalibration is running (about 3 s). */
+  calibrating: boolean;
+  /** The robot's phone page has polled the server in the last 3 s. */
+  phone: boolean;
+  /** Family apps connected now. */
+  family: number;
+  /** The voice agent is on (ANTHROPIC_API_KEY set). */
+  agent: boolean;
+}
+
+/** Clear log was pressed (on any page): drop the agent log shown so far. */
+export interface AgentClear {
+  t: "agent_clear";
 }
 
 /** One of the voice agent's events (contract/web/README.md, "Agent"): heard, say, reply, plan, step, task, check_in... */
@@ -86,7 +113,7 @@ export interface MemoryView {
   facts: { key: string; value: string; source: string }[];
 }
 
-export type ServerMessage = Telemetry | Status | AgentEvent | MemoryView;
+export type ServerMessage = Telemetry | Status | AgentEvent | MemoryView | AgentClear;
 
 /** One-letter robot commands the control page may send (contract/README.md). Never g: see "arm". */
 export type KeyLetter = "x" | "P" | "5" | "L" | "R" | "F" | "B";
@@ -96,9 +123,14 @@ export type ClientMessage =
   | { t: "joystick"; v: number; w: number }
   | { t: "follow"; on: boolean }
   | { t: "say"; text: string }
-  | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean; camera?: "back" | "front"; mirror?: boolean }
+  | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean; camera?: "back" | "front"; mirror?: boolean;
+      drive_speed?: number; turn_rate?: number }
   | { t: "key"; letter: KeyLetter }
   | { t: "arm" }
+  | { t: "cancel_start" }
+  | { t: "reset_chat" }
+  | { t: "clear_log" }
+  | { t: "reset_memory" }
   | { t: "trim"; steps: number }
   | { t: "recalibrate" }
   | { t: "agent_message"; text: string }
@@ -141,6 +173,8 @@ function parseSettings(v: unknown): FollowSettings | null {
   const out: FollowSettings = { mode: s.mode, speed: s.speed, distance: s.distance, voice: s.voice };
   if (s.camera === "back" || s.camera === "front") out.camera = s.camera;
   if (typeof s.mirror === "boolean") out.mirror = s.mirror;
+  if (num(s.drive_speed)) out.drive_speed = s.drive_speed;
+  if (num(s.turn_rate)) out.turn_rate = s.turn_rate;
   return out;
 }
 
@@ -171,7 +205,19 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     vision: parseVision(m.vision),
     trim_shift: num(m.trim_shift) ? m.trim_shift : 0,
     listening: m.listening === true,
+    drift: m.drift === true,
+    drift_rate: num(m.drift_rate) ? m.drift_rate : null,
+    autostart: parseAutoStart(m.autostart),
+    calibrating: m.calibrating === true,
+    phone: m.phone === true,
+    family: num(m.family) ? m.family : 0,
+    agent: m.agent === true,
   };
+}
+
+function parseAutoStart(v: unknown): AutoStartInfo {
+  const a = typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
+  return { waiting: a.waiting === true, note: typeof a.note === "string" ? a.note : "" };
 }
 
 /**
@@ -191,6 +237,7 @@ export function parseServerMessage(raw: string): ServerMessage | null {
   if (m.t === "status") return parseStatus(m);
   if (m.t === "agent") return parseAgent(m);
   if (m.t === "memory") return parseMemory(m);
+  if (m.t === "agent_clear") return { t: "agent_clear" };
   return null;
 }
 

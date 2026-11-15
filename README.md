@@ -94,8 +94,8 @@ On the robot's iPhone, allow the camera and the microphone.
 
 ## 6. First run with the robot
 
-1. Lay the robot down so it can't move. If the control page's **Balance angle** card shows a red "Tilt sensor drifting" warning, click **Recalibrate tilt sensor**.
-2. Hold it upright (its balance point is about −3.6°), click **Start**, then **OK**, and let go.
+1. Lay the robot down so it can't move. If the status bar says **Tilt sensor drifting** (Miguel also says so, and Start is blocked), click **Recalibrate tilt sensor**, on the control page or on the phone (the "⋯" button).
+2. Click **Start** (or Start on the phone), then hold it upright and steady: it starts balancing by itself after about a second. Let go once it holds itself.
 3. **STOP** (Space) stops all driving; the robot keeps balancing. To end a run, hold the robot and click **Cut motor power** (Details). **Don't use Park**: it leans onto the kickstand, which was removed.
 4. Teach him: "Miguel, this is Mom" (one person in front of him) and "Miguel, learn this station" (a station card with its marker in view).
 5. Try: "Miguel, follow me", the family app's Send and Check in, the control page's **Test fall alert**.

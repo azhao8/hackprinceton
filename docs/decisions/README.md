@@ -64,3 +64,4 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0056](0056-yolo-pose.md) | People are found with YOLO pose; the repo is AGPL-3.0 | T-15 |
 | [0057](0057-sqlite-memory.md) | Memory lives in SQLite and survives restarts (supersedes 0014) | #68 |
 | [0058](0058-family-connection.md) | The family app connects over /family/ws through a thin family layer | #57, #60, #68 |
+| [0059](0059-start-when-upright.md) | Start waits until the robot is upright and steady; the phone can start, park and recalibrate (changes 0054) | #79 |
