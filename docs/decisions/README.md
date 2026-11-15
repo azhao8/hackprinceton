@@ -62,3 +62,5 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0054](0054-start-from-control-page.md) | Start balancing from the control page, on this laptop only | Issue #42 |
 | [0055](0055-vision-on-server.md) | Vision runs on the server; the phone is the robot's eye and face | Issue #46 |
 | [0056](0056-yolo-pose.md) | People are found with YOLO pose; the repo is AGPL-3.0 | T-15 |
+| [0057](0057-sqlite-memory.md) | Memory lives in SQLite and survives restarts (supersedes 0014) | #68 |
+| [0058](0058-family-connection.md) | The family app connects over /family/ws through a thin family layer | #57, #60, #68 |
