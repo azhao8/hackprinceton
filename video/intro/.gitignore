@@ -1,0 +1,9 @@
+node_modules/
+out/
+.env
+public/audio/voice-placeholder/
+# rebuilt by tools/build.sh (the Corey voice lines in public/audio/voice/ are kept)
+public/audio/mix*.wav
+public/audio/stem_*.wav
+# stray duplicate copies of review stills
+deliverables/frames/* 2.png
