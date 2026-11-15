@@ -1,0 +1,14 @@
+{
+  "t": "state",
+  "mode": "with_mom",
+  "mode_note": "On a call with Sarah",
+  "since": "2026-11-14T16:20:00-05:00",
+  "link": "up",
+  "delivery": null,
+  "check_in": {
+    "phase": "live",
+    "id": "c3",
+    "started_at": "2026-11-14T16:20:00-05:00"
+  },
+  "alert": null
+}

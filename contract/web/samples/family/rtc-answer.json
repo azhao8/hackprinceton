@@ -1,0 +1,8 @@
+{
+  "t": "rtc",
+  "call": "c3",
+  "sdp": {
+    "type": "answer",
+    "sdp": "v=0\r\no=- 46117 2 IN IP4 127.0.0.1\r\n…"
+  }
+}

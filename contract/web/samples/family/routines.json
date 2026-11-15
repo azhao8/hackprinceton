@@ -1,0 +1,29 @@
+{
+  "t": "routines",
+  "items": [
+    {
+      "id": "r1",
+      "kind": "water",
+      "title": "Water",
+      "schedule": "Every 2 hours, 9 am – 7 pm",
+      "detail": "Miguel offers a glass and lets you know she drank.",
+      "on": true
+    },
+    {
+      "id": "r2",
+      "kind": "medication",
+      "title": "Medication",
+      "schedule": "9 am and 8 pm",
+      "detail": "Miguel reminds her, asks, and tells you what she said.",
+      "on": true
+    },
+    {
+      "id": "r4",
+      "kind": "night_walk",
+      "title": "Night walks",
+      "schedule": "10 pm – 7 am",
+      "detail": "A night-light and company on the way to the bathroom.",
+      "on": true
+    }
+  ]
+}

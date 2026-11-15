@@ -1,5 +1,7 @@
 # Server and web messages
 
+**Family app:** `family.md` (draft v1) and `samples/family/`; types in `web/lib/family/wire.ts`.
+
 **Current list:** the docstring at the top of `server/app/api/__init__.py` and the types in `web/lib/messages.ts` (telemetry is contract v1, angles in degrees). Server to web: `tel`, `status`, `agent`. Web to server: `estop`, `joystick`, `follow`, `say`, `settings`, `key`, `arm`, `trim` (`{"t":"trim","steps":n}`, n x 0.25° on the balance angle; `status.trim_shift` is the total shifted from this server), `agent_message`. The voice agent's endpoints are below ("Agent"). The "First draft" section is kept for history. `status` (and the phone's `GET /tel`) carries `face` with server vision, else null: `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|gave_up} | null}` (`server/app/vision/face_state.py`); the web parser ignores it for now.
 
 ## Agent (the family app and the control page; #54, draft for Nick and Alex)
