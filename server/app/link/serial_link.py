@@ -197,6 +197,11 @@ class SerialLink:
             raise ValueError(f"the server may not send {letter!r} (allowed: {''.join(sorted(ALLOWED_LETTERS))})")
         self._enqueue("letter", (letter + "\n").encode())
 
+    def send_trim(self, steps: int) -> None:
+        """Shift the balance angle (trim) by steps x 0.25 deg: t raises it, y lowers it."""
+        if steps:
+            self._enqueue("letter", (('t' if steps > 0 else 'y') * abs(steps) + "\n").encode())
+
     def health(self) -> Health:
         """See the module docstring: without acks over USB, ok = port open and telemetry fresh."""
         now = self._clock()

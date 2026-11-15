@@ -5,6 +5,7 @@ import asyncio
 import socket
 from pathlib import Path
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.__main__ import drive_loop
@@ -405,4 +406,39 @@ def test_tel_has_the_face_with_server_vision_and_null_without():
             await ws.close()
         finally:
             await client.close()
+    asyncio.run(go())
+
+
+class TrimLink(LetterLink):
+    def send_trim(self, steps):
+        self.sent.append(steps)
+
+
+def test_trim_shifts_the_balance_angle_one_step_at_a_time_while_balancing():
+    link = TrimLink()
+    state = ApiState(Arbiter(), link)
+    link.telemetry = {"t": "tel", "state": "idle"}
+    assert state.trim(-35) and state.trim_shift == -8.75
+    assert state.trim(999) and link.sent[-1] == 60                 # clamped to 15 deg
+    assert not state.trim(0) and not state.trim(1.5) and not state.trim(True) and not state.trim("3")
+    link.telemetry = {"t": "tel", "state": "balance"}
+    assert not state.trim(-4)                                       # a big jump while balancing: refused
+    assert state.trim(-1)
+    assert link.sent == [-35, 60, -1] and state.trim_shift == pytest.approx(-8.75 + 15 - 0.25)
+    assert state.status()["trim_shift"] == state.trim_shift
+
+
+def test_websocket_trim_from_this_laptop():
+    async def go():
+        link = TrimLink()
+        link.telemetry = {"t": "tel", "state": "idle"}
+        state = ApiState(Arbiter(), link)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        ws = await client.ws_connect("/ws")
+        await ws.send_json({"t": "trim", "steps": -2})
+        await asyncio.sleep(0.1)
+        assert link.sent == [-2] and state.trim_shift == -0.5
+        await ws.close()
+        await client.close()
     asyncio.run(go())

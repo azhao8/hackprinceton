@@ -36,6 +36,7 @@ def _clamp(x: float, lim: float) -> float:
 class MockRobot:
     running: bool = False
     pitch: float = KICK_ANGLE
+    trim: float = TRIM          # deg; t / y shift it 0.25 deg, like the firmware
     rate: float = 0.0
     vt: float = 0.0          # target speed, m/s
     wt: float = 0.0          # target turn, rad/s
@@ -96,14 +97,16 @@ class MockRobot:
 
     def handle_char(self, c: str, now: float) -> None:
         if c == "g":
-            if abs(self.pitch - TRIM) > ARM_WINDOW:
-                self._say(f"Not upright (pitch-trim = {self.pitch - TRIM:.1f}). Hold it upright first.")
+            if abs(self.pitch - self.trim) > ARM_WINDOW:
+                self._say(f"Not upright (pitch-trim = {self.pitch - self.trim:.1f}). Hold it upright first.")
                 return
             self.running, self.fault, self.park_start = True, None, None
             self.vt = self.wt = self.vcmd = self.x = self.yaw = 0.0
             self.turning = self.moving = False
-            self.pitch, self.run_start = TRIM, now
+            self.pitch, self.run_start = self.trim, now
             self._say("BALANCING")
+        elif c in "ty":
+            self.trim += 0.25 if c == "t" else -0.25
         elif c == "x":
             self.motors_off("stop command")
         elif c == "5":
@@ -170,7 +173,7 @@ class MockRobot:
         self.yaw += math.degrees(self.wt) * dt
         old_pitch = self.pitch
         lean = math.degrees(math.atan(accel / 9.81)) + (FF_RR if abs(self.vcmd) > 0.01 else 0.0) * math.copysign(1, self.vcmd)
-        self.pitch = TRIM + lean
+        self.pitch = self.trim + lean
         self.rate = (self.pitch - old_pitch) / dt if dt > 0 else 0.0
 
     # ---- output

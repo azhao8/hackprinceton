@@ -25,6 +25,7 @@ describe("contract samples", () => {
       t: "status", follow: false, link: true, estop: false,
       settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, lag_ms: 27.4, skill: null,
       vision: { mode: "server", status: "running", camera: { frames: 120, age_s: 0.08 } },
+      trim_shift: -8.75,
     });
   });
 

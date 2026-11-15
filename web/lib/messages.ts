@@ -54,6 +54,8 @@ export interface Status {
   lag_ms: number | null;
   skill: string | null;
   vision: VisionInfo | null;
+  /** Degrees the balance angle was shifted from this server (0 after a server restart; lost on a robot reboot). */
+  trim_shift: number;
 }
 
 export type ServerMessage = Telemetry | Status;
@@ -68,7 +70,8 @@ export type ClientMessage =
   | { t: "say"; text: string }
   | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean; camera?: "back" | "front"; mirror?: boolean }
   | { t: "key"; letter: KeyLetter }
-  | { t: "arm" };
+  | { t: "arm" }
+  | { t: "trim"; steps: number };
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const optNum = (v: unknown) => v === undefined || num(v);
@@ -130,6 +133,7 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     lag_ms: num(m.lag_ms) ? m.lag_ms : null,
     skill: typeof m.skill === "string" ? m.skill : null,
     vision: parseVision(m.vision),
+    trim_shift: num(m.trim_shift) ? m.trim_shift : 0,
   };
 }
 

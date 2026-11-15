@@ -10,6 +10,9 @@ const DRIVE_HZ = 20;
 const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.1, 1.0], yellow: [0.1, 1.0] };
 const SAY_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"];
 const CUT_CONFIRM = "Cut motor power?\n\nThe robot stops balancing and drops. Use STOP unless that isn't enough.";
+/** The firmware's default balance angle (balance.ino `trim`), before any shift from this page. */
+const FIRMWARE_TRIM = 5.6;
+const TRIM_STEP = 0.25;
 const ARM_CONFIRM =
   "Start balancing (g)?\n\nSomeone must be holding the robot upright, within about 6°, ready to let go once it holds itself.";
 
@@ -191,6 +194,9 @@ export function Dashboard() {
 
       <SayCard send={send} />
 
+      <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null}
+        balancing={tel?.state === "balance" || tel?.state === "drive"} send={send} />
+
       <details className="rounded-xl border border-line bg-panel p-4 shadow-sm">
         <summary className="cursor-pointer font-semibold">Details: telemetry and charts</summary>
         <div className="mt-4 flex flex-col gap-4">
@@ -336,6 +342,52 @@ function SayCard({ send }: { send: (m: ClientMessage) => boolean }) {
       </div>
     </Card>
   );
+}
+
+/** The balance angle (trim): the tilt the robot treats as upright. Live changes (firmware t / y) last until it reboots. */
+function TrimCard({ shift, pitch, balancing, send }: {
+  shift: number; pitch: number | null; balancing: boolean; send: (m: ClientMessage) => boolean;
+}) {
+  const now = FIRMWARE_TRIM + shift;
+  const [target, setTarget] = useState("");
+  const goal = Number.parseFloat(target);
+  const steps = Number.isFinite(goal) ? Math.round((goal - now) / TRIM_STEP) : 0;
+  return (
+    <Card title="Balance angle (trim)" hint={`Firmware default +${FIRMWARE_TRIM}°; changes here last until the robot reboots`}>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="text-sm">
+          Target <span className="font-mono text-lg">{fmtSigned(now)}°</span>
+          <span className="ml-2 text-xs text-muted">(shifted {fmtSigned(shift)}° from here)</span>
+          <div className="text-xs text-muted">Tilt now: {pitch === null ? "—" : `${fmtSigned(pitch)}°`}</div>
+        </div>
+        <div className="flex gap-2">
+          <Action onClick={() => send({ t: "trim", steps: -1 })}>−0.25°</Action>
+          <Action onClick={() => send({ t: "trim", steps: 1 })}>+0.25°</Action>
+        </div>
+        <form className="flex items-center gap-2" onSubmit={(e) => {
+          e.preventDefault();
+          if (steps !== 0 && !balancing) send({ t: "trim", steps });
+          setTarget("");
+        }}>
+          <label className="text-sm" htmlFor="trim-target">Set to</label>
+          <input id="trim-target" value={target} onChange={(e) => setTarget(e.target.value)} inputMode="decimal"
+            placeholder="-3.2" className="w-20 rounded-md border border-line bg-background px-2 py-1.5 text-sm" />
+          <span className="text-sm">°</span>
+          <button type="submit" disabled={balancing || steps === 0}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">Apply</button>
+        </form>
+      </div>
+      <p className="mt-2 text-xs text-muted">
+        {balancing
+          ? "Balancing: only ±0.25° steps. Stop it to set a new angle."
+          : "Lean forward (battery side) is +. Find the angle by balancing it on a fingertip, motors off, and reading Tilt now."}
+      </p>
+    </Card>
+  );
+}
+
+function fmtSigned(x: number): string {
+  return `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(2)}`;
 }
 
 function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
