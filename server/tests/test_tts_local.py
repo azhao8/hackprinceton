@@ -74,6 +74,20 @@ def test_wav_is_pcm16_24khz_mono_with_the_right_lengths():
     assert len(wav_bytes(b"")) == 44
 
 
+def test_every_line_has_real_silence_before_and_after_the_speech():
+    """#91: the phone clips the first and last ~100-200 ms of a clip, so the words must not start or end there."""
+    tts, _ = make()
+
+    async def t():
+        return await tts.synth("Hi")
+    pcm = np.frombuffer(parse_wav(asyncio.run(t()))[3], "<i2")
+    lead, tail = round(tts_local.LEAD_SILENCE_S * 24000), round(tts_local.TAIL_SILENCE_S * 24000)
+    assert lead >= 0.15 * 24000 and tail >= 0.2 * 24000          # at least what Cartesia's mp3s carried
+    assert not pcm[:lead].any() and not pcm[-tail:].any()       # digital silence at both ends
+    assert pcm[lead] != 0 and pcm[-tail - 1] != 0                # and the speech itself is all there
+    assert len(pcm) == lead + 240 * 2 + tail                     # FakeEngine: 240 samples per character
+
+
 # --- text --------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw, spoken", [

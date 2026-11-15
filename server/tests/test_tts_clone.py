@@ -51,7 +51,8 @@ def test_the_client_makes_one_wav_from_the_streamed_chunks():
     tts = KokoroTTS("clone:full", engine=_Loaded(engine_with(FakeQwen())), lock=_NoLock())
     wav = asyncio.run(_say(tts, "On it!"))
     with wave.open(io.BytesIO(wav)) as w:
-        assert w.getframerate() == 24000 and w.getnframes() == 360
+        pad = round((tts_local.LEAD_SILENCE_S + tts_local.TAIL_SILENCE_S) * 24000)   # silence around the line (#91)
+        assert w.getframerate() == 24000 and w.getnframes() == 360 + pad
 
 
 class _Loaded:
