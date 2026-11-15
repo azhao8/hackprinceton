@@ -1,0 +1,61 @@
+{
+  "fps": 60,
+  "duration": 20.97,
+  "stats": [
+    {
+      "in": 0.3,
+      "out": 2.7
+    },
+    {
+      "in": 2.7,
+      "out": 5.1
+    },
+    {
+      "in": 5.1,
+      "out": 7.5
+    }
+  ],
+  "darkStart": 7.8,
+  "whirStart": 7.6,
+  "wordIn": 7.97,
+  "wordStagger": 0.07,
+  "wordDur": 0.7,
+  "enterStart": 8.65,
+  "enterStop": 9.75,
+  "line1": 10.15,
+  "notice": 11.32,
+  "glanceAudience": 11.69,
+  "glanceBack": 11.89,
+  "realize": 11.97,
+  "line2": 12.04,
+  "windup": 14.33,
+  "charge": 14.67,
+  "impact": 15.01,
+  "slotStart": 15.41,
+  "slotEnd": 16.47,
+  "line3": 16.53,
+  "lookUp": 17.33,
+  "grandma": 17.45,
+  "heart": 17.85,
+  "phone": 18.17,
+  "lookBack": 18.77,
+  "blink": 18.95,
+  "idleBlink": 19.95,
+  "fadeOut": 20.52,
+  "voice": {
+    "line1": {
+      "text": "Hey! I'm Miguel.",
+      "dur": 1.1
+    },
+    "line2": {
+      "text": "Oh, wait. That's my spot.",
+      "dur": 1.87
+    },
+    "line3": {
+      "text": "There we go!",
+      "dur": 0.72
+    }
+  },
+  "turnToI": 13.95,
+  "slotTurn": 15.85
+}
