@@ -351,3 +351,18 @@ def test_printed_markers_are_detectable_and_the_right_size(tmp_path):
     files = print_markers.write_markers(tmp_path, mapping={"station": 1, "couch": 2})
     names = sorted(f.name for f in files)
     assert names == ["1-station.png", "2-couch.png", "markers.pdf"]
+
+
+def test_printed_place_name_spans_the_page_and_keeps_the_marker_readable():
+    from app.vision import print_markers
+
+    page = print_markers.marker_page(4, "kitchen", size_cm=15.0, dpi=300)
+    side = 1770  # 15 cm at 300 dpi (whole cells)
+    top = round(0.6 * 300)
+    below = page[top + side + 10 :]
+    dark_cols = np.where((below < 128).any(axis=0))[0]
+    assert dark_cols[-1] - dark_cols[0] >= 0.85 * page.shape[1]  # the name runs across the page
+    dark_rows = np.where((below < 128).any(axis=1))[0]
+    assert dark_rows[-1] + top + side + 10 < page.shape[0] - 0.4 * 300  # small print stays on the page
+    found = MarkerDetector(max_width=None).detect(cv2.cvtColor(page, cv2.COLOR_GRAY2BGR))
+    assert [m.id for m in found] == [4]
