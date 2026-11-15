@@ -18,6 +18,8 @@ const ARM_CONFIRM =
 
 type Dir = "U" | "D" | "L" | "R";
 const KEY_DIR: Record<string, Dir> = { w: "U", arrowup: "U", s: "D", arrowdown: "D", a: "L", arrowleft: "L", d: "R", arrowright: "R" };
+/** W drives this way: -1 because W drove the robot backward (Alex, Sat 10 pm, after the kickstand came off). */
+const W_SIGN = -1;
 
 /** The laptop's control page (decision 0053): every control for the robot, plus live telemetry. */
 export function Dashboard() {
@@ -96,7 +98,7 @@ export function Dashboard() {
       const h = heldRef.current;
       if (h.size === 0) return; // nothing held: the server's joystick request goes stale and the robot holds
       const { vmax: v, wmax: w } = speedRef.current;
-      send({ t: "joystick", v: v * ((h.has("U") ? 1 : 0) - (h.has("D") ? 1 : 0)), w: w * ((h.has("L") ? 1 : 0) - (h.has("R") ? 1 : 0)) });
+      send({ t: "joystick", v: W_SIGN * v * ((h.has("U") ? 1 : 0) - (h.has("D") ? 1 : 0)), w: w * ((h.has("L") ? 1 : 0) - (h.has("R") ? 1 : 0)) });
     }, 1000 / DRIVE_HZ);
     return () => {
       window.removeEventListener("keydown", down);
