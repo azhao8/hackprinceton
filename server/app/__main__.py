@@ -665,9 +665,23 @@ class ViewEncoder:
 
 
 def make_tts() -> Any:
-    """The phone's voice: Cartesia (default), or Kokoro on this Mac with MIGUEL_TTS=local (#81).
+    """The phone's voice: Cartesia (default), Kokoro on this Mac with MIGUEL_TTS=local (#81), or
+    Miguel's Cartesia voice cloned by Qwen3-TTS with MIGUEL_TTS=clone (#84; falls back to Kokoro).
     The local voice falls back to Cartesia when its model is missing; None means Safari's built-in voice."""
     choice = (os.environ.get("MIGUEL_TTS") or "cartesia").strip().lower()
+    if choice == "clone":   # Miguel's Cartesia voice, copied by Qwen3-TTS on this Mac (#84)
+        try:
+            from app.speech.tts_local import KokoroTTS
+
+            clone = KokoroTTS.clone_from_env()
+        except Exception as e:   # broken install: run without it
+            log.warning("voice: cloned voice unavailable (%s)", e)
+            clone = None
+        if clone is not None:
+            log.info("voice: cloned (Qwen3-TTS); loading in the background")
+            return clone
+        log.warning("voice: MIGUEL_TTS=clone but the cloned voice is unavailable; trying Kokoro")
+        choice = "local"
     if choice == "local":
         try:
             from app.speech.tts_local import KokoroTTS
@@ -681,7 +695,7 @@ def make_tts() -> Any:
             return local
         log.warning("voice: MIGUEL_TTS=local but the local voice is unavailable; trying Cartesia")
     elif choice != "cartesia":
-        log.warning("voice: MIGUEL_TTS=%r is not 'local' or 'cartesia'; using Cartesia", choice)
+        log.warning("voice: MIGUEL_TTS=%r is not 'clone', 'local' or 'cartesia'; using Cartesia", choice)
     try:
         from app.speech.tts import CartesiaTTS
 
