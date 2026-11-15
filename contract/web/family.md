@@ -113,7 +113,7 @@ Where they come from:
 3. `end`, either side hanging up, or 10 minutes: back to `idle`, follow resumes, an `event` with the length.
 4. The server never relays `rtc` unless the call is `live`, and the face shows a camera-on dot for the whole call.
 
-Simpler fallback if WebRTC isn't ready (T-19): the phone page sends JPEG frames (T-10) that the server forwards as `{"t":"frame","call":..,"jpeg":"<base64>"}` at about 5 fps, and talking uses `talk` clips.
+Simpler fallback if WebRTC isn't ready (T-19): the server forwards the phone page's JPEG frames (decision 0055) as `{"t":"frame","call":..,"jpeg":"<base64>"}` at about 5 fps, and talking uses `talk` clips.
 
 ## Not in v1
 

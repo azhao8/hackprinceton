@@ -30,6 +30,18 @@ export interface FollowSettings {
   speed: number;
   distance: number;
   voice: boolean;
+  /** Which phone camera: back (default) or front (the screen faces the person). */
+  camera?: "back" | "front";
+  /** Flip the phone's frames left-right before vision (front cameras can send mirrored frames). */
+  mirror?: boolean;
+}
+
+/** Who does the seeing: "server" (the phone streams its camera; Alex's design) or "phone" (the phone tracks). */
+export interface VisionInfo {
+  mode: "server" | "phone";
+  status: string | null;
+  /** Frames from the phone: how many so far and seconds since the last one. */
+  camera: { frames: number; age_s: number | null } | null;
 }
 
 /** The server's own state, about twice a second. */
@@ -41,6 +53,7 @@ export interface Status {
   settings: FollowSettings;
   lag_ms: number | null;
   skill: string | null;
+  vision: VisionInfo | null;
 }
 
 export type ServerMessage = Telemetry | Status;
@@ -53,7 +66,7 @@ export type ClientMessage =
   | { t: "joystick"; v: number; w: number }
   | { t: "follow"; on: boolean }
   | { t: "say"; text: string }
-  | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean }
+  | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean; camera?: "back" | "front"; mirror?: boolean }
   | { t: "key"; letter: KeyLetter }
   | { t: "arm" };
 
@@ -86,7 +99,22 @@ function parseSettings(v: unknown): FollowSettings | null {
   const s = v as Record<string, unknown>;
   if ((s.mode !== "person" && s.mode !== "yellow") || !num(s.speed) || !num(s.distance) || typeof s.voice !== "boolean")
     return null;
-  return { mode: s.mode, speed: s.speed, distance: s.distance, voice: s.voice };
+  const out: FollowSettings = { mode: s.mode, speed: s.speed, distance: s.distance, voice: s.voice };
+  if (s.camera === "back" || s.camera === "front") out.camera = s.camera;
+  if (typeof s.mirror === "boolean") out.mirror = s.mirror;
+  return out;
+}
+
+function parseVision(v: unknown): VisionInfo | null {
+  if (typeof v !== "object" || v === null) return null;
+  const x = v as Record<string, unknown>;
+  if (x.mode !== "server" && x.mode !== "phone") return null;
+  let camera: VisionInfo["camera"] = null;
+  if (typeof x.camera === "object" && x.camera !== null) {
+    const c = x.camera as Record<string, unknown>;
+    if (num(c.frames)) camera = { frames: c.frames, age_s: num(c.age_s) ? c.age_s : null };
+  }
+  return { mode: x.mode, status: typeof x.status === "string" ? x.status : null, camera };
 }
 
 function parseStatus(m: Record<string, unknown>): Status | null {
@@ -101,6 +129,7 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     settings,
     lag_ms: num(m.lag_ms) ? m.lag_ms : null,
     skill: typeof m.skill === "string" ? m.skill : null,
+    vision: parseVision(m.vision),
   };
 }
 

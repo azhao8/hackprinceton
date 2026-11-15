@@ -9,8 +9,11 @@ One aiohttp app on the server's asyncio loop, on two ports:
 The phone page keeps the endpoints it already used with phone_server.py, so it works unchanged:
 - `POST /auto {v, w, found, cx, h}`: the page's follow command. It goes to the arbiter as a skill,
   and only while Follow is switched on (control page or WebSocket). Off by default.
-- `GET /tel`: `{tel, follow, link, estop, tts}` for the page's status line; `tts` says whether
-  `/tts` is set up (Cartesia), so the page knows whether to try it.
+- `GET /tel`: `{tel, follow, link, estop, tts, settings, vision, face}` for the page's status line;
+  `tts` says whether `/tts` is set up (Cartesia), so the page knows whether to try it. `face` (server
+  vision only, else null) is where Miguel's eyes should look and the latest follow event:
+  `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|gave_up} | null}`
+  (app/vision/face_state.py); the page reacts once per new event `id`.
 - `GET /say?after=N`: lines for the phone to speak. `POST /say {text}` adds one (localhost only).
 - `GET /tts?text=...`: the line as Cartesia speech (audio/mpeg). 400 if the text is empty or over
   300 characters, 503 if CARTESIA_API_KEY isn't set, 502 if Cartesia fails; the page then falls
@@ -21,7 +24,7 @@ WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the rob
 10 times a second; it accepts `{"t":"estop","on":bool}`, `{"t":"joystick","v":..,"w":..}`,
 `{"t":"follow","on":bool}`, `{"t":"say","text":..}`, `{"t":"settings", mode?, speed?, distance?, voice?}`,
 `{"t":"key","letter":"x|P|5|L|R|F|B"}` and `{"t":"arm"}` (start balancing; this laptop only, decision 0054).
-It also sends `{"t":"status", follow, link, estop, settings, lag_ms, skill}` about twice a second.
+It also sends `{"t":"status", follow, link, estop, settings, vision, face, tts, lag_ms, skill}` about twice a second.
 
 Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
@@ -47,28 +50,32 @@ from app.link import RobotLink
 log = logging.getLogger("app.api")
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
-PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js"}
+PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js"}
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
 
 # Follow settings, set on the control page and read by the phone page (decision 0053).
 # Ranges and defaults are John's from the phone page (MODES in index.html).
-FOLLOW_MODES = {"person": {"dmin": 0.25, "dmax": 0.65, "d": 0.45, "s": 0.25},
-                "yellow": {"dmin": 0.2, "dmax": 0.6, "d": 0.35, "s": 0.4}}
-SPEED_MIN, SPEED_MAX = 0.1, 0.45
+# Wide on purpose (Alex: "in case"): the robot clamps speed to 0.6 m/s itself.
+# person "d" 0.7: the phone streams portrait frames from the 0.5x lens, so a person's box is wide
+# early; 0.45 (John's landscape value) made the server's follow stop far away (robot test, Sat 5:35 pm).
+FOLLOW_MODES = {"person": {"dmin": 0.1, "dmax": 1.0, "d": 0.7, "s": 0.25},
+                "yellow": {"dmin": 0.1, "dmax": 1.0, "d": 0.35, "s": 0.4}}
+SPEED_MIN, SPEED_MAX = 0.05, 0.6
 
 
 def default_settings(mode: str = "person") -> dict:
     m = FOLLOW_MODES[mode]
-    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True}
+    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": "back", "mirror": False}
 
 
 def clean_settings(old: dict, new: dict) -> dict:
     """Merge a partial update into the settings, keeping every value in range."""
     out = dict(old)
     if new.get("mode") in FOLLOW_MODES and new["mode"] != old["mode"]:
-        out = default_settings(new["mode"]) | {"voice": old["voice"]}   # a new mode starts from its defaults
+        keep = {k: old[k] for k in ("voice", "camera", "mirror") if k in old}
+        out = default_settings(new["mode"]) | keep   # a new mode starts from its follow defaults
     m = FOLLOW_MODES[out["mode"]]
     for key, lo, hi in (("speed", SPEED_MIN, SPEED_MAX), ("distance", m["dmin"], m["dmax"])):
         if key in new:
@@ -78,8 +85,11 @@ def clean_settings(old: dict, new: dict) -> dict:
                 continue
             if x == x:
                 out[key] = round(max(lo, min(hi, x)), 3)
-    if isinstance(new.get("voice"), bool):
-        out["voice"] = new["voice"]
+    for key in ("voice", "mirror"):
+        if isinstance(new.get(key), bool):
+            out[key] = new[key]
+    if new.get("camera") in ("back", "front"):
+        out["camera"] = new["camera"]
     return out
 
 TTS_MAX_CHARS = 300   # the same cap as a /say line
@@ -104,12 +114,23 @@ class ApiState:
     link: RobotLink
     skills: Any = None          # the server's SkillRunner, if any: STOP cancels its skill
     tts: Any = None             # app.speech.tts.CartesiaTTS, or None: the phone uses Safari's voice
+    # Server-side vision (Alex's design: the phone streams its camera, the server sees and follows).
+    phone_frames: Any = None    # app.vision.phone_source.PhoneFrameSource, fed by POST /frame
+    follow_start: Any = None    # () -> None: start the server's follow skill
+    follow_stop: Any = None     # () -> None: stop it
+    follow_running: Any = None  # () -> bool
+    view_jpeg: Any = None       # () -> bytes | None: the server's view (frame + its boxes) as JPEG
+    vision_status: Any = None   # () -> str
+    vision_debug: Any = None    # () -> dict: what vision sees right now (people, box widths, shoulder gaps)
+    face: Any = None            # () -> dict: the phone face's gaze target and latest follow event
     follow: bool = False
     say: list[dict] = field(default_factory=list)
     settings: dict = field(default_factory=default_settings)
 
     def set_settings(self, new: dict) -> None:
         self.settings = clean_settings(self.settings, new)
+        if self.phone_frames is not None:
+            self.phone_frames.mirror = bool(self.settings.get("mirror"))
         log.info("follow settings: %s", self.settings)
 
     def add_say(self, text: str) -> None:
@@ -119,9 +140,20 @@ class ApiState:
             del self.say[:-50]
             log.info("say: %s", text)
 
+    @property
+    def server_vision(self) -> bool:
+        return self.follow_start is not None
+
     def set_follow(self, on: bool) -> None:
-        """The phone page's follow. Turning it on stops any server skill (for example the server's own
-        follow), so two followers never fight over the arbiter's skill slot."""
+        """Follow on/off. With server vision it starts or stops the server's follow skill; otherwise it
+        gates the phone page's own follow. Two followers never fight over the arbiter's skill slot."""
+        if self.server_vision:
+            if on and self.arbiter.estopped:
+                log.info("follow: release the e-stop first")
+                return
+            (self.follow_start if on else self.follow_stop)()
+            log.info("server follow %s", "ON" if on else "off")
+            return
         if on and self.skills is not None and self.skills.running:
             self.skills.cancel()
         self.follow = on
@@ -132,14 +164,16 @@ class ApiState:
     def estop(self, on: bool) -> None:
         self.arbiter.estop(on)
         if on:
-            self.set_follow(False)
+            self.follow = False
+            self.arbiter.clear(Source.SKILL)
             if self.skills is not None:
                 self.skills.cancel()
         log.info("E-STOP %s", "on" if on else "released")
 
     def stop_motion(self) -> None:
         """Before park, motors off or start: nothing may keep driving."""
-        self.set_follow(False)
+        self.follow = False
+        self.arbiter.clear(Source.SKILL)
         if self.skills is not None:
             self.skills.cancel()
         self.arbiter.clear(Source.JOYSTICK)
@@ -169,10 +203,22 @@ class ApiState:
         return True
 
     def phone_follow_active(self) -> bool:
+        if self.server_vision:
+            return False                 # the server does the following; the phone only sends frames
         return self.follow and not (self.skills is not None and self.skills.running)
 
+    def following(self) -> bool:
+        return bool(self.follow_running()) if self.server_vision else self.follow
+
     def status(self) -> dict:
-        return {"tel": self.link.telemetry, "follow": self.follow, "link": self.link.health().ok,
+        camera = None
+        if self.phone_frames is not None:
+            age = self.phone_frames.age()
+            camera = {"frames": self.phone_frames.received, "age_s": None if age is None else round(age, 2)}
+        vision = {"mode": "server" if self.server_vision else "phone",
+                  "status": self.vision_status() if self.vision_status else None, "camera": camera}
+        return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
+                "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
                 "tts": self.tts is not None}
 
@@ -204,6 +250,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.get("/")
     @routes.get("/index.html")
     @routes.get("/track.js")
+    @routes.get("/face.js")
     async def phone_page(request: web.Request) -> web.StreamResponse:
         if not request.secure and request.path == "/":
             return web.Response(text=ca_page or "Miguel.exe server. Open the HTTPS address on the phone.",
@@ -261,6 +308,43 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             return web.json_response({"error": "tts failed"}, status=502)
         return web.Response(body=audio, headers={"Content-Type": getattr(state.tts, "MEDIA_TYPE", "audio/mpeg"),
                                                  "Cache-Control": "no-store"})
+
+    @routes.post("/frame")
+    async def frame(request: web.Request) -> web.Response:
+        """A JPEG from the phone's camera (server vision). The phone sends one at a time, ~12 a second."""
+        if state.phone_frames is None:
+            raise web.HTTPNotFound()
+        data = await request.read()
+        ok = await asyncio.to_thread(state.phone_frames.push_jpeg, data)
+        return web.Response(status=204 if ok else 400)
+
+    @routes.get("/video.mjpg")
+    async def video(request: web.Request) -> web.StreamResponse:
+        """The server's view (the phone's frame with the server's boxes) as an MJPEG stream, for an <img>."""
+        if state.view_jpeg is None:
+            raise web.HTTPNotFound()
+        resp = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame",
+                                           "Cache-Control": "no-store"})
+        await resp.prepare(request)
+        last = None
+        try:
+            while True:
+                jpeg = await asyncio.to_thread(state.view_jpeg)
+                if jpeg and jpeg is not last:
+                    last = jpeg
+                    await resp.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                     + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n")
+                await asyncio.sleep(0.1)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        return resp
+
+    @routes.get("/debug/vision")
+    async def debug_vision(request: web.Request) -> web.Response:
+        """Read-only, this laptop only: the sizes the follow distance is computed from (for calibration)."""
+        if not _local(request):
+            raise web.HTTPForbidden()
+        return web.json_response(state.vision_debug() if state.vision_debug else {"error": "no vision"})
 
     @routes.post("/log")
     async def phone_log(request: web.Request) -> web.Response:

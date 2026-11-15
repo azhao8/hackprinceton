@@ -2,7 +2,7 @@
 
 **Family app:** `family.md` (draft v1) and `samples/family/`; types in `web/lib/family/wire.ts`.
 
-**Current list:** the docstring at the top of `server/app/api/__init__.py` and the types in `web/lib/messages.ts` (telemetry is contract v1, angles in degrees). Server to web: `tel`, `status`. Web to server: `estop`, `joystick`, `follow`, `say`, `settings`, `key`, `arm`. The text below is the first draft, kept for history.
+**Current list:** the docstring at the top of `server/app/api/__init__.py` and the types in `web/lib/messages.ts` (telemetry is contract v1, angles in degrees). Server to web: `tel`, `status`. Web to server: `estop`, `joystick`, `follow`, `say`, `settings`, `key`, `arm`. `status` (and the phone's `GET /tel`) carries `face` with server vision, else null: `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|gave_up} | null}` (`server/app/vision/face_state.py`); the web parser ignores it for now. The text below is the first draft, kept for history.
 
 ## First draft
 

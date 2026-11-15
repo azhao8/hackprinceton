@@ -39,6 +39,7 @@ import asyncio
 import logging
 import os
 import signal
+import threading
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -148,6 +149,7 @@ class App:
         self._render = render
         self.period_s = 1.0 / hz
         self.follow: Any = None  # the current/last follow skill (for its last command)
+        self.face_events: Any = None  # app.vision.face_state.FaceEvents, made on first use (vision only)
         self.note = ""
         self.last: Command = Command(0.0, 0.0, "none")
         self._quit = False
@@ -250,6 +252,10 @@ class App:
         self.last = cmd
         if self.vision is not None:
             self.vision.set_turn_rate(self._turn_rate(cmd))
+            try:
+                self.face()   # every tick, so a short lock/lost change between status polls still counts
+            except Exception:
+                log.exception("face state failed")   # never let the face stop the drive loop
         if self._window is not None and self._render is not None:
             key = self._window.show(self._render(self._perception(), self.hud()))
             if key is not None and key >= 0:
@@ -267,6 +273,19 @@ class App:
 
     def _perception(self) -> Any:
         return self.vision.latest() if self.vision is not None else None
+
+    def face(self) -> dict | None:
+        """The phone face's view (app/vision/face_state.py): where the locked person is and the latest
+        follow event. None without vision."""
+        if self.vision is None:
+            return None
+        if self.face_events is None:
+            from app.vision.face_state import FaceEvents
+
+            self.face_events = FaceEvents()
+        mirrored = bool(getattr(getattr(self.vision, "_source", None), "mirror", False))
+        return self.face_events.update(self._perception(), self.skills.running == "follow",
+                                       getattr(self.follow, "last_command", None), time.monotonic(), mirrored)
 
     def robot_status(self) -> tuple[bool, Any]:
         """(connected, telemetry for the debug view) from link.health() and the contract-v1 telemetry dict."""
@@ -386,7 +405,9 @@ def build_parser() -> argparse.ArgumentParser:
                                    "$ROBOT_HOST or balancebot.local for real)")
     ap.add_argument("--port", default=None, help="serial port for --link serial (default: auto-detect)")
     ap.add_argument("--test-drive", action="store_true", help="drive forward, then turn, through the arbiter")
-    ap.add_argument("--source", default="0", help="camera index (0, 1, ...) or a video file path")
+    ap.add_argument("--source", default="phone",
+                    help="phone: the robot's phone page streams its camera to the server (default); "
+                         "or a camera index (0, 1, ...) or a video file path")
     ap.add_argument("--no-vision", action="store_true", help="run without camera and detector")
     ap.add_argument("--rotate", choices=["left", "right", "180"], help="if people show up sideways")
     ap.add_argument("--turn-only", action="store_true", help="follow only turns toward the person, never drives")
@@ -447,7 +468,102 @@ def make_vision(args: argparse.Namespace) -> Any:
     from app.vision.worker import VisionWorker
 
     detector = YoloPoseDetector()  # loads the weights now, so a missing file fails before anything starts
-    return VisionWorker(open_source(args.source, rotate=args.rotate), detector, TargetLock())
+    if args.source == "phone":
+        # Alex's design: the robot's phone streams its camera to the server (POST /frame), the server sees.
+        from app.vision.phone_source import PhoneFrameSource
+
+        source = PhoneFrameSource()
+    else:
+        source = open_source(args.source, rotate=args.rotate)
+    return VisionWorker(source, detector, TargetLock())
+
+
+def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
+    """The API's view of the server. With vision, Follow on the control page runs the server's follow skill
+    and the control page shows the server's view; with the phone as the camera, /frame feeds vision."""
+    state = api.ApiState(app.arbiter, link, skills=app.skills, tts=tts)
+    if vision is None:
+        return state
+    state.phone_frames = getattr(vision, "_source", None) if args_source_is_phone(vision) else None
+    base = getattr(app._follow_factory, "config", None)
+    if base is not None:
+        import dataclasses
+
+        from app.skills.follow import FollowSkill
+
+        def factory() -> Any:
+            # The control page's follow settings: speed cap and stop distance ("bigger = stays closer",
+            # the same upper-body width fraction as John's phone page). They apply when Follow starts.
+            # One "closeness" setting moves both distance cues together, so neither stops it early:
+            # the box target is the setting, and the shoulder target in meters scales inversely
+            # (John's 0.45 <-> 1.0 m). It backs off inside 70% of the target distance.
+            closeness = float(state.settings["distance"])
+            d_target = 0.45 / closeness
+            return FollowSkill(dataclasses.replace(base, v_max=float(state.settings["speed"]),
+                                                   target_box_w=closeness, d_target_m=d_target,
+                                                   d_min_m=0.7 * d_target))
+        factory.config = base  # type: ignore[attr-defined]
+        app._follow_factory = factory
+    state.follow_start = lambda: None if app.skills.running == "follow" else app.toggle_follow()
+    state.follow_stop = lambda: app.toggle_follow() if app.skills.running == "follow" else None
+    state.follow_running = lambda: app.skills.running == "follow"
+    state.vision_status = lambda: vision.status
+    state.view_jpeg = ViewEncoder(app).jpeg
+    state.vision_debug = lambda: vision_debug(vision)
+    state.face = app.face
+    return state
+
+
+def args_source_is_phone(vision: Any) -> bool:
+    from app.vision.phone_source import PhoneFrameSource
+
+    return isinstance(getattr(vision, "_source", None), PhoneFrameSource)
+
+
+def vision_debug(vision: Any) -> dict:
+    """The sizes follow uses to judge distance, for every person in the newest frame."""
+    from app.vision.follow import shoulder_gap
+
+    p = vision.latest()
+    if p is None:
+        return {"frame": None, "people": []}
+    people = []
+    for person in p.detections.people:
+        b = person.box
+        people.append({"box_w": round(b.x2 - b.x1, 3), "box_h": round(b.y2 - b.y1, 3), "cx": round((b.x1 + b.x2) / 2, 3),
+                       "top": round(b.y1, 3), "bottom": round(b.y2, 3), "shoulder_gap": shoulder_gap(person),
+                       "score": round(person.score, 2)})
+    return {"frame": [p.frame.width, p.frame.height], "age_s": round(time.monotonic() - p.frame_t, 2),
+            "target": p.target.status.value if hasattr(p.target.status, "value") else str(p.target.status),
+            "people": people}
+
+
+class ViewEncoder:
+    """The server's view for the control page: the latest frame with the overlay (boxes, target, command),
+    as JPEG. Re-encoded only when a new frame has been processed, at most ~10 times a second."""
+
+    def __init__(self, app: App, max_width: int = 640) -> None:
+        self._app = app
+        self._max_width = max_width
+        self._key: Any = None
+        self._jpeg: bytes | None = None
+        self._lock = threading.Lock()
+
+    def jpeg(self) -> bytes | None:
+        import cv2
+
+        from app.vision.debug_view import render
+
+        perception = self._app._perception()
+        key = None if perception is None else perception.frame_index
+        with self._lock:
+            if key is not None and key == self._key and self._jpeg is not None:
+                return self._jpeg
+            img = render(perception, self._app.hud(), max_width=self._max_width)
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                self._key, self._jpeg = key, buf.tobytes()
+            return self._jpeg
 
 
 def make_tts() -> Any:
@@ -502,8 +618,7 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
     try:
         if args.api:
             tts = make_tts()
-            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills, tts=tts),
-                                        args.http_port, args.https_port or None)
+            runner, _ = await api.start(api_state(app, link, vision, tts), args.http_port, args.https_port or None)
             if tts is not None:
                 warm = asyncio.create_task(prewarm_voice(tts))   # don't hold up startup
         if args.robot == "real":
@@ -554,6 +669,7 @@ def main(argv: list[str] | None = None) -> None:
 
         config = make_follow_config(args)
         follow_factory = lambda: FollowSkill(config)  # noqa: E731
+        follow_factory.config = config  # type: ignore[attr-defined]  # api_state() applies the control page's settings
 
     window = render = None
     if args.window:

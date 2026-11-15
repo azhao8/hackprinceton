@@ -480,3 +480,58 @@ def test_serve_closes_the_voice_if_the_api_fails_to_start(monkeypatch):
         asyncio.run(server.serve(parse_args([]), FakeUdpLink(dict(TEL)), window=FakeWindow(["q"]),
                                  render=lambda p, h: h))
     assert tts.closed
+
+
+def test_api_state_applies_the_control_pages_follow_settings():
+    from app.vision.follow import FollowConfig
+
+    class FakeVision:
+        status = "running"
+
+        def latest(self):
+            return None
+
+    app = server.App(FakeUdpLink())
+    base = FollowConfig()
+    app._follow_factory = lambda: None
+    app._follow_factory.config = base
+    state = server.api_state(app, app.link, FakeVision(), None)
+    state.set_settings({"speed": 0.2, "distance": 0.5})
+    skill = app._follow_factory()
+    assert skill.config.v_max == 0.2 and skill.config.target_box_w == 0.5
+    assert abs(skill.config.d_target_m - 0.9) < 1e-9 and abs(skill.config.d_min_m - 0.63) < 1e-9
+
+
+def test_api_state_gives_the_api_the_face_fed_from_vision_and_the_follow_command():
+    import time
+
+    import numpy as np
+
+    from app.vision.types import Box, Detections, DriveCommand, Frame, Person, TargetState, TargetStatus
+    from app.vision.worker import Perception
+
+    class LockedVision(FakeVision):
+        status = "running"
+
+        def latest(self):
+            now = time.monotonic()
+            frame = Frame(t=now, index=1, image=np.zeros((4, 4, 3), dtype=np.uint8))
+            person = Person(Box(0.6, 0.1, 0.8, 0.9), 0.9)
+            return Perception(frame, Detections(now, 1, 4, 4, [person]), TargetState(TargetStatus.LOCKED, person),
+                              False, 1, 0.0, 12.0, now)
+
+    async def scenario():
+        app = App(FakeUdpLink(dict(TEL)), vision=LockedVision(), follow_factory=Drive, hz=100)
+        state = server.api_state(app, app.link, app.vision, None)
+        assert state.status()["face"] == {"status": "idle", "target": None, "event": None}   # Follow off
+        app.toggle_follow()
+        app.follow.last_command = DriveCommand(-0.1, 0.0, "too close: backing off")
+        await asyncio.sleep(0)
+        app.tick()                                   # the tick feeds the face too
+        face = state.status()["face"]
+        app.skills.cancel()
+        return face
+
+    face = asyncio.run(scenario())
+    assert face["status"] == "locked" and face["target"] == {"cx": 0.7, "cy": 0.22, "w": 0.2}
+    assert face["event"] == {"id": 2, "kind": "too_close"}    # found (id 1), then too close

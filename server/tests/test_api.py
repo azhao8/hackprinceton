@@ -54,6 +54,7 @@ def test_phone_page_and_cert_page_are_served():
         page = await c.get("/index.html")
         assert page.status == 200 and "Miguel" in await page.text()
         assert (await c.get("/track.js")).status == 200
+        assert (await c.get("/face.js")).status == 200
     with_client(t)
 
 
@@ -260,11 +261,11 @@ def test_control_page_does_not_use_bare_element_ids():
 def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
     async def t(c, s):
         d = await (await c.get("/tel")).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.45, "voice": True}
+        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.7, "voice": True, "camera": "back", "mirror": False}
         d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False})).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 0.65, "voice": False}   # clamped
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "back", "mirror": False}   # clamped
         d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
-        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False}    # new mode: its defaults
+        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False}    # new mode: its defaults
         await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
         assert (await (await c.get("/tel")).json())["settings"]["mode"] == "yellow"
         ws = await c.ws_connect("/ws")
@@ -310,4 +311,98 @@ def test_websocket_keys_arm_and_status():
         assert link.sent == ["P", "g"] and state.follow is False
         await ws.close()
         await client.close()
+    asyncio.run(go())
+
+
+def test_phone_frames_feed_vision_and_follow_runs_on_the_server():
+    import cv2
+    import numpy as np
+
+    from app.vision.phone_source import PhoneFrameSource
+
+    async def go():
+        src = PhoneFrameSource()
+        running = {"follow": False}
+        state = ApiState(Arbiter(), FakeLink(), phone_frames=src,
+                         follow_start=lambda: running.update(follow=True),
+                         follow_stop=lambda: running.update(follow=False),
+                         follow_running=lambda: running["follow"],
+                         view_jpeg=lambda: b"\xff\xd8fakejpeg", vision_status=lambda: "running")
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+
+        ok, jpg = cv2.imencode(".jpg", np.zeros((64, 36, 3), dtype=np.uint8))
+        assert (await client.post("/frame", data=jpg.tobytes())).status == 204
+        assert (await client.post("/frame", data=b"not an image")).status == 400
+        frame = src.read_next(timeout=1)
+        assert frame is not None and frame.image.shape == (64, 36, 3)
+
+        st = await (await client.get("/tel")).json()
+        assert st["vision"]["mode"] == "server" and st["vision"]["camera"]["frames"] == 1
+
+        await client.post("/control/follow-on")
+        assert running["follow"] and (await (await client.get("/tel")).json())["follow"] is True
+        await client.post("/auto", json={"v": 0.3, "w": 0})            # the phone no longer drives
+        assert state.arbiter.decide().source == "none"
+        await client.post("/control/stop")                             # STOP ends the follow skill (skills=None here: flag cleared)
+        await client.post("/control/follow-off")
+        assert not running["follow"]
+
+        resp = await client.get("/video.mjpg")
+        chunk = await resp.content.read(64)
+        assert resp.headers["Content-Type"].startswith("multipart/x-mixed-replace") and b"--frame" in chunk
+        resp.close()
+        await client.close()
+
+    asyncio.run(go())
+
+
+def test_camera_and_mirror_settings_reach_the_phone_and_the_frame_source():
+    import cv2
+    import numpy as np
+
+    from app.vision.phone_source import PhoneFrameSource
+
+    async def go():
+        src = PhoneFrameSource()
+        state = ApiState(Arbiter(), FakeLink(), phone_frames=src)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        d = await (await client.post("/control/settings", json={"camera": "front", "mirror": True})).json()
+        assert d["settings"]["camera"] == "front" and d["settings"]["mirror"] is True and src.mirror
+        await client.post("/control/settings", json={"camera": "sideways", "mirror": "yes"})   # ignored
+        assert state.settings["camera"] == "front" and state.settings["mirror"] is True
+        img = np.zeros((10, 20, 3), dtype=np.uint8)
+        img[:, :5] = 255                                    # white on the left
+        ok, jpg = cv2.imencode(".png", img)
+        src.push_jpeg(jpg.tobytes())
+        assert src.read_next(timeout=1).image[:, -5:].mean() > 200   # mirrored: white on the right now
+        await client.close()
+
+    asyncio.run(go())
+
+
+def test_tel_has_the_face_with_server_vision_and_null_without():
+    async def phone_mode(c, s):
+        assert (await (await c.get("/tel")).json())["face"] is None
+    with_client(phone_mode)
+
+    face = {"status": "locked", "target": {"cx": 0.4, "cy": 0.3, "w": 0.2}, "event": {"id": 1, "kind": "found"}}
+
+    async def go():
+        state = ApiState(Arbiter(), FakeLink(), follow_start=lambda: None, follow_stop=lambda: None,
+                         follow_running=lambda: True, vision_status=lambda: "running", face=lambda: face)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        try:
+            st = await (await client.get("/tel")).json()
+            assert st["face"] == face and set(st["face"]) == {"status", "target", "event"}
+            ws = await client.ws_connect("/ws")
+            msg = await ws.receive_json(timeout=2)
+            while msg.get("t") != "status":
+                msg = await ws.receive_json(timeout=2)
+            assert msg["face"] == face
+            await ws.close()
+        finally:
+            await client.close()
     asyncio.run(go())
