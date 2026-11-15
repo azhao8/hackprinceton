@@ -648,7 +648,23 @@ class ViewEncoder:
 
 
 def make_tts() -> Any:
-    """Cartesia text-to-speech for the phone's voice, or None: the phone then uses Safari's built-in voice."""
+    """The phone's voice: Cartesia (default), or Kokoro on this Mac with MIGUEL_TTS=local (#81).
+    The local voice falls back to Cartesia when its model is missing; None means Safari's built-in voice."""
+    choice = (os.environ.get("MIGUEL_TTS") or "cartesia").strip().lower()
+    if choice == "local":
+        try:
+            from app.speech.tts_local import KokoroTTS
+
+            local = KokoroTTS.from_env()   # None, with a log line saying why, if the model is missing
+        except Exception as e:   # broken install: run without it
+            log.warning("voice: local voice unavailable (%s)", e)
+            local = None
+        if local is not None:
+            log.info("voice: local (Kokoro, voice %s); loading in the background", local.voice)
+            return local
+        log.warning("voice: MIGUEL_TTS=local but the local voice is unavailable; trying Cartesia")
+    elif choice != "cartesia":
+        log.warning("voice: MIGUEL_TTS=%r is not 'local' or 'cartesia'; using Cartesia", choice)
     try:
         from app.speech.tts import CartesiaTTS
 
