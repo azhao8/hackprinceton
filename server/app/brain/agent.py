@@ -39,6 +39,10 @@ Voice latency (Sat Nov 14):
   Claude's first text, the say) for the server's per-turn timing log.
 - Every spoken line loses its emojis and markdown first (spoken.py), and a `say` call that only
   repeats what this response's streamed text already said is not said twice.
+- Early say (Sun Nov 15): a `say` tool call is spoken the moment its block finishes streaming,
+  not after the whole response. In an action turn Claude writes say() and then move()/follow();
+  the second call took another 0.4-1.1 s to write (measured), and the line waited for it. The
+  other tools still run after the response, in order. `MIGUEL_EARLY_SAY=0` switches it off.
 
 Local model (#81, `MIGUEL_LLM=local`, local_llm.py): the same loop on a model served by Ollama,
 through a client that converts the requests. Differences: no prompt-cache breakpoints, effort or
@@ -53,6 +57,7 @@ import asyncio
 import copy
 import itertools
 import logging
+import os
 import re
 import time
 from collections import deque
@@ -112,6 +117,8 @@ def _label(u: Utterance, working: bool = False) -> str:
     notes = [n for n in (_VIA_NOTES.get(u.meta.get("via")), "while you were working" if working else None) if n]
     return f"[{u.source} via {channel}{''.join(', ' + n for n in notes)}] {u.text}"
 
+
+EARLY_SAY = os.environ.get("MIGUEL_EARLY_SAY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 LOCAL_TRIM_AT = 0.75   # local model: cut the history once a call's context passes this share of num_ctx
 
@@ -238,6 +245,7 @@ class _TaskState:
     marks: dict[str, float] = field(default_factory=dict) # timing: speech_end, final, llm_start, first_text
     timed: bool = False                                   # the first say already carried the timing
     streamed: list[str] = field(default_factory=list)     # lines of this round's text already said
+    early: dict[str, asyncio.Future] = field(default_factory=dict)   # say calls run while streaming, by block id
 
 
 class Agent:
@@ -286,6 +294,7 @@ class Agent:
         self._last_call = float("-inf")
         self._warm_task: asyncio.Task[None] | None = None
         self.max_rounds = max_rounds
+        self.early_say = EARLY_SAY
         self.max_tokens = max_tokens
         self.inbox: asyncio.Queue[Utterance] = asyncio.Queue()
         self._client = client
@@ -576,6 +585,9 @@ class Agent:
             self.emit("error", f"the agent crashed: {type(e).__name__}: {e}")
             self._close_dangling(ex, "Not run: the agent crashed.")
         finally:
+            for fut in st.early.values():   # a response that never got to run its tools
+                fut.cancel()
+            st.early.clear()
             # after a reset_conversation this task belongs to the forgotten conversation: keep nothing
             self._finish(st, ex, status, summary, keep and gen == self._generation)
         if self._pending and gen == self._generation:   # arrived after Claude's last look: run them as the next task
@@ -589,6 +601,19 @@ class Agent:
         if st.requester != "guardian" and not st.said:
             self.emit("say", line, to="senior", data={"streamed": True})
             st.streamed.append(line)
+
+    def _say_early(self, st: _TaskState, block: Any) -> None:
+        """A say() call finished streaming: say it now instead of after the whole response. _exec
+        picks up its outcome when the response's tools run."""
+        if not self.early_say or getattr(block, "name", None) != "say" or not getattr(block, "id", None):
+            return
+        args = dict(getattr(block, "input", None) or {})
+        args.pop("step", None)
+        said = _words(str(args.get("text", "")))
+        if not clean_spoken(str(args.get("text", ""))) or (st.streamed and said in _words(" ".join(st.streamed))):
+            return                       # nothing to say, or a repeat of the streamed text: _exec handles it
+        st.early[block.id] = asyncio.ensure_future(self.tools.call("say", args))
+        st.said = True                   # text after it in this response is a log note, not speech
 
     def _params(self, effort: str) -> dict[str, Any]:
         """What every call shares, byte for byte: model, tools, system prompt (cached), effort."""
@@ -672,6 +697,8 @@ class Agent:
                     speech.feed(value)
             elif kind == "block_stop" and speech is not None:
                 speech.flush()           # the end of a text block ends its last sentence
+            elif kind == "tool_done" and st is not None:
+                self._say_early(st, value)
 
         t0 = self._last_call = time.monotonic()
         if st is not None:
@@ -730,7 +757,10 @@ class Agent:
         else:
             step = None
         said = _words(str(args.get("text", ""))) if name == "say" else ""
-        if said and st.streamed and said in _words(" ".join(st.streamed)):
+        early = st.early.pop(getattr(block, "id", None), None)
+        if early is not None:            # said while the response was still streaming
+            out = await early
+        elif said and st.streamed and said in _words(" ".join(st.streamed)):
             # the response's text already said it (qwen often writes the line and also calls say)
             out = ToolOutcome(True, "Said it out loud.", {"text": args.get("text"), "repeat": True})
         else:

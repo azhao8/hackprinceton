@@ -87,6 +87,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -102,6 +103,30 @@ from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch
 from app.speech.timing import TurnTimer
 
 log = logging.getLogger("app.api")
+
+# A say line with several sentences goes to the phone one sentence at a time when the voice makes each
+# line whole before sending any of it (the local voices, WAV): the first sentence plays after ~0.5 s
+# instead of the whole line after ~1.3 s (the cloned voice, Sun Nov 15), and the next ones are made
+# while it plays (prefetch). Cartesia streams its mp3, so its lines stay whole.
+_SENTENCE_END = re.compile(r"(?<=[.!?])([\"'”’)]*)\s+(?=[\"'“‘(]?[A-Z0-9])")
+_ABBREV = re.compile(r"(?:\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc|No)\.|\b[A-Z]\.)$")
+
+
+def split_sentences(text: str) -> list[str]:
+    """The sentences of a spoken line (abbreviations like "Dr." don't end one)."""
+    out: list[str] = []
+    start = 0
+    for m in _SENTENCE_END.finditer(text):
+        if _ABBREV.search(text[start:m.start()]):
+            continue
+        out.append(text[start:m.end(1)].strip())
+        start = m.end()
+    out.append(text[start:].strip())
+    return [s for s in out if s]
+
+
+def _whole_line_voice(tts: Any) -> bool:
+    return tts is not None and getattr(tts, "MEDIA_TYPE", "") == "audio/wav"
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js",
@@ -378,6 +403,17 @@ class ApiState:
 
     def add_say(self, text: str) -> None:
         text = text.strip()[:300]
+        if not text:
+            return
+        cached = getattr(self.tts, "cached", None)
+        whole = not _whole_line_voice(self.tts) or (cached is not None and cached(text) is not None)
+        pieces = [text] if whole else split_sentences(text)   # a line made ahead of time stays whole
+        if len(pieces) > 1:
+            self.timer.narrow(text, pieces[0])   # the timing log follows the first sentence
+        for piece in pieces:
+            self._add_line(piece)
+
+    def _add_line(self, text: str) -> None:
         if text:
             sid = (self.say[-1]["id"] + 1) if self.say else 1
             self.say.append({"id": sid, "text": text})
