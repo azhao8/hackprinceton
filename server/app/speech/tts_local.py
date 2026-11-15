@@ -75,8 +75,21 @@ CLONE_CHUNK_S = 0.32     # Qwen streaming step: the MLX lock is let go between c
 # (iOS: an <audio> element routed through Web Audio while the mic is open). Cartesia's mp3s carry
 # 160-230 ms of silence before the speech and 210-280 ms after, which absorbed that; the local models
 # often start speaking within 0-60 ms and stop 20-140 ms before the end, so real words were lost.
-LEAD_SILENCE_S = 0.2
-TAIL_SILENCE_S = 0.3
+# MIGUEL_TTS_LEAD_S / MIGUEL_TTS_TAIL_S change them (#103): the phone now plays each line as a Web Audio buffer,
+# which shouldn't clip, so once that's confirmed on the iPhone the lead (pure delay before every reply) can shrink.
+
+
+def _env_seconds(name: str, default: float, env: Mapping[str, str] = os.environ) -> float:
+    """A silence length from the environment: seconds, 0 to 1; the default if unset or not a number."""
+    try:
+        value = float((env.get(name) or "").strip())
+    except ValueError:
+        return default
+    return min(1.0, max(0.0, value)) if value == value else default   # NaN: the default
+
+
+LEAD_SILENCE_S = _env_seconds("MIGUEL_TTS_LEAD_S", 0.2)
+TAIL_SILENCE_S = _env_seconds("MIGUEL_TTS_TAIL_S", 0.3)
 ESPEAK_MAX_PATH = 159                # espeak-ng ignores a data path of 160+ characters (N_PATH_HOME)
 
 
