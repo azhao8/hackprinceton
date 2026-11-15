@@ -6,7 +6,7 @@ sends 20 Hz telemetry to whoever sent the last packet. Point the server or
 
 Type into its terminal to act out the robot's surroundings (#79), then Enter:
 `u` someone holds it upright, `d` lay it down, `b 27` its gyro zero is off by 27 deg/s (`b 0` fixes it;
-so does the firmware's recalibrate, c).
+so does the firmware's recalibrate, c), `f` it falls over while balancing (#88: motors cut, lying down).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ async def serve(host: str, port: int, verbose: bool = True, ready: asyncio.Event
     transport, server = await loop.create_datagram_endpoint(lambda: MockServer(robot, verbose), local_addr=(host, port))
     if verbose:
         print(f"[mock] robot listening on {host}:{port} (UDP). Send g to start balancing.", flush=True)
-        print("[mock] type u (held upright), d (laid down) or b 27 (gyro bias, deg/s), then Enter", flush=True)
+        print("[mock] type u (held upright), d (laid down), f (falls over) or b 27 (gyro bias, deg/s), then Enter", flush=True)
     try:
         fd = sys.stdin.fileno()
 
@@ -101,6 +101,9 @@ def act(robot: MockRobot, line: str) -> None:
     elif words[0] == "d":
         robot.held = False
         print("[mock] laid down", flush=True)
+    elif words[0] == "f":
+        robot.fall()
+        print("[mock] fell over", flush=True)
     elif words[0] == "b":
         try:
             robot.gyro_bias = float(words[1]) if len(words) > 1 else 0.0

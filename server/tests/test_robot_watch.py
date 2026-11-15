@@ -4,7 +4,7 @@ import math
 import re
 from pathlib import Path
 
-from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch
+from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch, FallWatch, is_fall
 from mock.robot import MockRobot
 
 BALANCE_INO = Path(__file__).resolve().parents[2] / "firmware" / "balance" / "balance.ino"
@@ -101,3 +101,86 @@ def test_the_mock_can_be_held_upright_and_drift():
     r.handle_char("c", 1.0)
     r.step(0.01, 2.0)
     assert abs(r.rate) < 0.2
+
+
+# --- #88: falls and the auto-restart after one ------------------------------------------------------
+
+FELL = "fell over (tilt > 30 deg)"
+
+
+def test_the_fall_fault_matches_the_firmware():
+    assert '"' + FELL + '"' in BALANCE_INO.read_text() and is_fall(FELL)
+    assert not is_fall("stop command") and not is_fall("idle command (Wi-Fi)") and not is_fall(None)
+
+
+def test_a_fall_is_balancing_then_idle_with_the_fall_fault():
+    w = FallWatch()
+    assert not w.feed({"state": "balance", "fault": None}, 0.0)
+    assert w.feed({"state": "idle", "fault": FELL}, 0.05)
+    assert not w.feed({"state": "idle", "fault": FELL}, 0.10)          # once, not every message after
+    for stop in ("stop command", "idle command (Wi-Fi)", None):          # Cut motor power, Wi-Fi idle, Park
+        w.feed({"state": "drive", "fault": None}, 1.0)
+        assert not w.feed({"state": "idle", "fault": stop}, 1.05)
+    w.feed({"state": "idle", "fault": None}, 2.0)
+    assert not w.feed({"state": "idle", "fault": FELL}, 2.05)          # was already idle: a stale fault
+
+
+def test_the_restart_count_resets_after_balancing_a_while():
+    w = FallWatch(stable_s=30.0)
+    w.restarts = 2
+    w.feed({"state": "balance"}, 0.0)
+    w.feed({"state": "balance"}, 29.0)
+    assert w.restarts == 2
+    w.feed({"state": "balance"}, 30.5)
+    assert w.restarts == 0
+
+
+def run(a, seconds, t0, pitch=FIRMWARE_TRIM, rate=0.0, wobble=0.0, wobble_rate=0.0):
+    """Feed `seconds` of 20 Hz idle telemetry; wobble = tilt amplitude (deg) at 1 Hz."""
+    sent_before, t = None, t0
+    for i in range(int(seconds * 20)):
+        ph = 2 * math.pi * i * 0.05
+        a.feed({"state": "idle", "pitch": pitch + wobble * math.sin(ph), "rate": rate + wobble_rate * math.cos(ph)}, t)
+        t += 0.05
+    return t
+
+
+def test_after_a_fall_lying_down_or_being_carried_never_starts():
+    def fresh():
+        sent = []
+        a = AutoStart(lambda: sent.append("g"), lambda: FIRMWARE_TRIM)
+        a.start(0.0, fall=True)
+        return a, sent
+
+    a, _ = fresh()
+    assert a.view() == {"waiting": True, "note": "I fell: hold me upright and steady", "fall": True}
+    for kw in (dict(pitch=FIRMWARE_TRIM + 80.0),                   # lying on the floor
+               dict(pitch=11.2),                                    # lying on the back
+               dict(wobble=2.5, wobble_rate=6.0),                   # carried upright: it rocks with each step
+               dict(wobble=1.5, wobble_rate=4.0, rate=3.5),         # carried and slowly turning over
+               dict(wobble=0.5, wobble_rate=15.0)):                 # jostled
+        a, sent = fresh()
+        run(a, 10.0, 0.0, **kw)
+        assert sent == [] and a.waiting, kw
+    a, sent = fresh()
+    t = run(a, 1.5, 0.0)                                            # 1.5 s steady: a manual Start would go...
+    assert sent == []                                               # ...after a fall it wants 2 s
+    run(a, 1.0, t, wobble=0.4, wobble_rate=1.5)                     # held upright and steady
+    assert sent == ["g"]
+
+
+def test_a_fall_wait_times_out_with_its_own_note():
+    a = AutoStart(lambda: None, lambda: FIRMWARE_TRIM)
+    a.start(0.0, fall=True)
+    assert a.feed({"state": "idle", "pitch": 60.0, "rate": 0.0}, 121.0) == "timeout"
+    assert not a.waiting and not a.fall and "after the fall" in a.note
+
+
+def test_the_mock_can_fall():
+    r = MockRobot()
+    r.handle_char("g", 0.0)
+    r.fall()
+    assert not r.running and r.fault == FELL and r.telemetry()["state"] == "idle"
+    r = MockRobot()
+    r.handle_char("x", 0.0)
+    assert r.fault is None                     # x while idle: no fault
