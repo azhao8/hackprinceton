@@ -59,7 +59,7 @@ The bench tools talk to the robot directly. They're for testing and tuning only.
    - W A S D / arrows: drive (hold to go). Space: stop.
    - Q / E: turn 90°.
    - P: park. X: motors off.
-   - Top-speed slider: 0.1–1.0 m/s (starts at 0.3).
+   - Top-speed slider: 0.1–3.2 m/s (starts at 0.3).
 4. **Follow (John's Mac only):** run `cd firmware/balance/follow && ./build.sh && ./follow --yellow`, then press **F** on the page.
    - Holding a drive key overrides it. X stops it and turns Follow off.
    - Knobs: `--distance` (bigger = stops closer, default 0.35) and `--speed` (default 0.4).
@@ -119,7 +119,7 @@ Notes:
 It listens on USB serial at 115200, and on UDP port 4210 over Wi-Fi (mDNS name `balancebot.local`).
 - **In:** `{"t":"cmd","seq":812,"v":0.3,"w":0.0,"mode":"drive"}`, about 20 times a second.
   - `seq` (optional) is a counter the laptop raises on every command. Telemetry echoes the last one as `ack`.
-  - `v` is clamped to ±1.0 m/s (`VMAX`, the wheels' limit; uncapped from 0.6 on Sat 10 pm, top speed to be found by testing) and `w` to ±1.5 rad/s.
+  - `v` is clamped to ±3.2 m/s (`VMAX`; uncapped on Sat 11 pm: only the step generator's ceiling is left, 3.34 m/s; the steppers stall well before that, so the real top speed is found by testing) and `w` to ±1.5 rad/s.
   - `mode` is `drive`, `balance` (hold position) or `idle` (motors off).
   - If no cmd arrives for 300 ms, speed and turn go to 0 and it holds position. That's the e-stop behavior from decision 0043.
 - **Arming is separate.** The plain one-letter packet `g` starts balancing, but only while the robot is held within 6° of upright. Other one-letter commands:

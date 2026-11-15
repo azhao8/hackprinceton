@@ -62,7 +62,9 @@ const int STEP_R = 4, DIR_R = 5, STEP_L = 6, DIR_L = 7, EN = 15;
 const uint8_t MPU = 0x68;
 const float STEPS_PER_M = 3200.0f / (PI * 0.085f);   // 11983
 const float DT = 0.005f;                               // 200 Hz control loop
-const float VMAX = 1.0f, AMAX = 6.0f;                  // m/s, m/s^2 (VMAX was 0.8; raised with faster driving, check with T)
+const float VMAX = 3.2f, AMAX = 6.0f;                  // m/s, m/s^2. VMAX: uncapped (Alex, Sat 11 pm; was 1.0): only the step
+                                                        // generator's ceiling is left, 40 kHz / 11983 steps/m = 3.34 m/s (above it the
+                                                        // phase increment overflows). The steppers will stall before that: find it by testing
 const uint32_t RUN_MS = 1800000;                       // each g balances for at most 30 min, then parks itself (tilt cutoff and watchdog still apply)
 const float HALF_TRACK = 0.0775f;                      // wheel centre to robot centre, m (CAD)
 const uint32_t ISR_HZ = 40000;

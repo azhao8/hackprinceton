@@ -68,8 +68,8 @@ def test_g_arms_and_drive_ramps_and_clamps():
     r.handle_packet(b"g", 0.0)
     assert r.telemetry()["state"] == "balance" and r.pitch == TRIM
     t = run(r, 0.0, 2.0, feed=lambda t: cmd(r, t, seq=int(t * 100), v=5.0, w=0.0, mode="drive"))
-    assert r.vt == 1.0                                # clamped
-    assert 0.95 < r.vcmd <= 1.0                       # ramped at 0.5 m/s^2 for 2 s
+    assert r.vt == 3.2                                # clamped
+    assert 0.95 < r.vcmd <= 1.0 + 1e-9                # ramped at 0.5 m/s^2 for 2 s
     assert r.telemetry()["state"] == "drive" and r.x > 0
     assert t > 0
 

@@ -12,7 +12,7 @@ The phone page keeps the endpoints it already used with phone_server.py, so it w
 - `GET /tel`: `{tel, follow, link, estop, tts, settings, vision, face}` for the page's status line;
   `tts` says whether `/tts` is set up (Cartesia), so the page knows whether to try it. `face` (server
   vision only, else null) is where Miguel's eyes should look and the latest follow event:
-  `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|gave_up} | null}`
+  `{status: idle|locked|lost, target: {cx, cy, w} | null, event: {id, kind: found|lost|too_close|waiting|gave_up} | null}`
   (app/vision/face_state.py); the page reacts once per new event `id`.
 - `GET /say?after=N`: lines for the phone to speak. `POST /say {text}` adds one (localhost only).
 - `GET /tts?text=...`: the line as Cartesia speech (audio/mpeg). 400 if the text is empty or over
@@ -90,18 +90,18 @@ PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phon
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js",
                "/mic.js": "mic.js"}   # mic.js (#54): the phone's mic streamer (hearing)
 LOCAL = ("127.0.0.1", "::1")
-V_MAX, W_MAX = 1.0, 1.5
+V_MAX, W_MAX = 3.2, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
 TRIM_MAX_STEPS = 60           # one request moves the balance angle at most 15 deg
 
 # Follow settings, set on the control page and read by the phone page (decision 0053).
 # Ranges and defaults are John's from the phone page (MODES in index.html).
-# Wide on purpose (Alex: "in case"): the robot clamps speed to 1.0 m/s itself (VMAX).
+# Wide on purpose (Alex: "in case"): the robot clamps speed to 3.2 m/s itself (VMAX, the step generator's ceiling).
 # person "d" 0.7: the phone streams portrait frames from the 0.5x lens, so a person's box is wide
 # early; 0.45 (John's landscape value) made the server's follow stop far away (robot test, Sat 5:35 pm).
 FOLLOW_MODES = {"person": {"dmin": 0.1, "dmax": 1.0, "d": 0.7, "s": 0.25},
                 "yellow": {"dmin": 0.1, "dmax": 1.0, "d": 0.35, "s": 0.4}}
-SPEED_MIN, SPEED_MAX = 0.05, 1.0
+SPEED_MIN, SPEED_MAX = 0.05, 3.2
 
 
 def default_settings(mode: str = "person") -> dict:
@@ -803,7 +803,7 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <h3>Follow settings</h3>
 <p><select id=mode style='font:inherit;padding:8px'><option value=person>Follow a person</option><option value=yellow>Follow yellow</option></select>
 <button id=voice style='font:inherit;padding:8px 12px'>Voice: on</button></p>
-<p><label>Speed cap <input id=spd type=range min=0.1 max=1.0 step=0.05> <b id=spdL></b> m/s</label></p>
+<p><label>Speed cap <input id=spd type=range min=0.1 max=3.2 step=0.05> <b id=spdL></b> m/s</label></p>
 <p><label>Stop distance <input id=dist type=range step=0.05> <b id=distL></b> (bigger = stops closer)</label></p>
 <h3>Make Miguel talk</h3><form id=f><input id=t autofocus style='font:inherit;width:70%;padding:10px' placeholder='Type a line, press Enter'>
 <button style='font:inherit;padding:10px 14px'>Say</button></form><div id=p></div>

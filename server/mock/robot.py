@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 # Numbers from balance.ino
 TRIM = -3.65             # deg: balance point since the kickstand came off (was +5.6)
 KICK_ANGLE = 11.24       # deg: resting on the kickstand
-V_LIMIT, W_LIMIT = 1.0, 1.5
+V_LIMIT, W_LIMIT = 3.2, 1.5
 VT_ACC = 0.5             # m/s^2: how fast the speed ramps
 HALF_TRACK = 0.0775      # m
 WATCHDOG_S = 0.3

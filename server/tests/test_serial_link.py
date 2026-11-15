@@ -189,12 +189,12 @@ def test_make_cmd_matches_schema_and_newline():
 def test_send_cmd_clamps_to_firmware_limits():
     link, fake = make_link()
     try:
-        for v, w in ((5.0, -9.0), (-1.7, 1.6), (float("nan"), float("inf"))):
+        for v, w in ((5.0, -9.0), (-3.7, 1.6), (float("nan"), float("inf"))):
             link.send_cmd(v, w)
             assert link._drain()
         a, b, c = cmds(link, fake)
-        assert (a["v"], a["w"]) == (1.0, -1.5)
-        assert (b["v"], b["w"]) == (-1.0, 1.5)
+        assert (a["v"], a["w"]) == (3.2, -1.5)
+        assert (b["v"], b["w"]) == (-3.2, 1.5)
         assert (c["v"], c["w"]) == (0.0, 0.0)
     finally:
         close(link)
