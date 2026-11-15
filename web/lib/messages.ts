@@ -58,7 +58,33 @@ export interface Status {
   trim_shift: number;
 }
 
-export type ServerMessage = Telemetry | Status;
+/** One of the voice agent's events (contract/web/README.md, "Agent"): heard, say, reply, plan, step, task, check_in... */
+export interface AgentEvent {
+  t: "agent";
+  id: number;
+  kind: string;
+  text: string;
+  to: string | null;
+  data: Record<string, unknown>;
+}
+
+export interface Place {
+  name: string;
+  marker: number | null;
+  aliases: string[];
+  description: string;
+}
+
+/** What Miguel knows (SQLite), for the memory page. */
+export interface MemoryView {
+  t: "memory";
+  on: boolean;
+  people: string[];
+  places: Place[];
+  facts: { key: string; value: string; source: string }[];
+}
+
+export type ServerMessage = Telemetry | Status | AgentEvent | MemoryView;
 
 /** One-letter robot commands the control page may send (contract/README.md). Never g: see "arm". */
 export type KeyLetter = "x" | "P" | "5" | "L" | "R" | "F" | "B";
@@ -71,7 +97,14 @@ export type ClientMessage =
   | { t: "settings"; mode?: FollowSettings["mode"]; speed?: number; distance?: number; voice?: boolean; camera?: "back" | "front"; mirror?: boolean }
   | { t: "key"; letter: KeyLetter }
   | { t: "arm" }
-  | { t: "trim"; steps: number };
+  | { t: "trim"; steps: number }
+  | { t: "agent_message"; text: string }
+  | { t: "tray_loaded" }
+  | { t: "test_fall" }
+  | { t: "this_is"; name: string }
+  | { t: "memory_get" }
+  | { t: "memory_set"; what: "fact" | "place" | "person"; action?: "delete"; key?: string; value?: string;
+      name?: string; marker?: number | null; aliases?: string; description?: string };
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const optNum = (v: unknown) => v === undefined || num(v);
@@ -152,5 +185,32 @@ export function parseServerMessage(raw: string): ServerMessage | null {
   const m = value as Record<string, unknown>;
   if (m.t === "tel") return parseTelemetry(m);
   if (m.t === "status") return parseStatus(m);
+  if (m.t === "agent") return parseAgent(m);
+  if (m.t === "memory") return parseMemory(m);
   return null;
+}
+
+function parseAgent(m: Record<string, unknown>): AgentEvent | null {
+  if (!num(m.id) || typeof m.kind !== "string") return null;
+  const data = typeof m.data === "object" && m.data !== null && !Array.isArray(m.data) ? (m.data as Record<string, unknown>) : {};
+  return { t: "agent", id: m.id, kind: m.kind, text: typeof m.text === "string" ? m.text : "",
+    to: typeof m.to === "string" ? m.to : null, data };
+}
+
+function parseMemory(m: Record<string, unknown>): MemoryView | null {
+  const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const places: Place[] = arr(m.places).flatMap((p) => {
+    if (typeof p !== "object" || p === null) return [];
+    const r = p as Record<string, unknown>;
+    if (typeof r.name !== "string") return [];
+    return [{ name: r.name, marker: num(r.marker) ? r.marker : null, aliases: arr(r.aliases).filter((a): a is string => typeof a === "string"),
+      description: str(r.description) }];
+  });
+  const facts = arr(m.facts).flatMap((f) => {
+    if (typeof f !== "object" || f === null) return [];
+    const r = f as Record<string, unknown>;
+    return typeof r.key === "string" ? [{ key: r.key, value: str(r.value), source: str(r.source) }] : [];
+  });
+  return { t: "memory", on: m.on === true, people: arr(m.people).filter((p): p is string => typeof p === "string"), places, facts };
 }

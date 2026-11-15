@@ -177,6 +177,9 @@ class ApiState:
     # NEW (#54) the voice agent. All None/empty when the agent is off: the routes then say so.
     agent_inbox: asyncio.Queue | None = None   # the agent's inbox of app.brain.types.Utterance
     guardian_token: str | None = None          # GUARDIAN_TOKEN: remote callers of /agent/* need it
+    family: Any = None                         # app.family.FamilyHub: the family app's /family/ws
+    memory: Any = None                         # app.memory.Memory (SQLite): the control page's memory page
+    registry: Any = None                       # PeopleRegistry (saved looks), for the memory page
     mic: Any = None                            # aiohttp handler for the phone's /mic WebSocket
     # NEW (#62) save the look of the person in front: name -> outcome with .ok, .text, .data (sync or
     # async; app.brain.tools.save_look). None without a camera: /control/this-is says so.
@@ -318,6 +321,64 @@ class ApiState:
             return False
         log.info("key %s", letter)
         return True
+
+    def memory_view(self) -> dict:
+        """What Miguel knows, for the control page's memory page."""
+        people = []
+        if self.registry is not None:
+            try:
+                people = list(self.registry.names())
+            except Exception:  # noqa: BLE001
+                people = []
+        if self.memory is None:
+            return {"t": "memory", "on": False, "people": people, "places": [], "facts": []}
+        return {"t": "memory", "on": True, "people": people, "places": self.memory.places(),
+                "facts": [{"key": f["key"], "value": f["value"], "source": f["source"]} for f in self.memory.facts.rows()]}
+
+    def control_message(self, m: dict) -> dict | None:
+        """The control page's agent and memory controls (this laptop only). Returns a reply or None."""
+        t = m.get("t")
+        if t == "tray_loaded":
+            self.mark_loaded()
+            return None
+        if t == "test_fall":
+            if self.family is not None:
+                self.family.raise_alert("Test from the control page: she may be on the floor.")
+            return None
+        if t == "this_is":
+            name = str(m.get("name", "")).strip()[:THIS_IS_NAME_MAX]
+            if name and self.this_is is not None:
+                out = self.this_is(name)
+                log.info("this is %s: %s", name, getattr(out, "text", out))
+            return self.memory_view()
+        if t == "memory_set":
+            what, action = m.get("what"), m.get("action")
+            try:
+                if what == "fact" and self.memory is not None:
+                    key = str(m.get("key", "")).strip()[:80]
+                    if action == "delete":
+                        self.memory.facts.pop(key, None)
+                    elif key:
+                        self.memory.facts.source = "control page"
+                        try:
+                            self.memory.facts[key] = str(m.get("value", "")).strip()[:500]
+                        finally:
+                            self.memory.facts.source = "agent"
+                elif what == "place" and self.memory is not None:
+                    name = str(m.get("name", "")).strip()
+                    if action == "delete":
+                        self.memory.delete_place(name)
+                    elif name:
+                        marker = m.get("marker")
+                        marker = int(marker) if isinstance(marker, (int, float)) or (isinstance(marker, str) and marker.strip().isdigit()) else None
+                        aliases = [a for a in str(m.get("aliases", "")).split(",") if a.strip()]
+                        self.memory.set_place(name, marker=marker, aliases=aliases,
+                                              description=str(m.get("description", ""))[:200])
+                elif what == "person" and action == "delete" and self.registry is not None:
+                    self.registry.forget(str(m.get("name", "")))
+            except Exception as e:  # noqa: BLE001 - bad input from the page must not break the socket
+                log.warning("memory change failed: %s", e)
+        return self.memory_view()
 
     def trim(self, steps: Any) -> bool:
         """Shift the robot's balance angle by steps x 0.25 deg over the link (firmware t / y). While it
@@ -560,6 +621,11 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             state.estop(True)
         elif what == "release":
             state.estop(False)
+        elif what == "fall":     # test the fall alert end to end (family app + agent)
+            if state.family is None:
+                return web.json_response({"ok": False, "error": "family app server side is off"}, status=503)
+            alert = state.family.raise_alert("Test from the control page: she may be on the floor.")
+            return web.json_response({"ok": True, "alert": alert["id"]})
         elif what == "loaded":   # NEW (#54): the bring skill waits for this at the station
             return web.json_response({"ok": state.mark_loaded()})
         else:
@@ -673,11 +739,20 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                         status, error = state.agent_message(str(m.get("text", "")), agent_from, "ws")
                         if status != 200:
                             log.info("agent_message not taken: %s", error)
+                elif t in ("tray_loaded", "test_fall", "this_is", "memory_get", "memory_set"):
+                    if not local:
+                        log.warning("%s refused: not from this laptop (%s)", t, request.remote)
+                    else:
+                        reply = state.control_message(m)
+                        if reply is not None:
+                            await sock.send_json(reply)
         finally:
             pusher.cancel()
         return sock
 
     app.add_routes(routes)
+    if state.family is not None:
+        app.add_routes(state.family.routes())   # /family/ws, /family/media (app/family.py)
     if state.mic is not None:   # NEW (#54): the phone's microphone stream, for the agent's hearing
         app.router.add_get("/mic", state.mic)
     return app

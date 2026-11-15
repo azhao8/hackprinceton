@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FakeRobot } from "./fake-robot";
-import { parseServerMessage, type ClientMessage, type Status, type Telemetry } from "./messages";
+import { parseServerMessage, type AgentEvent, type ClientMessage, type MemoryView, type Status, type Telemetry } from "./messages";
 
 /** "sample" is the in-browser fake robot (NEXT_PUBLIC_SERVER_WS_URL=sample). */
 export type Connection = "sample" | "connecting" | "open" | "closed";
@@ -25,6 +25,10 @@ export interface RobotView {
   now: number;
   /** Arrival time of the latest telemetry, ms, or null if none yet. */
   lastAt: number | null;
+  /** The voice agent's latest events (newest last), since this page connected. */
+  agent: AgentEvent[];
+  /** What Miguel knows, after the page asked for it (memory_get) or changed it. */
+  memory: MemoryView | null;
 }
 
 /** The server's WebSocket. Default: the server on this laptop. "sample" uses the in-browser fake robot. */
@@ -43,6 +47,8 @@ const EMPTY_VIEW: RobotView = {
   history: [],
   now: 0,
   lastAt: null,
+  agent: [],
+  memory: null,
 };
 
 export function useRobot() {
@@ -56,6 +62,8 @@ export function useRobot() {
     let status: Status | null = null;
     let lastAt: number | null = null;
     const history: Sample[] = [];
+    let agent: AgentEvent[] = [];
+    let memory: MemoryView | null = null;
 
     const record = (tel: Telemetry) => {
       const at = performance.now();
@@ -89,12 +97,15 @@ export function useRobot() {
         ws = socket;
         socket.onopen = () => {
           connection = "open";
+          socket.send(JSON.stringify({ t: "memory_get" }));
         };
         socket.onmessage = (event) => {
           if (typeof event.data !== "string") return;
           const msg = parseServerMessage(event.data);
           if (msg?.t === "tel") record(msg);
           else if (msg?.t === "status") status = msg;
+          else if (msg?.t === "agent") agent = [...agent.slice(-39), msg];
+          else if (msg?.t === "memory") memory = msg;
         };
         socket.onclose = () => {
           connection = "closed";
@@ -117,7 +128,7 @@ export function useRobot() {
     }
 
     const render = setInterval(() => {
-      setView({ connection, telemetry: latest, status, history: history.slice(), now: performance.now(), lastAt });
+      setView({ connection, telemetry: latest, status, history: history.slice(), now: performance.now(), lastAt, agent, memory });
     }, RENDER_MS);
 
     return () => {

@@ -18,7 +18,7 @@ import json
 import logging
 from typing import Any
 
-from app.brain.prompt import MATCH_PROMPT, MODEL, SCENE_PROMPT, create_message, get_client
+from app.brain.prompt import MATCH_PROMPT, MODEL, QUESTION_PROMPT, SCENE_PROMPT, create_message, get_client
 
 log = logging.getLogger(__name__)
 
@@ -87,15 +87,17 @@ async def describe_scene(
     *,
     model: str = MODEL,
     fallbacks: bool | None = None,
+    question: str | None = None,
 ) -> str:
-    """One or two sentences describing the frame, for the agent."""
+    """One or two sentences describing the frame, for the agent; or the answer to `question` about it."""
+    prompt = QUESTION_PROMPT.format(question=question.strip()) if question and question.strip() else SCENE_PROMPT
     resp = await create_message(
         client or get_client(),
         fallbacks=fallbacks,
         model=model,
         max_tokens=2048,
         output_config={"effort": "low"},
-        messages=[{"role": "user", "content": [image_block(jpeg), {"type": "text", "text": SCENE_PROMPT}]}],
+        messages=[{"role": "user", "content": [image_block(jpeg), {"type": "text", "text": prompt}]}],
     )
     if resp.stop_reason == "refusal":
         raise VisionCheckError("the scene description was declined")

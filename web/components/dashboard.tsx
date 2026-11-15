@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { HISTORY_S, SERVER_WS_URL, useRobot, type Connection } from "@/lib/use-robot";
-import type { ClientMessage, FollowSettings, KeyLetter } from "@/lib/messages";
+import type { AgentEvent, ClientMessage, FollowSettings, KeyLetter, MemoryView } from "@/lib/messages";
 import { LineChart } from "./line-chart";
 
 const STALE_MS = 1000;
@@ -192,6 +192,11 @@ export function Dashboard() {
         </div>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2">
+        <MiguelCard events={robot.agent} send={send} />
+        <MemoryCard memory={robot.memory} send={send} />
+      </div>
+
       <SayCard send={send} />
 
       <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null}
@@ -340,6 +345,118 @@ function SayCard({ send }: { send: (m: ClientMessage) => boolean }) {
             className="rounded-full border border-line bg-background px-3 py-1 text-xs hover:border-accent">{p}</button>
         ))}
       </div>
+    </Card>
+  );
+}
+
+const AGENT_LABEL: Record<string, string> = {
+  heard: "Heard", say: "Miguel says", reply: "To family", plan: "Plan", step: "Step", task: "Task",
+  check_in: "Check-in", place: "Learned place", error: "Error",
+};
+
+/** The voice agent: talk to Miguel as the operator, watch what he hears, says and does. */
+function MiguelCard({ events, send }: { events: AgentEvent[]; send: (m: ClientMessage) => boolean }) {
+  const [text, setText] = useState("");
+  const shown = events.filter((e) => e.kind !== "step").slice(-10).reverse();
+  return (
+    <Card title="Miguel (voice agent)" hint="Mom talks to him by saying “Miguel”; you can type here">
+      <form className="flex gap-2" onSubmit={(e) => {
+        e.preventDefault();
+        if (text.trim()) send({ t: "agent_message", text: text.trim() });
+        setText("");
+      }}>
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="“Bring Mom water”, “follow me”…"
+          className="min-w-0 flex-1 rounded-md border border-line bg-background px-3 py-2 text-sm" />
+        <button type="submit" className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white">Send</button>
+      </form>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Action tone="ok" onClick={() => send({ t: "tray_loaded" })}>Tray loaded</Action>
+        <Action tone="danger" onClick={() => { if (window.confirm("Raise a test fall alert? The family app turns red and Miguel checks on her.")) send({ t: "test_fall" }); }}>
+          Test fall alert
+        </Action>
+      </div>
+      <ul className="mt-3 flex max-h-64 flex-col gap-1.5 overflow-y-auto text-sm">
+        {shown.length === 0 && <li className="text-muted">Nothing yet. With ANTHROPIC_API_KEY set, his events show here.</li>}
+        {shown.map((e) => (
+          <li key={e.id} className="rounded-md border border-line px-2 py-1">
+            <span className="mr-2 text-xs font-semibold text-muted">{AGENT_LABEL[e.kind] ?? e.kind}</span>
+            {e.text || (Array.isArray(e.data.steps) ? (e.data.steps as string[]).join(" → ") : "")}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+/** What Miguel knows (SQLite on the server): people by sight, places (sign cards), facts. */
+function MemoryCard({ memory, send }: { memory: MemoryView | null; send: (m: ClientMessage) => boolean }) {
+  const [person, setPerson] = useState("");
+  const [fact, setFact] = useState({ key: "", value: "" });
+  const [place, setPlace] = useState({ name: "", marker: "" });
+  const input = "min-w-0 flex-1 rounded-md border border-line bg-background px-2 py-1.5 text-sm";
+  const del = "text-xs text-danger hover:underline";
+  return (
+    <Card title="Memory" hint="What Miguel knows; kept across restarts">
+      {!memory ? <p className="text-sm text-muted">Waiting for the server…</p> : (
+        <div className="flex flex-col gap-4 text-sm">
+          <section>
+            <h3 className="mb-1 font-medium">People he knows by sight</h3>
+            <ul className="mb-2 flex flex-wrap gap-2">
+              {memory.people.length === 0 && <li className="text-muted">Nobody yet.</li>}
+              {memory.people.map((n) => (
+                <li key={n} className="rounded-full border border-line px-2 py-0.5">
+                  {n} <button type="button" className={del} onClick={() => send({ t: "memory_set", what: "person", action: "delete", name: n })}>forget</button>
+                </li>
+              ))}
+            </ul>
+            <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (person.trim()) send({ t: "this_is", name: person.trim() }); setPerson(""); }}>
+              <input value={person} onChange={(e) => setPerson(e.target.value)} placeholder="Name of the person in front of him" className={input} />
+              <button type="submit" className="rounded-md border border-line px-3 py-1.5">Save look</button>
+            </form>
+          </section>
+          <section>
+            <h3 className="mb-1 font-medium">Places (sign cards)</h3>
+            <ul className="mb-2 flex flex-col gap-1">
+              {memory.places.map((p) => (
+                <li key={p.name} className="flex items-baseline justify-between gap-2">
+                  <span>{p.name} <span className="text-muted">{p.marker !== null ? `· marker ${p.marker}` : "· no marker"}{p.aliases.length ? ` · ${p.aliases.join(", ")}` : ""}</span></span>
+                  <button type="button" className={del} onClick={() => send({ t: "memory_set", what: "place", action: "delete", name: p.name })}>delete</button>
+                </li>
+              ))}
+            </ul>
+            <form className="flex gap-2" onSubmit={(e) => {
+              e.preventDefault();
+              if (place.name.trim()) send({ t: "memory_set", what: "place", name: place.name.trim(), marker: place.marker.trim() ? Number(place.marker) : null });
+              setPlace({ name: "", marker: "" });
+            }}>
+              <input value={place.name} onChange={(e) => setPlace({ ...place, name: e.target.value })} placeholder="water station" className={input} />
+              <input value={place.marker} onChange={(e) => setPlace({ ...place, marker: e.target.value })} placeholder="marker #" inputMode="numeric" className="w-24 rounded-md border border-line bg-background px-2 py-1.5 text-sm" />
+              <button type="submit" className="rounded-md border border-line px-3 py-1.5">Save</button>
+            </form>
+          </section>
+          <section>
+            <h3 className="mb-1 font-medium">Facts</h3>
+            <ul className="mb-2 flex flex-col gap-1">
+              {memory.facts.length === 0 && <li className="text-muted">Nothing yet.</li>}
+              {memory.facts.map((f) => (
+                <li key={f.key} className="flex items-baseline justify-between gap-2">
+                  <span><span className="font-medium">{f.key}:</span> {f.value} <span className="text-xs text-muted">({f.source})</span></span>
+                  <button type="button" className={del} onClick={() => send({ t: "memory_set", what: "fact", action: "delete", key: f.key })}>delete</button>
+                </li>
+              ))}
+            </ul>
+            <form className="flex gap-2" onSubmit={(e) => {
+              e.preventDefault();
+              if (fact.key.trim()) send({ t: "memory_set", what: "fact", key: fact.key.trim(), value: fact.value.trim() });
+              setFact({ key: "", value: "" });
+            }}>
+              <input value={fact.key} onChange={(e) => setFact({ ...fact, key: e.target.value })} placeholder="evening pills" className={input} />
+              <input value={fact.value} onChange={(e) => setFact({ ...fact, value: e.target.value })} placeholder="blue bottle, 8 pm" className={input} />
+              <button type="submit" className="rounded-md border border-line px-3 py-1.5">Save</button>
+            </form>
+          </section>
+        </div>
+      )}
     </Card>
   );
 }

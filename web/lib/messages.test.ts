@@ -52,3 +52,21 @@ describe("parseServerMessage", () => {
     expect(parseServerMessage(raw)).toBeNull();
   });
 });
+
+describe("agent events and memory", () => {
+  it("parses an agent event and a memory view", () => {
+    expect(parseServerMessage('{"t":"agent","id":4,"kind":"say","text":"On it!","to":"senior","data":{}}')).toEqual({
+      t: "agent", id: 4, kind: "say", text: "On it!", to: "senior", data: {},
+    });
+    const mem = parseServerMessage(
+      '{"t":"memory","on":true,"people":["Mom"],"places":[{"name":"water station","marker":3,"aliases":["water"],"description":""}],' +
+        '"facts":[{"key":"evening pills","value":"blue bottle","source":"agent"}]}',
+    );
+    expect(mem).toEqual({
+      t: "memory", on: true, people: ["Mom"],
+      places: [{ name: "water station", marker: 3, aliases: ["water"], description: "" }],
+      facts: [{ key: "evening pills", value: "blue bottle", source: "agent" }],
+    });
+    expect(parseServerMessage('{"t":"agent","kind":"say"}')).toBeNull();
+  });
+});

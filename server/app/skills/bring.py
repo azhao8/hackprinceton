@@ -6,7 +6,8 @@
 
 No gripper: the item goes in a tray at the station (P-5). Each step's failure ends the skill with
 a text that says which step failed, so the agent can recover (retry, ask, tell the family).
-Progress goes to an optional `on_step(text)` callback (the control page / family app).
+Progress goes to an optional `on_step(stage, text)` callback (the control page / family app). `stage` is a
+fixed name the family app shows (contract/web/family.md): sent, loading, on_the_way, delivered, failed.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ class Bring:
         station: str = "station",
         config: SearchConfig = SearchConfig(),
         load_timeout_s: float = 60.0,  # GUESS: how long to wait at the station for someone to load the tray
-        on_step: Callable[[str], None] | None = None,
+        on_step: Callable[[str, str], None] | None = None,
         marker_for: Callable[[str], int | None] | None = None,
         known_places: Iterable[str] | None = None,
         go_to: Skill | None = None,  # override the sub-skills (tests); defaults are built from the above
@@ -69,13 +70,13 @@ class Bring:
     async def run(self, ctx: SkillContext) -> SkillResult:
         item, station = self.item, self.station
         try:
-            self._step(f"going to the {station}")
+            self._step(f"going to the {station}", "sent")
             r = await self.go_to.run(ctx)
             if not r.ok:
-                return SkillResult(False, f"couldn't get to the {station}: {r.detail}")
+                return self._fail(f"couldn't get to the {station}: {r.detail}")
 
             ctx.stop()  # hold still at the station while it is loaded
-            self._step(f"waiting for the {item} to be put in the tray")
+            self._step(f"waiting for the {item} to be put in the tray", "loading")
             await self._say(f"Please put the {item} in my tray")
             try:
                 loaded = await asyncio.wait_for(self.wait_loaded(), self.load_timeout_s)
@@ -83,28 +84,32 @@ class Bring:
             except TimeoutError:
                 loaded, why = False, f"no confirmation in {self.load_timeout_s:.0f} s"
             if not loaded:
-                return SkillResult(False, f"nobody loaded the tray ({why}); I'm at the {station}")
+                return self._fail(f"nobody loaded the tray ({why}); I'm at the {station}")
 
-            self._step(f"bringing the {item} to {self.who}")
+            self._step(f"bringing the {item} to {self.who}", "on_the_way")
             r = await self.find_person.run(ctx)
             if not r.ok:
-                return SkillResult(False, f"I have the {item} but couldn't find {self.who}: {r.detail}")
+                return self._fail(f"I have the {item} but couldn't find {self.who}: {r.detail}")
 
             ctx.stop()
             await self._say(f"Here is your {item}!")
-            self._step("delivered")
+            self._step("delivered", "delivered")
             return SkillResult(True, f"brought the {item} to {self.who} ({r.detail})")
         finally:
             ctx.stop()
 
-    def _step(self, text: str) -> None:
+    def _step(self, text: str, stage: str) -> None:
         self.step = text
-        log.info("bring: %s", text)
+        log.info("bring: %s (%s)", text, stage)
         if self.on_step is not None:
             try:
-                self.on_step(text)
+                self.on_step(stage, text)
             except Exception:
                 log.exception("bring: on_step callback failed")
+
+    def _fail(self, why: str) -> SkillResult:
+        self._step(why, "failed")
+        return SkillResult(False, why)
 
     async def _say(self, text: str) -> None:
         result = self.say(text)

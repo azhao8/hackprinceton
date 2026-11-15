@@ -46,7 +46,7 @@ def test_happy_path_runs_the_steps_in_order():
     log: list[str] = []
     steps: list[str] = []
     arb = Arbiter()
-    result = run(make(log, on_step=steps.append).run(SkillContext(arb)))
+    result = run(make(log, on_step=lambda stage, text: steps.append(text)).run(SkillContext(arb)))
 
     assert result.ok and result.detail.startswith("brought the water to Mom")
     assert log == [

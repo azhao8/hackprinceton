@@ -124,6 +124,8 @@ class ToolBox:
         memory: dict[str, str] | None = None,
         registry: Any = None,
         perception: Callable[[], Any] | None = None,
+        wait_tray: Callable[[], Awaitable[bool]] | None = None,
+        places: Any = None,
         skill_wait_s: float = 120.0,
         follow_check_s: float = 1.0,
     ):
@@ -138,6 +140,8 @@ class ToolBox:
         perception: returns the vision worker's newest Perception (or None); this_is reads it.
         skill_wait_s: how long a physical tool waits for its skill before reporting "still running".
         follow_check_s: follow returns after this long if it hasn't failed straight away.
+        wait_tray: waits until someone confirms the tray (Tray loaded button or voice); True if confirmed.
+        places: the Memory (SQLite) that learn_place saves into (set_place, place_for).
         """
         self.runner = runner
         self.skill_factories: dict[str, Callable[..., Skill]] = dict(skill_factories or {})
@@ -147,6 +151,8 @@ class ToolBox:
         self.memory: dict[str, str] = memory if memory is not None else {}
         self.registry = registry
         self.perception = perception
+        self.wait_tray = wait_tray
+        self.places = places
         self.photos: OrderedDict[int, bytes] = OrderedDict()
         self.skill_wait_s = skill_wait_s
         self.follow_check_s = follow_check_s
@@ -204,7 +210,13 @@ class ToolBox:
             except Exception:  # noqa: BLE001 - a broken registry must not break every request
                 names = []
             people = f" People you know by sight: {', '.join(names[-max_items:]) or 'nobody yet'}."
-        return (f"Known facts: {text}.{people} "
+        places = ""
+        if self.places is not None:   # places (learn_place) and today's events, from SQLite
+            try:
+                places = " " + self.places.summary()
+            except Exception:  # noqa: BLE001 - a broken store must not break every request
+                places = ""
+        return (f"Known facts: {text}.{people}{places} "
                 f"Doing now: {self._skill_label if doing else 'nothing physical'}.")
 
     async def call(self, name: str, args: dict[str, Any]) -> ToolOutcome:
@@ -283,8 +295,26 @@ class ToolBox:
           "Stop moving right away and cancel the running physical action.",
           {}, self._stop, stepped=False)
         r("describe_scene",
-          "Look through the camera and get a one or two sentence description of what you see now.",
-          {}, self._describe_scene)
+          "Look through the camera. With a question ('what is she holding?', 'what does the label say?', "
+          "'is the stove on?') you get the answer; with null, a one or two sentence description of the scene.",
+          {"question": _nullable_str("What to find out from the picture, or null for a general description.")},
+          self._describe_scene)
+        r("wait_for_tray",
+          "Wait until someone confirms they put something in your tray or took it out (the Tray loaded "
+          "button, or they tell you). Ask them out loud first with say. Returns loaded or timed out.",
+          {"seconds": {"type": "integer", "description": "How long to wait, 5 to 300 seconds."}},
+          self._wait_for_tray)
+        r("check_in_result",
+          "After asking the senior whether a guardian may check in on video now: record their answer. "
+          "yes starts the video, no or no_answer declines it.",
+          {"answer": {"type": "string", "enum": ["yes", "no", "no_answer"], "description": "Their answer."}},
+          self._check_in_result, stepped=False)
+        r("learn_place",
+          "Save the place in front of you: the printed sign card with a marker (for example the water or "
+          "medication station). Give the name if someone said it ('this is the kitchen'); null to read it "
+          "off the sign. Saving a name again replaces it.",
+          {"name": _nullable_str("The place's name, or null to read the sign.")},
+          self._learn_place, stepped=False)
         r("remember",
           "Store a fact in world memory (for example key 'pills', value 'on the kitchen counter'). "
           "Overwrites the old value for that key.",
@@ -294,6 +324,10 @@ class ToolBox:
           "Look up a fact in world memory by key. Returns the value, or the known keys if it's missing.",
           {"key": _str("The key to look up.")},
           self._recall, stepped=False)
+        r("forget",
+          "Delete a fact from world memory (when someone says it's wrong or asks you to forget it).",
+          {"key": _str("The key to delete.")},
+          self._forget, stepped=False)
 
     def _emit(self, kind: EventKind, text: str = "", *, to: Source | None = None,
               data: dict[str, Any] | None = None) -> None:
@@ -407,11 +441,77 @@ class ToolBox:
         jpeg = await self._snap()
         if jpeg is None:
             return ToolOutcome(False, "describe_scene is unavailable: no camera frame right now.")
-        describe = self.describe
-        if describe is None:
+        question = str(a.get("question") or "").strip() or None
+        if self.describe is None:
             from app.brain.vision_check import describe_scene
-            describe = describe_scene
-        return ToolOutcome(True, await describe(jpeg))
+            return ToolOutcome(True, await describe_scene(jpeg, question=question))
+        if question is None:
+            return ToolOutcome(True, await self.describe(jpeg))
+        try:
+            return ToolOutcome(True, await self.describe(jpeg, question=question))   # type: ignore[call-arg]
+        except TypeError:   # an injected describe without questions (tests)
+            return ToolOutcome(True, await self.describe(jpeg))
+
+    async def _wait_for_tray(self, a: dict[str, Any]) -> ToolOutcome:
+        if self.wait_tray is None:
+            return ToolOutcome(False, "wait_for_tray is unavailable (no Tray loaded button on this server).")
+        seconds = min(max(int(60 if a.get("seconds") is None else a["seconds"]), 5), 300)
+        try:
+            ok = await asyncio.wait_for(self.wait_tray(), seconds)
+        except TimeoutError:
+            ok = False
+        if ok:
+            return ToolOutcome(True, "Confirmed: the tray was loaded or emptied.", {"loaded": True})
+        return ToolOutcome(True, f"No confirmation in {seconds} s.", {"loaded": False})
+
+    async def _check_in_result(self, a: dict[str, Any]) -> ToolOutcome:
+        answer = str(a.get("answer", "")).strip()
+        if answer not in ("yes", "no", "no_answer"):
+            return ToolOutcome(False, "answer must be yes, no or no_answer.")
+        self._emit("check_in", answer, data={"answer": answer})
+        return ToolOutcome(True, "Check-in video started." if answer == "yes" else "Check-in declined.",
+                           {"answer": answer})
+
+    async def _learn_place(self, a: dict[str, Any]) -> ToolOutcome:
+        if self.places is None:
+            return ToolOutcome(False, "learn_place is unavailable (no memory on this server).")
+        p = self.perception() if self.perception is not None else None
+        markers = list(getattr(p, "markers", ()) or ())
+        marker = None
+        if markers:   # the biggest (closest) card in view
+            marker = max(markers, key=lambda m: float(getattr(m, "size", 0) or getattr(m, "w", 0) or 0)).id
+        name = str(a.get("name") or "").strip()
+        description = ""
+        if not name or marker is None:
+            jpeg = await self._snap()
+            if jpeg is None and not name:
+                return ToolOutcome(False, "No camera frame to read the sign from. Ask for the place's name.")
+            if jpeg is not None:
+                from app.brain.vision_check import describe_scene
+                q = ("What place or station name is printed on the sign or card in view? Answer with just the "
+                     "name in a few words, or 'none'. Then, after ' | ', describe the spot in one short sentence.")
+                answer = await (self.describe(jpeg, question=q) if self.describe is not None
+                                else describe_scene(jpeg, question=q))
+                read, _, description = answer.partition("|")
+                read = read.strip().strip(".").strip()
+                if not name and read.lower() not in ("", "none", "no sign"):
+                    name = read
+        if not name:
+            return ToolOutcome(False, "I couldn't read a name on a sign. Ask what this place is called.")
+        if marker is None and not description:
+            return ToolOutcome(False, f"No marker card in view for {name!r}. Ask them to hold the card in front of you.")
+        place = self.places.set_place(name, marker=marker, description=description.strip())
+        self._emit("place", place["name"], data={"name": place["name"], "marker": marker})
+        where = f"marker {marker}" if marker is not None else "its look (no marker; slower to find)"
+        return ToolOutcome(True, f"Saved the place {place['name']!r} by {where}.", place)
+
+    async def _forget(self, a: dict[str, Any]) -> ToolOutcome:
+        key = str(a.get("key", "")).strip()
+        if key in self.memory:
+            del self.memory[key]
+            return ToolOutcome(True, f"Forgot {key}.")
+        keys = ", ".join(self.memory) or "none"
+        return ToolOutcome(True, f"Nothing remembered for {key!r}. Known keys: {keys}.")
 
     async def _remember(self, a: dict[str, Any]) -> ToolOutcome:
         key, value = str(a.get("key", "")).strip(), str(a.get("value", "")).strip()

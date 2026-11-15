@@ -708,11 +708,15 @@ def make_this_is(registry: Any, vision: Any) -> Callable[[str], Any] | None:
 
 
 def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Callable[[str], Any] | None = None,
-                         wait_loaded: Callable[[], Any] | None = None, registry: Any = None) -> dict[str, Callable[..., Any]]:
+                         wait_loaded: Callable[[], Any] | None = None, registry: Any = None,
+                         memory: Any = None, on_step: Callable[[str, str], None] | None = None
+                         ) -> dict[str, Callable[..., Any]]:
     """Skills the agent may start, by tool name (app/brain/tools.py: each factory takes the tool's
     arguments as keywords). Only with a camera (`follow_factory` is None without vision): every
     physical skill needs to see. bring also needs `say` and `wait_loaded` (the Tray loaded button).
-    `registry` (make_registry) is the saved looks find_person and bring match against."""
+    `registry` (make_registry) is the saved looks find_person and bring match against.
+    `memory` (app.memory.Memory): places by marker for go_to and bring (which station holds the item).
+    `on_step(stage, text)`: bring's progress, for the family app (app/family.py)."""
     factories: dict[str, Callable[..., Any]] = {}
     if follow_factory is None:
         return factories
@@ -728,13 +732,28 @@ def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Calla
     except Exception as e:
         log.warning("agent: no description check for find_person (%s)", e)
     factories["find_person"] = lambda name=None, description=None, **_: FindPerson(name, description, registry, matcher)
-    factories["go_to"] = lambda place, **_: GoTo(place)
+    places: dict[str, Any] = {}
+    if memory is not None:
+        places = {"marker_for": memory.marker_for, "known_places": memory.known_places()}
+
+    def go_to(place: str, **_: Any) -> Any:
+        if memory is not None:
+            places["known_places"] = memory.known_places()   # learn_place may have added one since
+        return GoTo(place, **places)
+
+    def station_for(item: str) -> str:
+        p = memory.find_place(item, with_marker=True) if memory is not None else None   # "water" -> "water station"
+        return p["name"] if p is not None else "station"
+
+    factories["go_to"] = go_to
     if say is not None and wait_loaded is not None:
         try:
             from app.skills.bring import Bring
 
-            factories["bring"] = lambda item, person=None, **_: Bring(item, person, wait_loaded, say,
-                                                                      registry=registry, matcher=matcher)
+            factories["bring"] = lambda item, person=None, **_: Bring(
+                item, person, wait_loaded, say, registry=registry, matcher=matcher, station=station_for(item),
+                on_step=on_step, **({"marker_for": memory.marker_for, "known_places": memory.known_places()}
+                                    if memory is not None else {}))
         except Exception as e:
             log.warning("agent: bring unavailable (%s)", e)
     return factories
@@ -743,6 +762,8 @@ def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Calla
 def on_agent_event(state: Any, ev: Any) -> None:
     """An agent event: to the API (/agent/events, /ws) and, for `say`, to the phone's say queue."""
     d = state.publish_agent_event(ev)
+    if getattr(state, "family", None) is not None:
+        state.family.on_agent_event(d)
     if d.get("kind") == "say":
         state.add_say(str(d.get("text", "")))
         hub = getattr(state.mic, "hub", None)
@@ -752,7 +773,17 @@ def on_agent_event(state: Any, ev: Any) -> None:
         log.info("agent %s: %s", d["kind"], str(d.get("text", ""))[:120])
 
 
-def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None) -> Any:
+def make_memory() -> Any:
+    """Miguel's SQLite memory (server/miguel.db), with the printed-marker places as a first seed."""
+    from app.memory import Memory
+    from app.vision import places
+
+    path = os.environ.get("MIGUEL_DB") or None   # tests point it at a temp file
+    return Memory(**({"path": path} if path else {}), seed_places=places.places(), seed_aliases=places.ALIASES)
+
+
+def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None,
+               memory: Any = None) -> Any:
     """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
     `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -762,12 +793,16 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
         from app.brain.agent import Agent
         from app.brain.tools import ToolBox
 
+        family = getattr(state, "family", None)
         factories = make_skill_factories(follow_factory, say=state.add_say, wait_loaded=state.wait_loaded,
-                                         registry=registry)
+                                         registry=registry, memory=memory,
+                                         on_step=family.on_bring_step if family is not None else None)
         toolbox = ToolBox(app.skills, factories, save_photo=state.save_photo,
                           snapshot=make_snapshot(app.vision) if app.vision is not None else None,
                           registry=registry,
-                          perception=app.vision.latest if app.vision is not None else None)
+                          perception=app.vision.latest if app.vision is not None else None,
+                          wait_tray=state.wait_loaded,
+                          memory=memory.facts if memory is not None else None, places=memory)
         agent = Agent(toolbox, events_cb=lambda ev: on_agent_event(state, ev))
     except Exception as e:
         log.warning("agent: off (%s)", e)
@@ -840,8 +875,13 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
             state.guardian_token = os.environ.get("GUARDIAN_TOKEN") or None
             registry = make_registry() if vision is not None else None   # ONE instance for everyone (#62)
             state.this_is = make_this_is(registry, vision)
+            memory = make_memory()   # SQLite: facts, places, Mom's day (server/miguel.db)
+            from app.family import FamilyHub
+
+            state.family = FamilyHub(state, memory, snapshot=make_snapshot(vision) if vision is not None else None)
+            state.memory, state.registry = memory, registry
             # The agent's follow uses the control page's follow settings (api_state wraps the factory).
-            agent = make_agent(app, state, app._follow_factory or follow_factory, registry)   # sets state.agent_inbox
+            agent = make_agent(app, state, app._follow_factory or follow_factory, registry, memory)   # sets state.agent_inbox
             if agent is not None:
                 stt = make_hearing(state, args.wake_word or None)   # sets state.mic, before the routes are made
             runner, _ = await api.start(state, args.http_port, args.https_port or None)

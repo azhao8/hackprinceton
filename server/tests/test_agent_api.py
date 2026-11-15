@@ -336,8 +336,9 @@ class FakeAgent:
 
 class FakeToolBox:
     def __init__(self, runner=None, skill_factories=None, *, snapshot=None, describe=None, save_photo=None,
-                 registry=None, perception=None):
+                 registry=None, perception=None, **more):
         self.runner, self.skill_factories, self.snapshot = runner, skill_factories, snapshot
+        self.more = more   # wait_tray, memory, places (Alex's integration)
         self.save_photo, self.registry, self.perception = save_photo, registry, perception
 
 
@@ -474,7 +475,8 @@ def test_skill_factories_build_skills_from_the_tools_arguments(brain):
     assert f["go_to"](place="kitchen").args == ("kitchen",)
     b = f["bring"](item="water", person="Mom")
     assert b.args == ("water", "Mom", wait_loaded, say)
-    assert b.kw == {"registry": "registry", "matcher": vision_check.matches_description}
+    assert b.kw == {"registry": "registry", "matcher": vision_check.matches_description, "station": "station",
+                    "on_step": None}
     assert not FakeRegistry.made   # the caller makes the one registry (serve), not the factories
     assert server.make_skill_factories(None) == {}                        # no camera: none
     assert "bring" not in server.make_skill_factories(lambda: 1)          # no say / wait_loaded: no bring

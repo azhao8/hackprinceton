@@ -21,6 +21,8 @@ EventKind = Literal[
     "step",       # a plan step changed: data = {"index": int, "status": "running"|"done"|"failed", "detail": str}
     "task",       # task lifecycle: data = {"id": str, "status": "started"|"done"|"failed"|"cancelled", "summary": str}
     "error",      # something went wrong (shown on the control page, short text)
+    "check_in",   # the senior answered a check-in request: data = {"answer": "yes"|"no"|"no_answer"}
+    "place",      # a place was learned or changed: data = {"name": str, "marker": int|None}
 ]
 
 
