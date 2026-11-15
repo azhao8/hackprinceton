@@ -23,6 +23,15 @@ Offline: the model and voice are read from the local Hugging Face cache only (ne
 runtime), and spaCy's en_core_web_sm comes from the local group. `from_env()` returns None, with a
 log line saying why, when mlx-audio or the model is missing; the server then tries Cartesia.
 
+Cloned voice (#84, MIGUEL_TTS=clone): `QwenCloneEngine` runs Qwen3-TTS 0.6B Base, which copies the
+voice in a reference clip (default models/miguel-voice/full.wav, Miguel's Cartesia voice, with its
+transcript in full.txt next to it; git-ignored, made by `python -m app.speech.make_voice_ref`).
+Same client (`KokoroTTS.clone_from_env()`), same WAV out. Qwen is
+always run with stream=True inside, even though a line still leaves as one WAV: without streaming it
+decodes the whole reference again on every call (about 0.25 s more). Measured on the M5 Pro: about
+0.4 s for "On it!", 1 s for a long sentence, 0.18 s to the first chunk, 4.6 s for the first line after
+loading (encoding the reference; done by the warm-up). It ignores the speed setting.
+
 Text: emojis and markdown are dropped before speaking (Kokoro would otherwise read "asterisk" or
 skip oddly), then `normalize_text` collapses whitespace and caps the length, as for Cartesia.
 """
@@ -54,6 +63,9 @@ DEFAULT_VOICE = "af_heart"
 SAMPLE_RATE = 24000
 SPLIT_SENTENCES = r"(?<=[.!?])\s+"   # one segment per sentence: the first one is ready sooner
 WARMUP_LINE = "Hello there."
+CLONE_REPO = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
+CLONE_REF = Path(__file__).resolve().parents[2] / "models" / "miguel-voice" / "full.wav"
+CLONE_CHUNK_S = 0.32     # Qwen streaming step: the MLX lock is let go between chunks
 ESPEAK_MAX_PATH = 159                # espeak-ng ignores a data path of 160+ characters (N_PATH_HOME)
 
 
@@ -196,6 +208,59 @@ class KokoroEngine:
             yield np.asarray(seg.audio, dtype=np.float32)
 
 
+def find_clone(repo: str = CLONE_REPO, ref: Path = CLONE_REF) -> tuple[Path | None, str | None, str | None]:
+    """(model snapshot, reference transcript, None), or (None, None, why not). Never touches the network."""
+    for mod in ("mlx", "mlx_audio", "huggingface_hub"):
+        if importlib.util.find_spec(mod) is None:
+            return None, None, f"{mod} is not installed (run: cd server && uv sync --group local)"
+    ref = Path(ref)
+    if not ref.is_file():
+        return None, None, f"the reference clip {ref} is missing (MIGUEL_CLONE_REF)"
+    txt = ref.with_suffix(".txt")
+    if not txt.is_file() or not txt.read_text().strip():
+        return None, None, f"the reference clip needs its exact transcript in {txt}"
+    try:
+        from huggingface_hub import snapshot_download
+
+        path = Path(snapshot_download(repo, local_files_only=True))
+    except Exception as e:  # noqa: BLE001
+        return None, None, (f"the model {repo} is not downloaded ({type(e).__name__}; "
+                            f"run: cd server && uv run hf download {repo})")
+    if not (path / "config.json").is_file():
+        return None, None, f"the model snapshot {path} has no config.json (download it again)"
+    return path, " ".join(txt.read_text().split()), None
+
+
+class QwenCloneEngine:
+    """Qwen3-TTS Base through mlx-audio, speaking in the voice of a reference clip."""
+
+    def __init__(self, model_path: Path, ref_audio: Path, ref_text: str) -> None:
+        self.model_path = Path(model_path)
+        self.ref_audio_path = Path(ref_audio)
+        self.ref_text = ref_text
+        self._model: Any = None
+        self._ref: Any = None
+
+    def load(self) -> None:
+        from mlx_audio.tts.utils import load_model
+        from mlx_audio.utils import load_audio
+
+        self._model = load_model(self.model_path)
+        self._ref = load_audio(str(self.ref_audio_path), sample_rate=SAMPLE_RATE)
+
+    def prepare(self) -> None:
+        """Nothing CPU-only to do; the warm-up line encodes the reference (cached by mlx-audio)."""
+
+    def segments(self, text: str, voice: str, speed: float) -> Iterator[Any]:
+        import numpy as np
+
+        for sentence in (s for s in re.split(SPLIT_SENTENCES, text) if s.strip()):
+            for chunk in self._model.generate(text=sentence, ref_audio=self._ref, ref_text=self.ref_text,
+                                              lang_code="english", stream=True,
+                                              streaming_interval=CLONE_CHUNK_S, split_pattern=""):
+                yield np.asarray(chunk.audio, dtype=np.float32)
+
+
 # --- the client --------------------------------------------------------------
 
 class KokoroTTS:
@@ -237,6 +302,7 @@ class KokoroTTS:
         self._tasks: set[asyncio.Task[None]] = set()
         self._load: asyncio.Task[None] | None = None
         self._one_line: asyncio.Lock | None = None   # made lazily, inside the running loop
+        self.label = "Kokoro"
 
     def __repr__(self) -> str:
         return f"KokoroTTS(voice={self.voice!r}, speed={self.speed!r})"
@@ -251,6 +317,20 @@ class KokoroTTS:
             return None
         log.info("local voice on: Kokoro-82M, voice %s (%s)", voice, path)
         return cls(voice, model_path=path)
+
+    @classmethod
+    def clone_from_env(cls, env: Mapping[str, str] = os.environ) -> KokoroTTS | None:
+        """The cloned voice (MIGUEL_CLONE_REF, MIGUEL_CLONE_MODEL), or None with a log line saying why."""
+        ref = Path((env.get("MIGUEL_CLONE_REF") or "").strip() or CLONE_REF)
+        repo = (env.get("MIGUEL_CLONE_MODEL") or "").strip() or CLONE_REPO
+        path, ref_text, problem = find_clone(repo, ref)
+        if path is None:
+            log.warning("cloned voice unavailable: %s", problem)
+            return None
+        log.info("cloned voice on: %s, from %s", repo, ref)
+        tts = cls(f"clone:{ref.stem}", engine=QwenCloneEngine(path, ref, ref_text or ""))
+        tts.label = "the cloned voice (Qwen3-TTS)"
+        return tts
 
     # --- public ---------------------------------------------------------------
 
@@ -352,9 +432,9 @@ class KokoroTTS:
         except TTSError:
             raise
         except Exception as e:  # noqa: BLE001
-            log.exception("local voice: loading Kokoro failed")
+            log.exception("local voice: loading %s failed", self.label)
             raise TTSError(f"the local voice failed to load: {type(e).__name__}: {e}") from None
-        log.info("local voice: Kokoro loaded and warm in %.1f s", time.perf_counter() - t0)
+        log.info("local voice: %s loaded and warm in %.1f s", self.label, time.perf_counter() - t0)
 
     def _locked(self, fn, *args):
         with self._lock:
