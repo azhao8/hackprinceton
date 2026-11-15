@@ -829,12 +829,29 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
 
 def make_hearing(state: Any, wake_word: str | None) -> Any:
     """The phone's /mic, through speech-to-text into the agent's inbox; returns the STT (to close) or None.
-    Without CARTESIA_API_KEY /mic is still mounted and drops the audio, so the phone page works the same."""
+    MIGUEL_STT picks it: cartesia (default) or local (Parakeet + Silero on this Mac, app/speech/stt_local.py;
+    if its packages or model are missing it says so and uses Cartesia when there is a key).
+    Without any STT /mic is still mounted and drops the audio, so the phone page works the same."""
     try:
         from app.speech.mic import make_mic_handler
         from app.speech.stt import CartesiaSTT
 
-        stt = CartesiaSTT.from_env()
+        choice = (os.environ.get("MIGUEL_STT") or "cartesia").strip().lower()
+        if choice not in ("cartesia", "local"):
+            log.warning("hearing: MIGUEL_STT=%r is not cartesia or local: using cartesia", choice)
+            choice = "cartesia"
+        stt: Any = None
+        if choice == "local":
+            from app.speech.stt_local import LocalSTT
+
+            stt = LocalSTT.from_env(fallback=CartesiaSTT.from_env)   # Cartesia only if loading fails later
+            if stt is None:
+                log.warning("hearing: local speech-to-text unavailable (see above); trying Cartesia")
+                choice = "cartesia"
+            else:
+                stt.start_loading()          # load and warm up in the background
+        if stt is None:
+            stt = CartesiaSTT.from_env()
         state.mic = make_mic_handler(stt, state.agent_inbox, wake_word=wake_word)
     except Exception as e:
         log.warning("hearing: off (%s)", e)
@@ -842,7 +859,7 @@ def make_hearing(state: Any, wake_word: str | None) -> Any:
     if stt is None:
         log.info("hearing: off (CARTESIA_API_KEY not set); /mic drops the phone's audio")
     else:
-        log.info("hearing: on, /mic (wake word: %s)", wake_word or "none")
+        log.info("hearing: on (%s), /mic (wake word: %s)", choice, wake_word or "none")
     return stt
 
 

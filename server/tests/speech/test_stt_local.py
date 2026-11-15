@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -402,6 +403,55 @@ def test_find_model_needs_both_files(tmp_path):
     (tmp_path / "config.json").write_text("{}")
     (tmp_path / "model.safetensors").write_bytes(b"")
     assert stt_local.find_model(str(tmp_path)) == str(tmp_path)
+
+
+# --- make_hearing (app/__main__.py) --------------------------------------------------------------
+
+def _state():
+    return SimpleNamespace(agent_inbox=asyncio.Queue(), mic=None)
+
+
+def test_make_hearing_default_is_cartesia(monkeypatch):
+    from app.__main__ import make_hearing
+    from app.speech.stt import CartesiaSTT
+
+    monkeypatch.delenv("MIGUEL_STT", raising=False)
+    monkeypatch.setenv("CARTESIA_API_KEY", "k")
+    state = _state()
+    stt = make_hearing(state, "Miguel")
+    assert isinstance(stt, CartesiaSTT) and state.mic.hub.stt is stt
+
+
+def test_make_hearing_local(monkeypatch):
+    from app.__main__ import make_hearing
+
+    made = make()
+    seen = {}
+
+    def from_env(env=None, *, fallback=None):
+        seen["fallback"] = fallback
+        return made
+
+    monkeypatch.setenv("MIGUEL_STT", "local")
+    monkeypatch.setenv("CARTESIA_API_KEY", "k")
+    monkeypatch.setattr(LocalSTT, "from_env", staticmethod(from_env))
+    state = _state()
+    stt = make_hearing(state, "Miguel")
+    assert stt is made and state.mic.hub.stt is made and callable(seen["fallback"])
+
+
+def test_make_hearing_local_unavailable_falls_back_to_cartesia(monkeypatch, caplog):
+    from app.__main__ import make_hearing
+    from app.speech.stt import CartesiaSTT
+
+    monkeypatch.setenv("MIGUEL_STT", "local")
+    monkeypatch.setenv("CARTESIA_API_KEY", "k")
+    monkeypatch.setattr(LocalSTT, "from_env", staticmethod(lambda env=None, *, fallback=None: None))
+    stt = make_hearing(_state(), "Miguel")
+    assert isinstance(stt, CartesiaSTT) and "trying Cartesia" in caplog.text
+    monkeypatch.delenv("CARTESIA_API_KEY")
+    state = _state()
+    assert make_hearing(state, "Miguel") is None and state.mic.hub.stt is None   # /mic still mounted
 
 
 # --- the real models (macOS with `uv sync --group local` and the model cached) --------------------
