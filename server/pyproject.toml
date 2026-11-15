@@ -15,9 +15,19 @@ dev = [
     "jsonschema>=4.26.0",
     "pytest>=8",
 ]
+local = [
+    "en-core-web-sm ; sys_platform == 'darwin'",
+    "misaki[en]==0.9.4 ; sys_platform == 'darwin'",
+    "mlx-audio==0.6.5 ; sys_platform == 'darwin'",
+    "parakeet-mlx==0.7.0 ; sys_platform == 'darwin'",
+    "silero-vad==6.2.3 ; sys_platform == 'darwin'",
+]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
