@@ -34,7 +34,7 @@ const tick = () => new Promise(r => setImmediate(r));
 const START = { type: 'call', call: 'c4', on: true, by: 'Sarah' };
 
 test('the layout: the face until a call, then the caller on top, her bubble and a big End button', () => {
-  assert.deepEqual(view({ call: null }), { face: true, remote: false, self: false, end: false, label: '' });
+  assert.deepEqual(view({ call: null }), { face: true, remote: false, self: false, end: false, initial: '', label: '' });
   const connecting = view({ call: { call: 'c4', by: 'Sarah' }, remote: false, self: true, state: 'connecting' });
   assert.equal(connecting.face, false);
   assert.equal(connecting.remote, true);
@@ -44,6 +44,29 @@ test('the layout: the face until a call, then the caller on top, her bubble and 
   assert.equal(view({ call: { call: 'c4', by: 'Sarah' }, remote: true, self: true, state: 'connected' }).label, 'Sarah');
   assert.equal(view({ call: { call: 'c4', by: 'Sarah' }, remote: true, self: false, state: 'failed' }).label, 'Reconnecting to Sarah…');
   assert.equal(view({ call: { call: 'c4', by: 'Sarah' }, remote: true, self: false }).self, false);   // no camera: no bubble
+});
+
+test('connected without the caller\'s video (their page had no camera): camera off and their initial, not "Connecting"', () => {
+  const off = view({ call: { call: 'c4', by: 'Sarah' }, remote: false, video: false, self: true, state: 'connected' });
+  assert.equal(off.label, 'Sarah · camera off');
+  assert.equal(off.initial, 'S');
+  // their video is on its way: still connecting, no letter
+  const coming = view({ call: { call: 'c4', by: 'Sarah' }, remote: false, video: true, self: true, state: 'connected' });
+  assert.equal(coming.label, 'Connecting to Sarah…');
+  assert.equal(coming.initial, '');
+  assert.equal(view({ call: { call: 'c4', by: 'Sarah' }, remote: false, video: false, state: 'connecting' }).label, 'Connecting to Sarah…');
+});
+
+test('onChange says whether the caller sends video', async () => {
+  const p = phone();
+  p.call.message(START);
+  await tick();
+  assert.equal(p.last().video, false);
+  const pc = p.peers[0];
+  const track = { kind: 'video' };
+  const stream = { getVideoTracks: () => [track], getTracks: () => [track], addTrack() {} };
+  pc.ontrack({ track, streams: [stream] });
+  assert.equal(p.last().video, true);
 });
 
 test('a call offers with her camera and mic, and the answer and candidates complete it', async () => {
