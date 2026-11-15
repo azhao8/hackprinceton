@@ -40,7 +40,7 @@ class FakeStream:
                     await asyncio.sleep(0)
                     if self.probe is not None:
                         self.probe()
-            yield SimpleNamespace(type="content_block_stop", index=i)
+            yield SimpleNamespace(type="content_block_stop", index=i, content_block=b)   # the SDK's snapshot
 
     async def get_final_message(self):
         return self.message
@@ -355,3 +355,46 @@ def test_stream_message_falls_back_to_create_and_merges_betas():
     plain = FakeClient([msg(text("hi"), stop="end_turn")])
     assert asyncio.run(stream_message(plain, fallbacks=False, on_event=print, model="m", max_tokens=5,
                                       messages=[])).content[0].text == "hi"
+
+
+# --- early say: a say() call is spoken when its block finishes, not after the whole response ------
+
+
+def test_say_is_spoken_as_soon_as_its_block_finishes_streaming():
+    seen = []
+    client = StreamClient([
+        msg(tool("say", "s1", text="Okay, backing up a little."), text("Backing up now, as asked."),
+            tool("move", "m1", distance_m=-0.2)),
+        msg(text("Backed up."), stop="end_turn"),
+    ])
+    agent = Agent(ToolBox(), client=client, ack=False)
+    client.beta.messages.probe = lambda: seen.append(list(says(agent)))
+    run(agent, Utterance("senior", "back up a bit", meta={"channel": "mic"}))
+    assert seen and seen[0] == ["Okay, backing up a little."]     # said while the response still streamed
+    assert says(agent) == ["Okay, backing up a little."]          # once; the text after it is only a log note
+    results = client.calls[1]["messages"][-1]["content"]
+    assert results[0]["tool_use_id"] == "s1" and results[0]["content"] == "Said it out loud."
+
+
+def test_early_say_can_be_switched_off():
+    seen = []
+    client = StreamClient([
+        msg(tool("say", "s1", text="Okay, backing up a little."), text("Note."), tool("move", "m1")),
+        msg(text("Backed up."), stop="end_turn"),
+    ])
+    agent = Agent(ToolBox(), client=client, ack=False)
+    agent.early_say = False
+    client.beta.messages.probe = lambda: seen.append(list(says(agent)))
+    run(agent, Utterance("senior", "back up a bit", meta={"channel": "mic"}))
+    assert seen and "Okay, backing up a little." not in seen[0]
+    assert "Okay, backing up a little." in says(agent)
+
+
+def test_early_say_skips_a_repeat_of_the_streamed_text():
+    client = StreamClient([
+        msg(text("On my way to you. "), tool("say", "s1", text="On my way to you!")),
+        msg(text("Done."), stop="end_turn"),
+    ])
+    agent = Agent(ToolBox(), client=client, ack=False)
+    run(agent, Utterance("senior", "come here", meta={"channel": "mic"}))
+    assert says(agent) == ["On my way to you."]

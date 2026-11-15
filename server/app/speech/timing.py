@@ -60,6 +60,11 @@ class TurnTimer:
         if self._turn is not None and self._turn["id"] is None and _norm(text) == self._turn["text"]:
             self._turn["id"] = sid
 
+    def narrow(self, full: str, first: str) -> None:
+        """The turn's first line goes to the phone in pieces (sentences): follow the first piece."""
+        if self._turn is not None and self._turn["id"] is None and _norm(full) == self._turn["text"]:
+            self._turn["text"] = _norm(first)
+
     def mark(self, stage: str, text: str | None = None) -> None:
         """A stage of the current turn's first line (once; `text` must be that line if given)."""
         t = self._turn

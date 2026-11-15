@@ -103,6 +103,7 @@ async def create_message(client: Any, *, fallbacks: bool | None = None, **params
 
 
 StreamEvent = Callable[[str, Any], None]   # ("text", delta) | ("block_start", block type) | ("block_stop", None)
+#                                           | ("tool_done", the finished tool_use block: its input is complete)
 
 
 async def stream_message(client: Any, *, fallbacks: bool | None = None, on_event: StreamEvent | None = None,
@@ -123,6 +124,9 @@ async def stream_message(client: Any, *, fallbacks: bool | None = None, on_event
                 on_event("block_start", getattr(ev.content_block, "type", None))
             elif kind == "content_block_stop":
                 on_event("block_stop", None)
+                block = getattr(ev, "content_block", None)   # the SDK's snapshot of the finished block
+                if getattr(block, "type", None) == "tool_use":
+                    on_event("tool_done", block)
         return await s.get_final_message()
 
 
