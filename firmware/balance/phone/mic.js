@@ -9,10 +9,16 @@
 //
 // Half-duplex: while Miguel is talking (Voice.busy(), or Safari's speechSynthesis.speaking) and for
 // 300 ms after, the frames are zeros: Cartesia wants an unbroken stream, and Miguel must not hear
-// himself. The page also tells the server {"type":"voice","busy":...} so it knows when he spoke.
+// himself. The page also tells the server {"type":"voice","busy":...,"text":...,"id":...} when he
+// starts or stops talking and when the next line starts playing (Voice.current()), so the server
+// knows what he said last (a question opens a short answer window) and when the audio started.
+//
+// The same socket brings messages from the server (server/app/speech/mic.py): window.onMicMessage(msg),
+// if set, gets each one ({type: 'listen', on, why} and {type: 'say', id, text}). Mic.send(obj) sends
+// one (tap-to-talk: {type: 'listen'}).
 //
 // window.onMicLevel(level, state), if set, gets the input level (0..1, RMS) about 25 times a second,
-// with state = { sending, muted, connected }: a hook for the face to show "listening".
+// with state = { sending, muted, connected }.
 (function (root) {
   'use strict';
 
@@ -71,7 +77,7 @@ registerProcessor('mic-tap', MicTap);`;
   function makeMic() {
     let ctx = null, stream = null, src = null, node = null, sink = null, ws = null;
     let running = false, down = null, frame = new Int16Array(FRAME_SAMPLES), fill = 0;
-    let quietUntil = 0, lastBusy = false, retry = 0, retryTimer = null, level = 0, frameLevel = 0, frameN = 0;
+    let quietUntil = 0, lastVoice = '', retry = 0, retryTimer = null, level = 0, frameLevel = 0, frameN = 0;
 
     function voiceBusy() {
       try {
@@ -81,12 +87,22 @@ registerProcessor('mic-tap', MicTap);`;
       return typeof speechSynthesis !== 'undefined' && !!speechSynthesis.speaking;
     }
 
+    function voiceLine() {                                    // the line playing now: {text, id, n} or null
+      try {
+        if (typeof Voice !== 'undefined' && Voice && typeof Voice.current === 'function') return Voice.current();
+      } catch (e) {}
+      return null;
+    }
+
     function muted() {                                        // Miguel is talking, or just stopped
-      const now = Date.now(), busy = voiceBusy();
+      const now = Date.now(), busy = voiceBusy(), line = busy ? voiceLine() : null;
       if (busy) quietUntil = now + TAIL_MS;
-      if (busy !== lastBusy) {
-        lastBusy = busy;
-        sendJSON({ type: 'voice', busy });
+      const key = busy + '|' + (line ? line.n : '');
+      if (key !== lastVoice) {                                // started, stopped, or the next line began
+        lastVoice = key;
+        const msg = { type: 'voice', busy };
+        if (line) { msg.text = line.text; if (typeof line.id === 'number') msg.id = line.id; }
+        sendJSON(msg);
       }
       return busy || now < quietUntil;
     }
@@ -101,7 +117,12 @@ registerProcessor('mic-tap', MicTap);`;
       let sock;
       try { sock = new WebSocket(url); } catch (e) { return reconnect(); }
       sock.binaryType = 'arraybuffer';
-      sock.onopen = () => { retry = 0; lastBusy = !voiceBusy(); muted(); };   // re-announce the voice state
+      sock.onopen = () => { retry = 0; lastVoice = ''; muted(); };   // re-announce the voice state
+      sock.onmessage = e => {                                  // the server: listening state, say lines
+        if (typeof e.data !== 'string' || typeof root.onMicMessage !== 'function') return;
+        let msg; try { msg = JSON.parse(e.data); } catch (err) { return; }
+        try { root.onMicMessage(msg); } catch (err) {}
+      };
       sock.onclose = () => { if (ws === sock) { ws = null; reconnect(); } };
       sock.onerror = () => {};                                // onclose follows
       ws = sock;
@@ -196,6 +217,7 @@ registerProcessor('mic-tap', MicTap);`;
         if (ctx) ctx.close().catch(() => {});
         ctx = stream = src = node = sink = null; fill = 0;
       },
+      send(obj) { if (!ws || ws.readyState !== 1) return false; sendJSON(obj); return true; },   // e.g. tap-to-talk
       get running() { return running; },
       get connected() { return !!ws && ws.readyState === 1; },
       get level() { return level; },
