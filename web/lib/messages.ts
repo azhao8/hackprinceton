@@ -30,13 +30,21 @@ export interface FollowSettings {
   speed: number;
   distance: number;
   voice: boolean;
-  /** Which phone camera: back (default) or front (the screen faces the person). */
+  /** Which phone camera: front (default, the screen faces the person) or back. */
   camera?: "back" | "front";
   /** Flip the phone's frames left-right before vision (front cameras can send mirrored frames). */
   mirror?: boolean;
   /** The Drive card's top speed (m/s) and turn rate (rad/s); the voice agent's move uses them too. */
   drive_speed?: number;
   turn_rate?: number;
+}
+
+/** What each control page slider resets to (#105): the server's defaults for the current follow mode. */
+export interface SliderDefaults {
+  speed: number;
+  distance: number;
+  drive_speed: number;
+  turn_rate: number;
 }
 
 /** Start waits until the robot is held upright and steady, then balances (server/app/robot_watch.py). */
@@ -60,6 +68,8 @@ export interface Status {
   link: boolean;
   estop: boolean;
   settings: FollowSettings;
+  /** The sliders' defaults; null from a server older than #105 (then no reset for the follow sliders). */
+  defaults: SliderDefaults | null;
   lag_ms: number | null;
   skill: string | null;
   vision: VisionInfo | null;
@@ -178,6 +188,13 @@ function parseSettings(v: unknown): FollowSettings | null {
   return out;
 }
 
+function parseDefaults(v: unknown): SliderDefaults | null {
+  if (typeof v !== "object" || v === null) return null;
+  const d = v as Record<string, unknown>;
+  if (!num(d.speed) || !num(d.distance) || !num(d.drive_speed) || !num(d.turn_rate)) return null;
+  return { speed: d.speed, distance: d.distance, drive_speed: d.drive_speed, turn_rate: d.turn_rate };
+}
+
 function parseVision(v: unknown): VisionInfo | null {
   if (typeof v !== "object" || v === null) return null;
   const x = v as Record<string, unknown>;
@@ -200,6 +217,7 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     link: m.link,
     estop: m.estop,
     settings,
+    defaults: parseDefaults(m.defaults),
     lag_ms: num(m.lag_ms) ? m.lag_ms : null,
     skill: typeof m.skill === "string" ? m.skill : null,
     vision: parseVision(m.vision),

@@ -40,6 +40,8 @@ tts, trim_shift, lag_ms, skill}` about twice a second.
 Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
 reads them from `/tel` (decision 0053: the phone is the robot's eye, every control is on the laptop).
+NEW (#105): the status carries `defaults` {speed, distance, drive_speed, turn_rate}, what each slider
+resets to for the current follow mode; the camera starts on "front".
 
 Start (#79, decision 0059): the API sends `g` only after a person pressed Start (control page or the
 robot's phone) and the robot is then held upright and steady (app/robot_watch.py). Skills, the agent
@@ -156,12 +158,23 @@ SPEED_MIN, SPEED_MAX = 0.05, 3.2
 DRIVE_SPEED_DEFAULT, DRIVE_SPEED_MIN = 1.1, 0.1
 TURN_RATE_DEFAULT, TURN_RATE_MIN, TURN_RATE_MAX = 1.0, 0.5, 1.5
 KEPT_ON_MODE_CHANGE = ("voice", "camera", "mirror", "drive_speed", "turn_rate")
+# Sun Nov 15 (#105, Alex): the phone starts on its front (selfie) camera. Forward follows the camera
+# in use (app.link.ReversedLink, tied to this setting in __main__.serve), so follow and W still drive
+# toward what the camera sees.
+CAMERA_DEFAULT = "front"
+SLIDERS = ("speed", "distance", "drive_speed", "turn_rate")   # the control page's sliders (#105: their reset)
 
 
 def default_settings(mode: str = "person") -> dict:
     m = FOLLOW_MODES[mode]
-    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": "back", "mirror": False,
-            "drive_speed": DRIVE_SPEED_DEFAULT, "turn_rate": TURN_RATE_DEFAULT}
+    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": CAMERA_DEFAULT,
+            "mirror": False, "drive_speed": DRIVE_SPEED_DEFAULT, "turn_rate": TURN_RATE_DEFAULT}
+
+
+def slider_defaults(mode: str = "person") -> dict:
+    """What each control page slider resets to (#105), for this follow mode."""
+    d = default_settings(mode if mode in FOLLOW_MODES else "person")
+    return {k: d[k] for k in SLIDERS}
 
 
 def clean_settings(old: dict, new: dict) -> dict:
@@ -734,6 +747,7 @@ class ApiState:
         return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
                 "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
+                "defaults": slider_defaults(self.settings.get("mode", "person")),   # NEW (#105) slider resets
                 "tts": self.tts is not None, "tts_stream": self.tts is not None and self.tts_stream,
                 "trim_shift": self.trim_shift, "listening": self.listening(),
                 # NEW (#79)

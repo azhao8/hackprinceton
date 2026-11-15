@@ -484,6 +484,33 @@ def test_serve_runs_without_a_voice(monkeypatch):
     assert seen["runner"].cleaned and link.events[-2:] == ["x", "close"]
 
 
+@pytest.mark.parametrize("back_flipped", [False, True])
+def test_front_camera_by_default_and_forward_is_where_it_looks(monkeypatch, back_flipped):
+    """#105: the server starts on the phone's front camera, and forward (W, follow, move) still drives
+    toward what the camera sees. The front camera faces the other way from the back one, so with it the
+    firmware's forward is the server's forward exactly when the back camera is flipped
+    (ROBOT_REVERSE_DRIVE)."""
+    from app.link import ReversedLink
+
+    seen = fake_api_start(monkeypatch)
+    monkeypatch.setattr(server, "make_tts", lambda: None)
+    inner = FakeUdpLink(dict(TEL))
+    link = ReversedLink(inner, lambda: back_flipped)
+    asyncio.run(server.serve(parse_args([]), link, window=FakeWindow(["q"]), render=lambda p, h: h))
+    state = seen["state"]
+    assert state.settings["camera"] == "front" and state.status()["settings"]["camera"] == "front"
+    inner.sent.clear()
+    link.send_cmd(0.3, 0.0)                                  # W / follow toward the person: forward
+    toward_front = 0.3 if back_flipped else -0.3
+    assert inner.sent == [(toward_front, 0.0, "drive")]
+    link.send_cmd(0.0, 0.0)
+    state.set_settings({"camera": "back"})                   # the control page's camera switch still works
+    link._clock = lambda: float("inf")                       # ...once he has stood still long enough
+    inner.sent.clear()
+    link.send_cmd(0.3, 0.0)
+    assert inner.sent == [(-toward_front, 0.0, "drive")]
+
+
 def test_serve_closes_the_voice_if_the_api_fails_to_start(monkeypatch):
     tts = FakeTTS()
 
