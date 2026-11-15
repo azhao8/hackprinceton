@@ -41,20 +41,28 @@
   #drift { display: none; width: 100%; box-sizing: border-box; padding: 16px; border-radius: 16px; background: #b45309;
            color: #fff; font-size: 22px; font-weight: 600; line-height: 1.3; text-align: center; pointer-events: auto; }
   #driftRecal { margin-top: 12px; font-size: 22px; padding: 14px 28px; background: #fff; color: #7c2d12; font-weight: 700; }
-  #quick, #low { position: absolute; left: 12px; right: 12px; display: none; justify-content: center; gap: 10px; }
-  #quick { top: calc(50% + 10px); }                                                   /* just below the face */
+  #low { position: absolute; left: 12px; right: 12px; display: none; justify-content: center; gap: 10px; }
   #low { bottom: calc(env(safe-area-inset-bottom) + 56px); }                           /* above the status line */
+  /* #101: each quick pill shows only when it's relevant (quickView in the script) and fades in and out. One fixed row
+     per pill, so nothing moves when another appears; the hidden ones take no taps (tap-to-talk goes through). */
+  #quick { position: absolute; left: 12px; right: 12px; top: calc(50% + 10px); display: flex; flex-direction: column;
+           align-items: center; gap: 10px; pointer-events: none; }                    /* just below the face */
   #wrap:not(.faceon) #quick { top: 60%; }
-  #quick button { font-size: 15px; padding: 8px 14px; border-radius: 18px; background: #0b1220b3; color: #ffffffbf; }
-  #quick button.hot { background: #15803d; color: #fff; font-weight: 600; }           /* the tray: someone must load it now */
+  #quick .slot { display: grid; justify-items: center; }
+  #quick .slot > * { grid-area: 1 / 1; }                                               /* the recal button and its note overlap */
+  .q { opacity: 0; visibility: hidden; transition: opacity 0.4s, visibility 0s linear 0.4s; }
+  .q.show { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity 0.4s; }
+  #quick button, #calNote { font-size: 15px; padding: 8px 14px; border-radius: 18px; background: #0b1220b3; color: #ffffffbf; }
+  #quick #actTray { background: #15803d; color: #fff; font-weight: 600; }                     /* the tray: someone must load it now */
+  #calNote { box-sizing: border-box; white-space: nowrap; }
   #low button { font-size: 13px; padding: 7px 12px; border-radius: 14px; background: #00000033; color: #ffffff66; }
-  #quick button:disabled, #low button:disabled { opacity: 0.35; }
+  #low button:disabled { opacity: 0.35; }                                              /* the quick pills hide instead (#101) */
   #cal { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
          gap: 28px; padding: 0 16px; background: #000d; text-align: center; }
   #calMsg { font-size: 40px; font-weight: 700; }
   #calCancel { font-size: 22px; padding: 14px 36px; }
   #status.on, #drift.on { display: block; }
-  #quick.on, #low.on, #cal.on { display: flex; }
+  #low.on, #cal.on { display: flex; }
 </style>
 </head>
 <body>
@@ -81,8 +89,9 @@ Everything else is on the laptop's control page.</div>
       <button id="driftRecal">Recalibrate</button></div>
   </div>
   <div id="quick">
-    <button id="actTray">I put items in his tray</button>
-    <button id="actRecal">Recalibrate tilt sensor</button>
+    <div class="slot"><button id="actTray" class="q">I put items in his tray</button></div>
+    <div class="slot"><button id="actRecal" class="q">Recalibrate tilt sensor</button>
+      <div id="calNote" class="q">Calibrating, keep him still…</div></div>
   </div>
   <div id="low">
     <button id="actStart">Start balancing</button>
@@ -591,18 +600,44 @@ setInterval(async () => {
   } catch (e) {}
 }, 600);
 
+// ---------- quick rules (#101): when each pill below the face shows. controls.test.js reads this block. ----------
+// Tray: only while the bring skill waits for someone to load it. Recalibrate: only when the server would take it (he's
+// idle, not balancing or driving), he has lain still for a moment (it measures the gyro for 2 s) and nothing else asks for
+// it: not while Start waits for him to be held upright (a recalibrate cancels that), not while drifting (the drift
+// banner has its own, bigger Recalibrate). While the server says calibrating (from here or the laptop), a note takes the
+// button's place. Nothing during the phone's own recalibrate countdown (its overlay covers the screen).
+const STILL_MS = 1500, STILL_RATE = 5, STILL_PITCH = 2;     // ms, deg/s, deg
+function stillStep(prev, t, now) {                          // prev and result: {since, pitch} while lying still, else null
+  const ok = !!t && t.state === 'idle' && typeof t.pitch === 'number' && typeof t.rate === 'number' &&
+             Math.abs(t.rate) <= STILL_RATE;
+  if (!ok) return null;
+  if (prev && Math.abs(t.pitch - prev.pitch) <= STILL_PITCH) return prev;
+  return { since: now, pitch: t.pitch };                    // just settled, or moved: start the clock again
+}
+function isStill(st, now) { return !!st && now - st.since >= STILL_MS; }
+function quickView(s) {                                     // s: {has, cal, tray, drift, calibrating, state, waiting, still}
+  const off = !s.has || !!s.cal;
+  return {
+    tray: !off && !!s.tray,
+    calNote: !off && !!s.calibrating,
+    recal: !off && !s.calibrating && s.state === 'idle' && !s.waiting && !s.drift && !!s.still,
+  };
+}
+// ---------- end quick rules ----------
+
 // ---------- robot controls (#79, #90): Start balancing, Park, Recalibrate tilt sensor, tray loaded; the drift warning ----------
-// Always on screen, no menu (#90): tray loaded and Recalibrate just below the face, Start and Park dim at the bottom;
-// tapping the face stays tap-to-talk. From /tel (main server only):
+// No menu (#90): tray loaded and Recalibrate just below the face, each only when relevant (#101, quickView above); Start
+// and Park dim at the bottom; tapping the face stays tap-to-talk. From /tel (main server only):
 //   drift        the tilt sensor drifts (latched by the server): he must be recalibrated before he can balance
 //   autostart    {waiting, note}: Start was pressed, the server waits for him to be held upright and steady, then balances
 //   calibrating  true for ~3 s after a recalibrate was sent
-//   tray_waiting the bring skill waits for someone to load the tray: the tray button lights up
+//   tray_waiting the bring skill waits for someone to load the tray: the tray button shows
 // phone_server.py sends none of these: everything here stays hidden. Actions: POST /phone/action {action} -> {ok, note}.
 // Recalibrate counts down "Hands off" first: touching the phone shakes the robot, and the sensor needs him still.
 const Ctl = (() => {
   const COUNT = 3, NOTE_MS = 2500, CAL_MIN_MS = 3000, CAL_MAX_MS = 10000;
   let has = false, drift = false, waiting = false, waitNote = '', calibrating = false, balancing = false, tray = false;
+  let state = '', stillAt = null, still = false;            // the robot's mode; lying still (stillStep) and since when
   let flash = '', flashWarn = false, flashTimer = 0;
   let cal = null;                                            // the recalibrate flow: {phase: count|send|cal, n, timer, t0, saw}
   function note(text, warn) {                                // a short line in the status line, ~2.5 s
@@ -654,9 +689,11 @@ const Ctl = (() => {
     clearTimeout(cal.timer); cal = null; render();
   }
   function render() {
-    $('quick').classList.toggle('on', has && !cal);
+    const q = quickView({ has, cal: !!cal, tray, drift, calibrating, state, waiting, still });
+    $('actTray').classList.toggle('show', q.tray);
+    $('actRecal').classList.toggle('show', q.recal);
+    $('calNote').classList.toggle('show', q.calNote);
     $('low').classList.toggle('on', has && !cal);
-    $('actTray').classList.toggle('hot', tray);
     const s = $('actStart');
     s.textContent = waiting ? 'Cancel start' : 'Start balancing';
     s.disabled = balancing;                                  // already balancing
@@ -679,6 +716,8 @@ const Ctl = (() => {
     drift = !!d.drift; calibrating = !!d.calibrating;
     waiting = !!a.waiting; waitNote = typeof a.note === 'string' ? a.note : ''; tray = !!d.tray_waiting;
     balancing = t.state === 'balance' || t.state === 'drive';
+    state = typeof t.state === 'string' ? t.state : '';
+    const now = Date.now(); stillAt = stillStep(stillAt, t, now); still = isStill(stillAt, now);
     if (balancing && cal && cal.phase === 'count') { cancel(); note("I'm balancing: park me first", true); }
     render();
   }
