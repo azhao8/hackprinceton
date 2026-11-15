@@ -59,6 +59,21 @@ describe("DemoSource", () => {
     expect(added.map((e) => e.title)).toEqual(["Her reading glasses, from you"]);
   });
 
+  it("a send reports which delivery it started", () => {
+    source.send({ item: "water", label: "Water" });
+    const s = source.getState();
+    expect(s.requests.send).toMatchObject({ status: "ok", id: s.delivery?.id });
+  });
+
+  it("ask: Miguel answers with a message event", () => {
+    source.ask("How's Mom?");
+    expect(source.getState().requests.ask?.status).toBe("ok");
+    advance(DEMO_TIMING.answer);
+    const last = source.getState().events.at(-1);
+    expect(last).toMatchObject({ kind: "message", title: "Miguel" });
+    expect(last?.note).toMatch(/^She's doing well\./);
+  });
+
   it("check-in: asks first, then connects when she says yes and logs the call", () => {
     source.requestCheckIn();
     expect(source.getState().checkIn.phase).toBe("asking");

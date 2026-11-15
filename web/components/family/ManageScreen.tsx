@@ -101,7 +101,7 @@ export function ManageScreen() {
       </section>
 
       <p className="fg-label mt-10 text-center !text-[10px] text-ink-3">
-        Miguel · Room 12 · {s.resident.home}
+        Miguel · {s.resident.home}
       </p>
 
       <Sheet open={inviteOpen} onClose={() => setInviteOpen(false)} label="Invite someone">

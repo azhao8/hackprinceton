@@ -64,6 +64,10 @@ function EventRow({ e, last }: { e: TimelineEvent; last: boolean }) {
             {e.quoteBy && <span className="text-ink-2"> — {e.quoteBy}</span>}
           </p>
         )}
+        {e.photo && (
+          // eslint-disable-next-line @next/next/no-img-element -- a photo from Miguel's server, not a page asset
+          <img src={e.photo} alt={e.title} loading="lazy" className="mt-2.5 max-h-[220px] w-full rounded-xl border-[1.5px] border-ink object-cover" />
+        )}
       </div>
     </li>
   );
