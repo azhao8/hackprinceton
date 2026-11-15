@@ -22,19 +22,24 @@
   'use strict';
 
   // ---------- the layout (pure) ----------
-  // s: { call: {call, by} | null, remote: the caller's video is playing, self: her camera is there,
-  //      state: the peer connection's state }
+  // s: { call: {call, by} | null, remote: the caller's video is playing, video: the caller sends video,
+  //      self: her camera is there, state: the peer connection's state }
+  // Connected without the caller's video (their page had no camera: opened over http, or the camera was
+  // refused) is a working call, audio or not: it says so and shows the caller's initial, not "Connecting" forever.
   function view(s) {
     const c = s && s.call;
-    if (!c) return { face: true, remote: false, self: false, end: false, label: '' };
+    if (!c) return { face: true, remote: false, self: false, end: false, initial: '', label: '' };
     const who = c.by || 'your family';
     const lost = s.state === 'failed' || s.state === 'disconnected';
+    const noCamera = !lost && s.state === 'connected' && !s.video && !s.remote;
     return {
       face: false,                                           // the caller replaces the face
       remote: true,                                          // the box shows even while connecting
       self: !!s.self,                                        // her own bubble, only with a camera
       end: true,
-      label: lost ? 'Reconnecting to ' + who + '…' : s.remote ? who : 'Connecting to ' + who + '…',
+      initial: noCamera ? who.trim().charAt(0).toUpperCase() : '',   // a big letter in place of their video
+      label: lost ? 'Reconnecting to ' + who + '…' : s.remote ? who
+        : noCamera ? who + ' · camera off' : 'Connecting to ' + who + '…',
     };
   }
 
@@ -43,14 +48,15 @@
   //   createPeer(): an RTCPeerConnection (or a fake),
   //   send(msg): sends over the mic socket, false if it's down,
   //   tracks(): { video: MediaStreamTrack | null, audio: MediaStreamTrack | null, stream: MediaStream | null },
-  //   onChange(state): { call, remote: MediaStream | null, playing, state } after every change,
+  //   onChange(state): { call, remote: MediaStream | null, video: it has a video track, playing, state } after every change,
   //   log(obj): optional }
   function makeCall(deps) {
     let call = null, pc = null, remote = null, playing = false, state = 'new', early = [], videoSender = null;
     const log = deps.log || (() => {});
 
     function changed() {
-      try { deps.onChange({ call, remote, playing, state }); } catch (e) {}
+      const video = !!(remote && remote.getVideoTracks && remote.getVideoTracks().length);
+      try { deps.onChange({ call, remote, video, playing, state }); } catch (e) {}
     }
 
     function close() {

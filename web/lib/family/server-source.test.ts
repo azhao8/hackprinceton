@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { familyWsUrl, mediaOrigin, resolveMedia, wantsDemo } from "./config";
+import { cameraPageUrl, familyWsUrl, mediaOrigin, resolveMedia, wantsDemo } from "./config";
 import { CONNECTING_NOTE, RECONNECT_MS, RECONNECTING_NOTE, ServerSource, dayLabelOf, homeMinutes, type SocketLike } from "./server-source";
 import { isFamilyClientMessage } from "./wire";
 
@@ -394,6 +394,14 @@ describe("config", () => {
     expect(familyWsUrl({ protocol: "http:", hostname: "192.168.4.20" }, undefined)).toBe("ws://192.168.4.20:8080/family/ws");
     expect(familyWsUrl({ protocol: "https:", hostname: "miguel.local" }, undefined)).toBe("wss://miguel.local:8443/family/ws");
     expect(familyWsUrl({ protocol: "https:", hostname: "x" }, "wss://tunnel.example/family/ws")).toBe("wss://tunnel.example/family/ws");
+  });
+
+  it("sends an http page to the https app for the camera, but not localhost or https", () => {
+    expect(cameraPageUrl({ protocol: "http:", hostname: "172.20.10.11", pathname: "/family/check-in", search: "" })).toBe(
+      "https://172.20.10.11:3443/family/check-in",
+    );
+    expect(cameraPageUrl({ protocol: "https:", hostname: "172.20.10.11", pathname: "/family/check-in" })).toBeNull();
+    expect(cameraPageUrl({ protocol: "http:", hostname: "localhost", pathname: "/family" })).toBeNull();
   });
 
   it("resolves media against the server, not the Next app", () => {

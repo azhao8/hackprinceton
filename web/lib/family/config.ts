@@ -39,3 +39,17 @@ export function resolveMedia(path: string, origin: string): string {
   if (/^(https?:|data:|blob:)/.test(path)) return path;
   return new URL(path, `${origin}/`).toString();
 }
+
+/** The port `npm run dev:https` serves the family app on (package.json). */
+export const HTTPS_APP_PORT = 3443;
+
+/**
+ * Where this page can use the camera and mic, for the check-in call (#118): browsers only give them to
+ * https pages and localhost. Null when this page already can; otherwise the same path on the https
+ * dev server (`npm run dev:https`) on the same host.
+ */
+export function cameraPageUrl(page: { protocol: string; hostname: string; pathname: string; search?: string }): string | null {
+  if (page.protocol === "https:") return null;
+  if (page.hostname === "localhost" || page.hostname === "127.0.0.1" || page.hostname === "[::1]") return null;
+  return `https://${page.hostname}:${HTTPS_APP_PORT}${page.pathname}${page.search ?? ""}`;
+}
