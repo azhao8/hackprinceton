@@ -430,7 +430,9 @@ class ApiState:
         log.info("settings: %s", self.settings)
         return dict(self.settings)
 
-    def add_say(self, text: str) -> None:
+    def add_say(self, text: str, *, asks: bool = False) -> None:
+        """Queue a line for the phone. asks: the line asks something though it doesn't end in "?" (the
+        introduction, #120): the answer window opens when it finishes, as after a question."""
         text = text.strip()[:300]
         if not text:
             return
@@ -439,10 +441,10 @@ class ApiState:
         pieces = [text] if whole else split_sentences(text)   # a line made ahead of time stays whole
         if len(pieces) > 1:
             self.timer.narrow(text, pieces[0])   # the timing log follows the first sentence
-        for piece in pieces:
-            self._add_line(piece)
+        for i, piece in enumerate(pieces):
+            self._add_line(piece, asks=asks and i == len(pieces) - 1)   # the window opens after the last one
 
-    def _add_line(self, text: str) -> None:
+    def _add_line(self, text: str, *, asks: bool = False) -> None:
         if text:
             sid = (self.say[-1]["id"] + 1) if self.say else 1
             self.say.append({"id": sid, "text": text})
@@ -452,7 +454,7 @@ class ApiState:
             self._prefetch(text)
             hub = self.hub
             if hasattr(hub, "push_say"):
-                hub.note_line(text)          # which line he said last (the answer window's fallback)
+                hub.note_line(text, asks=asks)   # which line he said last (the answer window's fallback)
                 hub.push_say(sid, text)      # to the phone now, not at its next /say poll
 
     @property

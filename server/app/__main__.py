@@ -841,7 +841,7 @@ def on_agent_event(state: Any, ev: Any) -> None:
     if getattr(state, "family", None) is not None:
         state.family.on_agent_event(d)
     if d.get("kind") == "say":
-        state.add_say(str(d.get("text", "")))
+        state.add_say(str(d.get("text", "")), asks=bool((d.get("data") or {}).get("asks")))   # #120: the intro asks
         hub = getattr(state.mic, "hub", None)
         if hub is not None:
             hub.note_miguel_spoke()   # the senior can answer without the wake word for a few seconds

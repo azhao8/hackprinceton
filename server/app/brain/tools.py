@@ -571,7 +571,9 @@ class ToolBox:
         return ToolOutcome(True, "Said it out loud.", {"text": text})
 
     async def _introduce(self, a: dict[str, Any]) -> ToolOutcome:
-        self._emit("say", INTRO_LINE, to="senior")   # the exact line made at startup, so it plays at once
+        # the exact line made at startup, so it plays at once. asks: it ends with 'Just say "Miguel" first.',
+        # not "?", but it asks what to show: the answer window opens after it like after a question
+        self._emit("say", INTRO_LINE, to="senior", data={"asks": True})
         return ToolOutcome(True, "Said your introduction. It ends by asking what to show and telling them to "
                            "say \"Miguel\" first, so say nothing more and end your turn.", {"text": INTRO_LINE})
 

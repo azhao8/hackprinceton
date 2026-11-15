@@ -35,6 +35,17 @@ def test_introduce_yourself_says_the_prepared_line():
     assert host.events == [("say", INTRO_LINE, "senior")]
 
 
+def test_the_intro_opens_the_answer_window_though_it_ends_with_a_period():
+    seen = []
+    host = Host()
+    host.emit = lambda kind, text="", *, to=None, data=None: seen.append((kind, data))
+    tools = ToolBox()
+    tools.bind(host)
+    asyncio.run(tools.call("introduce_yourself", {}))
+    assert seen == [("say", {"asks": True})]          # mic.py opens the window after a line that asks
+    assert not INTRO_LINE.rstrip('"').endswith("?")   # ...which a "?" check alone would miss
+
+
 def test_introduce_yourself_takes_no_arguments_and_leaves_the_strict_slots():
     d = {t["name"]: t for t in ToolBox().definitions()}["introduce_yourself"]
     assert d["input_schema"]["properties"] == {} and d["strict"] is False

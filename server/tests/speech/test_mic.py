@@ -546,3 +546,26 @@ def test_no_ring_while_his_line_is_on_its_way():
     assert not hub.listening()
     clock.t += 9                            # the phone never played it: listen anyway after 8 s
     assert hub.listen_reason() == "reply"
+
+
+def test_a_line_queued_as_asking_opens_the_answer_window_without_a_question_mark():
+    """#120: the introduction ends with 'Just say "Miguel" first.', but it asks what to show."""
+    clock = Clock()
+    hub = MicHub(None, asyncio.Queue(), "Miguel", answer_window_s=4.0, clock=clock)
+    intro_end = 'Just say "Miguel" first.'
+    hub.note_line(intro_end, asks=True)
+    hub._voice(True, intro_end)
+    hub._voice(False)
+    assert hub.listen_reason() == "question"
+    clock.t += 4.1
+    assert hub.listen_reason() is None
+    hub.note_line("Here is your water.")                 # an ordinary line: no window
+    hub._voice(True, "Here is your water.")
+    hub._voice(False)
+    assert hub.listen_reason() is None
+    hub.note_line(intro_end, asks=True)
+    hub.note_line("Okay, stopping.")                     # another line came after it: that one decides
+    hub._voice(True, intro_end)
+    hub._voice(True, "Okay, stopping.")
+    hub._voice(False)
+    assert hub.listen_reason() is None
