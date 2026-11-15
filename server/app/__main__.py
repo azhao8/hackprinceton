@@ -437,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="mock: the mock robot on this laptop (`python -m mock`, default); real: the robot")
     ap.add_argument("--someone-at-robot", action="store_true",
                     help="required with --robot real: a person is at the robot, ready to catch it")
+    ap.add_argument("--reverse-drive", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("ROBOT_REVERSE_DRIVE", "").strip().lower() in ("1", "true", "yes", "on"),
+                    help="swap forward and backward for every drive command (default: $ROBOT_REVERSE_DRIVE)")
     ap.add_argument("--link", choices=["udp", "serial"], default="udp",
                     help="udp: Wi-Fi, or the mock on this laptop (default); serial: the robot's USB cable")
     ap.add_argument("--host", help="robot address for --link udp (default: 127.0.0.1 for mock; "
@@ -484,13 +487,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def make_link(args: argparse.Namespace) -> RobotLink:
-    """The link for these flags, not started yet."""
+    """The link for these flags, not started yet. --reverse-drive (or ROBOT_REVERSE_DRIVE=1) swaps
+    forward and backward for everything (app.link.ReversedLink)."""
     if args.link == "serial":
         from app.link.serial_link import SerialLink
 
-        return SerialLink(args.port)
-    default = "127.0.0.1" if args.robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
-    return UdpLink(args.host or default, PORT)
+        link: Any = SerialLink(args.port)
+    else:
+        default = "127.0.0.1" if args.robot == "mock" else os.environ.get("ROBOT_HOST", "balancebot.local")
+        link = UdpLink(args.host or default, PORT)
+    if args.reverse_drive:
+        from app.link import ReversedLink
+
+        log.info("link: forward and backward swapped (--reverse-drive)")
+        link = ReversedLink(link)
+    return link
 
 
 def load_calibration(path: str | None) -> Any:

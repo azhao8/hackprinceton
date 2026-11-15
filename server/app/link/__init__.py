@@ -22,7 +22,7 @@ import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 log = logging.getLogger("app.link")
 
@@ -59,6 +59,39 @@ class _Proto(asyncio.DatagramProtocol):
 
     def error_received(self, exc: Exception) -> None:  # e.g. ICMP port unreachable: nobody listening
         log.debug("udp error: %s", exc)
+
+
+class ReversedLink:
+    """Any link with forward and backward swapped (Alex, Sat 10 pm: the robot drove away from people
+    when following, and W drove it backward). The server's "forward" becomes the firmware's backward
+    for everything at once: the keyboard, follow, the agent's behaviors and the F / B steps. Turning is
+    unchanged (left is still counter-clockwise seen from above). Telemetry is shown in the new frame:
+    speeds and distance flip, and the wheels swap sides. Tilt stays in the firmware's frame, so the
+    balance angle (trim) keeps its numbers."""
+
+    def __init__(self, link: Any):
+        self._link = link
+
+    def send_cmd(self, v: float, w: float, mode: str = "drive") -> None:
+        self._link.send_cmd(-v, w, mode)
+
+    def send_letter(self, letter: str) -> None:
+        self._link.send_letter({"F": "B", "B": "F"}.get(letter, letter))
+
+    @property
+    def telemetry(self) -> dict | None:
+        tel = self._link.telemetry
+        if not tel:
+            return tel
+        out = dict(tel)
+        if isinstance(tel.get("vl"), (int, float)) and isinstance(tel.get("vr"), (int, float)):
+            out["vl"], out["vr"] = -tel["vr"], -tel["vl"]
+        if isinstance(tel.get("x"), (int, float)):
+            out["x"] = -tel["x"]
+        return out
+
+    def __getattr__(self, name: str) -> Any:   # start, close, health, arm, send_trim, ...
+        return getattr(self._link, name)
 
 
 class UdpLink:
