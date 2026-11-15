@@ -343,8 +343,9 @@ class FamilyHub:
         self.add_event("alert", "Possible fall", saw, photo=photo)
         if tell_agent:
             self.state.agent_message(
-                f"[fall alert] The camera thinks {self.short} may have fallen: {saw} Check on her now: ask if "
-                f"she is okay, wait for her answer, and tell the family with a photo.", "operator", "fall detector")
+                f"[fall alert] The camera thinks {self.short} may have fallen: {saw} Tell the family now with a "
+                f"photo, then ask if she is okay, wait for her answer, and tell them what she said.",
+                "operator", "fall detector")   # this channel name skips the "On it!" ack (brain.prompt.FALL_CHANNEL)
         self.changed()
         return self.alert
 

@@ -108,6 +108,7 @@ class World:
         self.wrap_yaw = wrap_yaw  # yaw in [-180, 180) instead of counting on
         self.tel: dict | None = None
         self._next_tel = 0.0
+        self._acks = 0
 
     def now(self) -> float:
         return self.t
@@ -139,8 +140,9 @@ class World:
         if self.tel_period_s is None or self.t >= self.tel_until or self.t < self._next_tel - 1e-9:
             return
         self._next_tel += self.tel_period_s
+        self._acks += 1   # the firmware's ack (last command seq) moves on every message: no two are equal
         tel = {"t": "tel", "pitch": 5.6, "rate": 0.0, "vl": 0.0, "vr": 0.0, "batt": None,
-               "state": "balance", "fault": None, "x": 0.0}
+               "state": "balance", "fault": None, "x": 0.0, "ack": self._acks}
         if self.tel_yaw:
             yaw = self.heading_deg()
             tel["yaw"] = round(wrap_deg(yaw) if self.wrap_yaw else yaw, 1)  # balance.ino prints %.1f
@@ -741,6 +743,28 @@ def test_find_person_on_a_slow_robot_still_finds_bob_at_the_third_stop():
     assert result.ok, result.detail
     assert skill.search.stops == 3 and skill.search.modes == ["heading", "heading"]
     assert world.dist(bob.x, bob.y) == pytest.approx(1.05, abs=0.1)
+
+
+def test_heading_watch_sees_frozen_yaw_through_a_per_read_copy():
+    """#71: link.ReversedLink returns a new dict on every read; equal copies are the same message."""
+    from app.link import ReversedLink
+
+    class Raw:
+        telemetry = {"t": "tel", "yaw": 10.0, "pitch": 1.25, "x": 0.5}
+
+    raw, t = Raw(), [0.0]
+    link = ReversedLink(raw, lambda: True)
+    watch = HeadingWatch(lambda: link.telemetry, lambda: t[0], fresh_s=0.5)
+    watch.observe()
+    t[0] = 0.1
+    raw.telemetry = {"t": "tel", "yaw": 12.0, "pitch": 1.31, "x": 0.5}   # a real new packet
+    assert watch.observe() == 12.0
+    for t[0] in (0.3, 0.5, 0.7):   # no new packets: every read is a fresh copy of the same one
+        last = watch.observe()
+    assert last is None and not watch.fresh()   # stale after 0.5 s, so the search turns by time
+    raw.telemetry = {"t": "tel", "yaw": 15.0, "pitch": 1.2, "x": 0.5}
+    t[0] = 0.75
+    assert watch.observe() == 15.0
 
 
 def test_heading_watch_needs_a_new_dict_to_call_yaw_fresh():

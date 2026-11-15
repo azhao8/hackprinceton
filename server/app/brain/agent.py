@@ -56,6 +56,7 @@ from app.brain.prompt import (
     EFFORT_CHAT,
     EFFORT_PER_MESSAGE,
     EFFORT_TASK,
+    FALL_CHANNEL,
     KEEPALIVE_S,
     MODEL,
     SYSTEM_PROMPT,
@@ -439,7 +440,9 @@ class Agent:
             ex.append({"role": "system", "content": [], "output_config": {"effort": effort}})
         # acknowledge at once; the plan follows when Claude answers. Not for mic speech without his
         # name (an answer window, no wake word set): it may not be meant for Miguel at all.
-        if self.ack and effort == EFFORT_TASK and last.meta.get("addressed", True) is not False:
+        # Nor for a fall alert (#71): a cheerful "On it!" is wrong there; the prompt has Miguel speak calmly.
+        if self.ack and effort == EFFORT_TASK and last.meta.get("addressed", True) is not False \
+                and last.meta.get("channel") != FALL_CHANNEL:
             if last.source == "guardian":
                 self.emit("reply", ACK_GUARDIAN, to="guardian", data={"ack": True})
             else:
@@ -689,6 +692,11 @@ class Agent:
                 self._set_step(st, i, final, "" if final == "done" else summary)
         if st.started:
             self.emit("task", summary or status, data={"id": st.id, "status": status, "summary": summary})
+        elif status != "done":
+            # #71: it failed before any action (API error, refusal, cut off, stop). Say so anyway: the
+            # family layer ends a waiting delivery on this, or it would stay "sent" and block every Send.
+            self.emit("task", summary or status,
+                      data={"id": st.id, "status": status, "summary": summary, "started": False})
         if keep:
             exchange = _strip_thinking(ex)
             if self._stop_note:

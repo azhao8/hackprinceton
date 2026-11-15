@@ -234,6 +234,41 @@ def test_remote_websocket_agent_message_needs_the_token(remote):
     run_client(t)
 
 
+def test_remote_websocket_without_the_token_gets_no_agent_events(remote):
+    """#71: transcripts and family messages only reach this laptop's pages or a guardian with the token."""
+    async def t(c, s):
+        anon = await c.ws_connect("/ws")
+        guardian = await c.ws_connect("/ws", headers={"Authorization": f"Bearer {TOKEN}"})
+        s.publish_agent_event(AgentEvent(1, "heard", "my pills are in the blue box"))
+        assert (await next_agent(guardian))["text"] == "my pills are in the blue box"
+        got, end = [], asyncio.get_running_loop().time() + 0.6   # telemetry streams, so read for a while
+        while asyncio.get_running_loop().time() < end:
+            try:
+                got.append((await asyncio.wait_for(anon.receive_json(), 0.2))["t"])
+            except TimeoutError:
+                pass
+        assert "agent" not in got and "status" in got   # telemetry and status still flow
+        await anon.close()
+        await guardian.close()
+    run_client(t)
+
+
+def test_tray_loaded_wakes_every_waiter():
+    """#71: bring and wait_for_tray waiting at once: one press releases both (neither is stranded)."""
+    async def t(c, s):
+        a, b = asyncio.create_task(s.wait_loaded()), asyncio.create_task(s.wait_loaded())
+        await asyncio.sleep(0)
+        assert (await (await c.post("/control/loaded")).json()) == {"ok": True}
+        assert await asyncio.wait_for(asyncio.gather(a, b), 1) == [True, True]
+        assert (await (await c.post("/control/loaded")).json()) == {"ok": False}   # nobody left waiting
+        c2 = asyncio.create_task(s.wait_loaded())
+        await asyncio.sleep(0)
+        c2.cancel()   # a cancelled waiter leaves nothing behind
+        await asyncio.gather(c2, return_exceptions=True)
+        assert not s._tray_waiters
+    run_client(t)
+
+
 # --- /mic ---
 
 

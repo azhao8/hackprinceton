@@ -108,6 +108,23 @@ def test_cancel_while_waiting_stops_the_robot():
     asyncio.run(scenario())
 
 
+def test_cancel_reports_the_failed_stage():
+    """#71: a stop or e-stop mid-delivery tells on_step, so the family app's delivery doesn't hang at loading."""
+    async def scenario():
+        log: list[str] = []
+        stages: list[str] = []
+        task = asyncio.create_task(make(log, loaded=None, on_step=lambda stage, text: stages.append(stage))
+                                   .run(SkillContext(Arbiter())))
+        while "wait_loaded" not in log:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return stages
+
+    assert asyncio.run(scenario()) == ["sent", "loading", "failed"]
+
+
 def test_bring_in_the_simulated_room():
     """Real GoTo + FindPerson: the station marker ahead, Mom behind the robot."""
     station = Tag(1, *at(0, 2.0))

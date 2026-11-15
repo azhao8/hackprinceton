@@ -249,7 +249,7 @@ class ToolBox:
         r("reply_to_guardian",
           "Send a message to the guardian (family member) in their app. Use it to answer them, report a "
           "finished or failed task, or alert them. attach_photo adds the current camera frame: only when "
-          "they asked for a photo or the task needs proof.",
+          "they asked for a photo, the task needs proof, or for a fall or a call for help.",
           {"text": _str("The message, short like a text message."),
            "attach_photo": {"type": "boolean", "description": "Attach the latest camera frame."}},
           self._reply)
@@ -307,7 +307,8 @@ class ToolBox:
           self._describe_scene)
         r("wait_for_tray",
           "Wait until someone confirms they put something in your tray or took it out (the Tray loaded "
-          "button, or they tell you). Ask them out loud first with say. Returns loaded or timed out.",
+          "button, or they tell you). Ask them out loud first with say. Returns loaded, timed out, or "
+          "early when someone speaks: then read what they said and decide if that confirms it.",
           {"seconds": {"type": "integer", "description": "How long to wait, 5 to 300 seconds."}},
           self._wait_for_tray)
         r("check_in_result",
@@ -318,7 +319,8 @@ class ToolBox:
         r("learn_place",
           "Save the place in front of you: the printed sign card with a marker (for example the water or "
           "medication station). Give the name if someone said it ('this is the kitchen'); null to read it "
-          "off the sign. Saving a name again replaces it.",
+          "off the sign. The marker card must be in view (go_to steers by it), unless the place already "
+          "has one. Saving a known place again updates its marker and keeps its other names.",
           {"name": _nullable_str("The place's name, or null to read the sign.")},
           self._learn_place, stepped=False)
         r("remember",
@@ -465,15 +467,28 @@ class ToolBox:
             return ToolOutcome(True, await self.describe(jpeg))
 
     async def _wait_for_tray(self, a: dict[str, Any]) -> ToolOutcome:
+        """Wait for the Tray loaded button, but come back early if someone speaks ("it's in your
+        tray"): Claude reads what they said and decides (like _await_skill)."""
         if self.wait_tray is None:
             return ToolOutcome(False, "wait_for_tray is unavailable (no Tray loaded button on this server).")
         seconds = min(max(int(60 if a.get("seconds") is None else a["seconds"]), 5), 300)
-        try:
-            ok = await asyncio.wait_for(self.wait_tray(), seconds)
-        except TimeoutError:
-            ok = False
-        if ok:
-            return ToolOutcome(True, "Confirmed: the tray was loaded or emptied.", {"loaded": True})
+        button = asyncio.ensure_future(self.wait_tray())
+        spoke = asyncio.ensure_future(self.host.wait_interjection()) if self.host is not None else None
+        try:   # a stop cancels this task: the finally cancels both waits (the button's waiter goes away)
+            done, _ = await asyncio.wait({button} | ({spoke} if spoke else set()), timeout=seconds,
+                                         return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for w in (button, spoke):
+                if w is not None and not w.done():
+                    w.cancel()
+        if button in done:   # the button wins a tie: it is certain, words need reading
+            if button.result():
+                return ToolOutcome(True, "Confirmed: the tray was loaded or emptied.", {"loaded": True})
+            return ToolOutcome(True, "The tray wait ended without a confirmation.", {"loaded": False})
+        if spoke is not None and spoke in done:
+            return ToolOutcome(True, "Someone spoke while you were waiting for the tray (see below). If they "
+                                     "say it's in the tray or taken out, that is the confirmation; otherwise "
+                                     "call wait_for_tray again.", {"loaded": None, "spoke": True})
         return ToolOutcome(True, f"No confirmation in {seconds} s.", {"loaded": False})
 
     async def _check_in_result(self, a: dict[str, Any]) -> ToolOutcome:
@@ -493,6 +508,15 @@ class ToolBox:
         if markers:   # the biggest (closest) card in view
             marker = max(markers, key=lambda m: float(getattr(m, "size", 0) or getattr(m, "w", 0) or 0)).id
         name = str(a.get("name") or "").strip()
+
+        def known(n: str) -> dict[str, Any] | None:   # "this is the medication station" = the station
+            return self.places.find_place(n, exact=True)
+
+        def no_card(n: str) -> ToolOutcome:   # go_to and bring steer by the marker: a place without one is unreachable
+            return ToolOutcome(False, f"No marker card in view for {n!r}. Ask them to hold the card in front of you.")
+
+        if name and marker is None and (known(name) or {}).get("marker") is None:
+            return no_card(name)   # before a slow camera question
         description = ""
         if not name or marker is None:
             jpeg = await self._snap()
@@ -510,12 +534,13 @@ class ToolBox:
                     name = read
         if not name:
             return ToolOutcome(False, "I couldn't read a name on a sign. Ask what this place is called.")
-        if marker is None and not description:
-            return ToolOutcome(False, f"No marker card in view for {name!r}. Ask them to hold the card in front of you.")
-        place = self.places.set_place(name, marker=marker, description=description.strip())
-        self._emit("place", place["name"], data={"name": place["name"], "marker": marker})
-        where = f"marker {marker}" if marker is not None else "its look (no marker; slower to find)"
-        return ToolOutcome(True, f"Saved the place {place['name']!r} by {where}.", place)
+        old = known(name)
+        if marker is None and (old or {}).get("marker") is None:
+            return no_card(name)
+        place = self.places.set_place(old["name"] if old else name, marker=marker, description=description.strip())
+        self._emit("place", place["name"], data={"name": place["name"], "marker": place["marker"]})
+        kept = " (no card in view, so it keeps the marker it had)" if marker is None else ""
+        return ToolOutcome(True, f"Saved the place {place['name']!r} by marker {place['marker']}{kept}.", place)
 
     async def _forget(self, a: dict[str, Any]) -> ToolOutcome:
         key = str(a.get("key", "")).strip()

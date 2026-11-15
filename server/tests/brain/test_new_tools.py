@@ -68,14 +68,108 @@ def test_wait_for_tray_times_out(monkeypatch):
         await asyncio.sleep(3600)
         return True
 
-    real_wait_for = asyncio.wait_for
+    real_wait = asyncio.wait
 
-    async def quick(aw, timeout):   # 5 s minimum in the tool; don't wait that long in a test
-        return await real_wait_for(aw, 0.01)
+    async def quick(fs, *, timeout=None, return_when=asyncio.ALL_COMPLETED):   # 5 s minimum in the tool
+        return await real_wait(fs, timeout=0.01, return_when=return_when)
 
-    monkeypatch.setattr(asyncio, "wait_for", quick)
-    out = call(ToolBox(wait_tray=never), "wait_for_tray", {"seconds": 5})
+    monkeypatch.setattr(asyncio, "wait", quick)
+    tools = ToolBox(wait_tray=never)
+    tools.bind(Host())                                                       # nobody speaks either
+    out = call(tools, "wait_for_tray", {"seconds": 5})
     assert out.ok and out.data == {"loaded": False}
+
+
+class SpeakingHost(Host):
+    """A host whose wait_interjection ends when `speak()` is called; records cancelled waits."""
+
+    def __init__(self):
+        super().__init__()
+        self.spoke = asyncio.Event()
+        self.cancelled = []
+
+    async def wait_interjection(self):
+        try:
+            await self.spoke.wait()
+        except asyncio.CancelledError:
+            self.cancelled.append("interjection")
+            raise
+
+
+def test_wait_for_tray_comes_back_when_someone_speaks():
+    """'It's in your tray' is queued for Claude: the tool returns at once instead of waiting 300 s."""
+    host, cancelled = SpeakingHost(), []
+
+    async def button():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append("button")
+            raise
+        return True
+
+    async def scenario():
+        tools = ToolBox(wait_tray=button)
+        tools.bind(host)
+        task = asyncio.create_task(tools.call("wait_for_tray", {"seconds": 300}))
+        await asyncio.sleep(0.01)
+        host.spoke.set()
+        out = await asyncio.wait_for(task, 1)
+        await asyncio.sleep(0)   # let the cancelled button wait unwind
+        return out
+
+    out = asyncio.run(scenario())
+    assert out.ok and out.data == {"loaded": None, "spoke": True}
+    assert "Someone spoke" in out.text and "wait_for_tray again" in out.text
+    assert cancelled == ["button"]                    # the Tray loaded waiter doesn't linger
+
+
+def test_wait_for_tray_still_ends_on_the_button():
+    host = SpeakingHost()
+
+    async def button():
+        await asyncio.sleep(0.01)
+        return True
+
+    async def scenario():
+        tools = ToolBox(wait_tray=button)
+        tools.bind(host)
+        out = await tools.call("wait_for_tray", {"seconds": 300})
+        await asyncio.sleep(0)
+        return out
+
+    out = asyncio.run(scenario())
+    assert out.ok and out.data == {"loaded": True}
+    assert host.cancelled == ["interjection"]
+
+
+def test_stop_cancels_both_tray_waits():
+    host, cancelled = SpeakingHost(), []
+
+    async def button():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append("button")
+            raise
+        return True
+
+    async def scenario():
+        tools = ToolBox(wait_tray=button)
+        tools.bind(host)
+        task = asyncio.create_task(tools.call("wait_for_tray", {"seconds": 300}))
+        await asyncio.sleep(0.01)
+        task.cancel()                                  # the senior's stop cancels the agent's task
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("the cancel was swallowed")
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert cancelled == ["button"] and host.cancelled == ["interjection"]
 
 
 def test_check_in_result_emits_the_answer():
@@ -109,6 +203,46 @@ def test_learn_place_reads_the_sign_when_no_name_is_given(tmp_path):
     assert mem.find_place("medication station")["description"] == "a shelf with a pill organizer"
 
 
+def test_learn_place_refuses_a_place_without_a_marker(tmp_path):
+    """'This is the kitchen' with no card in view: go_to couldn't reach it, so nothing is saved."""
+    mem, asked = Memory(tmp_path / "m.db"), []
+
+    async def describe(jpeg, question=None):
+        asked.append(question)
+        return "KITCHEN | a counter with a kettle"
+
+    no_card = types.SimpleNamespace(markers=())
+    tools = ToolBox(places=mem, snapshot=lambda: b"jpeg", describe=describe, perception=lambda: no_card)
+    out = call(tools, "learn_place", {"name": "kitchen"})
+    assert not out.ok and out.text == "No marker card in view for 'kitchen'. Ask them to hold the card in front of you."
+    assert asked == []                                           # no slow camera question first
+    out = call(tools, "learn_place", {"name": None})            # name read off the sign, still no card
+    assert not out.ok and "No marker card in view for 'KITCHEN'" in out.text
+    assert mem.places() == []
+
+
+def test_learn_place_without_a_card_keeps_the_marker_it_had(tmp_path):
+    mem = Memory(tmp_path / "m.db", seed_places={"kitchen": 4})
+
+    async def describe(jpeg, question=None):
+        return "none | a counter with a kettle"
+
+    tools = ToolBox(places=mem, snapshot=lambda: b"jpeg", describe=describe,
+                    perception=lambda: types.SimpleNamespace(markers=()))
+    out = call(tools, "learn_place", {"name": "Kitchen"})
+    assert out.ok and "marker 4" in out.text
+    assert mem.marker_for("kitchen") == 4 and mem.find_place("kitchen")["description"] == "a counter with a kettle"
+
+
+def test_learn_place_by_an_alias_updates_that_place(tmp_path):
+    """'This is the medication station' (an alias of station) moves station's marker, keeps its names."""
+    mem = Memory(tmp_path / "m.db", seed_places={"station": 1},
+                 seed_aliases={"medication station": "station", "pills": "station"})
+    tools = ToolBox(places=mem, perception=lambda: types.SimpleNamespace(markers=(Marker(id=6, cx=0.5, cy=0.5, size=0.1),)))
+    assert call(tools, "learn_place", {"name": "Medication station"}).ok
+    assert mem.known_places() == ["station"] and mem.marker_for("pills") == 6
+
+
 def test_learn_place_without_a_card_or_a_name_asks(tmp_path):
     async def describe(jpeg, question=None):
         return "none | a wall"
@@ -138,3 +272,35 @@ def test_memory_places_events_and_summary(tmp_path):
     assert [e["title"] for e in mem.today()] == ["Water, from Sarah"]
     assert "water station (marker 1)" in mem.summary() and "Water, from Sarah" in mem.summary()
     assert Memory(tmp_path / "m.db", seed_places={"other": 9}).marker_for("other") is None   # seeds only once
+
+
+def test_set_place_keeps_the_marker_aliases_and_description(tmp_path):
+    mem = Memory(tmp_path / "m.db", seed_places={"station": 1, "kitchen": 4}, seed_aliases={"pills": "station"})
+    mem.set_place("Station", aliases=["water"])                  # re-learnt with no card, a new alias
+    assert mem.marker_for("pills") == 1 and mem.marker_for("water") == 1   # seeded alias and marker kept
+    mem.set_place("kitchen", description="by the fridge")
+    mem.set_place("kitchen", description="  ")                    # empty keeps the description
+    assert mem.find_place("kitchen") == {"name": "kitchen", "marker": 4, "aliases": [], "description": "by the fridge"}
+    mem.set_place("couch", marker=4)                              # one marker marks one place
+    assert mem.place_for(4) == "couch" and mem.find_place("kitchen")["marker"] is None
+
+
+def test_find_place_matches_whole_words(tmp_path):
+    mem = Memory(tmp_path / "m.db", seed_places={"station": 1, "couch": 2, "door": 3, "water station": 5},
+                 seed_aliases={"pills": "station", "meds": "station", "front door": "door", "sofa": "couch"})
+    assert mem.find_place("door key") is None and mem.marker_for("door key") is None   # a key, not the door
+    assert mem.find_place("outdoor shoes") is None                # 'door' is only part of a word
+    assert all(mem.find_place(s) is None for s in ("", "   ", "the", "?!"))
+    assert mem.find_place("Pills!")["name"] == "station"          # alias, any case and punctuation
+    assert mem.marker_for("the front door") == 3
+    assert mem.find_place("water")["name"] == "water station"     # every word said is in the name
+    assert mem.find_place("my evening pills")["name"] == "station"   # the alias ends what was said
+    assert mem.find_place("Mom's sofa")["name"] == "couch"
+    assert mem.find_place("station")["name"] == "station"         # exact beats 'water station'
+    assert mem.find_place("pills", exact=True)["name"] == "station" and mem.find_place("water", exact=True) is None
+
+
+def test_find_place_doesnt_guess_between_two_places(tmp_path):
+    mem = Memory(tmp_path / "m.db", seed_places={"water station": 5, "charging station": 6})
+    assert mem.find_place("station") is None
+    assert mem.find_place("charging")["marker"] == 6

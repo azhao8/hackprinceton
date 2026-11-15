@@ -229,6 +229,11 @@ class HeadingWatch:
     after not looking for longer than `fresh_s`, has an unknown age: it only counts once the next
     one arrives. `heading` sums the wrapped differences between yaw samples, so it keeps counting
     past +-180 / 360 whether or not the source wraps (the firmware's yaw doesn't).
+
+    A new dict EQUAL to the last one is a copy of the same message, not a new one (#71): a wrapper
+    like link.ReversedLink builds a new dict on every read, which would make frozen yaw look fresh.
+    Real messages differ (pitch and gyro rate change every packet while balancing); if two ever
+    match exactly, yaw just goes stale for a moment and the search turns by time, the safe side.
     """
 
     def __init__(self, telemetry: Callable[[], dict | None], clock: Clock, fresh_s: float) -> None:
@@ -253,7 +258,9 @@ class HeadingWatch:
             tel = self._telemetry()
         except Exception:
             tel = None
-        if tel is not self._tel:
+        if tel is not self._tel and isinstance(tel, dict) and tel == self._tel:
+            self._tel = tel  # the same message again (a per-read copy): not new
+        elif tel is not self._tel:
             age_known = self._obs_at is not None and now - self._obs_at <= self._fresh_s
             self._tel = tel
             yaw = _finite(tel.get("yaw")) if isinstance(tel, dict) else None
