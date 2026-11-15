@@ -595,9 +595,10 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
 
         def live(settings: dict) -> None:
             # #79 "follow slower": a running follow takes new speed and closeness at once (the
-            # controller reads its config every step), not only at the next start.
-            skill = app.follow
-            if app.skills.running == "follow" and isinstance(skill, FollowSkill):
+            # controller reads its config every step), not only at the next start. The runner's current
+            # skill, not app.follow: a follow the agent started (voice) never sets app.follow.
+            skill = app.skills.current
+            if isinstance(skill, FollowSkill):
                 new = factory().config
                 skill.config = new
                 skill.controller.config = new

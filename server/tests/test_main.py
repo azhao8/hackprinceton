@@ -518,6 +518,63 @@ def test_api_state_applies_the_control_pages_follow_settings():
     assert abs(skill.config.d_target_m - 0.9) < 1e-9 and abs(skill.config.d_min_m - 0.63) < 1e-9
 
 
+@pytest.mark.parametrize("started_by", ["agent", "button"])
+def test_settings_changed_mid_follow_apply_at_once(started_by):
+    """A running follow takes new speed and closeness from the control page (or set_follow_settings)
+    at once, not only at the next start, whether the agent (voice) or the Follow button started it."""
+    import time
+
+    import numpy as np
+
+    from app.skills.follow import FollowSkill
+    from app.vision.follow import FollowConfig
+    from app.vision.types import Box, Detections, Frame, Person, TargetState, TargetStatus
+    from app.vision.worker import Perception
+
+    class FarAwayVision(FakeVision):
+        """Someone small (far) and centred, a new frame every read: follow drives at its speed cap."""
+        status = "running"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.index = 0
+
+        def latest(self):
+            self.index += 1
+            now = time.monotonic()
+            frame = Frame(t=now, index=self.index, image=np.zeros((4, 4, 3), dtype=np.uint8))
+            person = Person(Box(0.45, 0.3, 0.55, 0.7), 0.9)
+            return Perception(frame, Detections(now, self.index, 4, 4, [person]),
+                              TargetState(TargetStatus.LOCKED, person), False, 1, 0.0, 20.0, now)
+
+    async def scenario():
+        base = FollowConfig()
+        factory = lambda: FollowSkill(base)  # noqa: E731
+        factory.config = base
+        app = App(FakeUdpLink(dict(TEL)), vision=FarAwayVision(), follow_factory=factory)
+        state = server.api_state(app, app.link, app.vision, None)
+        state.set_settings({"speed": 0.05})
+        if started_by == "agent":
+            skill = server.make_skill_factories(app._follow_factory)["follow"]()   # as the agent does
+            app.skills.start(skill)
+        else:
+            state.set_follow(True)
+            skill = app.follow
+        await asyncio.sleep(0.5)
+        slow = skill.last_command.v
+        state.set_settings({"speed": 1.0, "distance": 0.5})
+        await asyncio.sleep(0.3)
+        fast = skill.last_command.v
+        app.skills.cancel()
+        await asyncio.sleep(0)
+        return skill, slow, fast
+
+    skill, slow, fast = asyncio.run(scenario())
+    assert 0.0 < slow <= 0.05
+    assert fast > 0.2                                     # the new speed cap took hold mid-follow
+    assert skill.controller.config.target_box_w == 0.5    # and the new closeness
+
+
 def test_api_state_gives_the_api_the_face_fed_from_vision_and_the_follow_command():
     import time
 
