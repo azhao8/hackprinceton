@@ -858,9 +858,12 @@ def make_memory() -> Any:
 
 
 def brain_available() -> bool:
-    """Claude has a key, or the brain runs on the local model (MIGUEL_LLM=local, #81), which needs none."""
+    """Claude has a key, the brain runs on the local model (MIGUEL_LLM=local, #81), which needs none,
+    or on Gemini with its key (MIGUEL_LLM=gemini, #99)."""
     from app.brain.local_llm import backend
 
+    if backend() == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY", "").strip())
     return bool(os.environ.get("ANTHROPIC_API_KEY")) or backend() == "local"
 
 
@@ -869,7 +872,10 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
     """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
     `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
     if not brain_available():
-        log.info("agent: off (ANTHROPIC_API_KEY not set, and MIGUEL_LLM isn't local)")
+        from app.brain.local_llm import backend
+
+        log.info("agent: off (%s)", "GEMINI_API_KEY not set, and MIGUEL_LLM is gemini" if backend() == "gemini"
+                 else "ANTHROPIC_API_KEY not set, and MIGUEL_LLM isn't local")
         return None
     try:
         from app.brain.agent import Agent

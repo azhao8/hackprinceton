@@ -566,7 +566,7 @@ class Agent:
         except anthropic.APIError as e:
             status, summary = "failed", f"LLM call failed: {type(e).__name__}"
             log.warning("agent: %s", e)
-            self.emit("error", f"{'Local model' if self.local else 'Claude API'} error: "
+            self.emit("error", f"{getattr(self.client, 'label', None) or ('Local model' if self.local else 'Claude API')} error: "
                                f"{type(e).__name__}: {getattr(e, 'message', e)}")
             self._tell(st, "Sorry, my brain isn't connected right now.")
             self._close_dangling(ex, "Not run: the API call failed.")
