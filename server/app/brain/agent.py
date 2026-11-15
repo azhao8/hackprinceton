@@ -308,6 +308,12 @@ class Agent:
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    @property
+    def working(self) -> bool:
+        """A task is running, or messages are waiting for one (in the inbox, or queued for the next
+        task). False means every request so far has been handled (app/family.py uses it)."""
+        return self.busy or bool(self._pending) or not self.inbox.empty()
+
     async def run(self) -> None:
         """Consume the inbox forever (and keep the prompt cache warm, see keepalive_s)."""
         if self.keepalive_s > 0 and self._warm_task is None:

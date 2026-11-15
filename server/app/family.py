@@ -42,6 +42,8 @@ log = logging.getLogger("app.family")
 ITEMS = ("water", "medication", "note", "other")
 FRAME_HZ = 5
 CALL_MAX_S = 600
+ASK_TIMEOUT_S = 60.0            # Miguel asks and listens ~15 s; past this the check-in counts as declined
+SETTLE_DELAY_S = 0.3            # after a task ends, let a queued request start before deciding he's done
 STATE_MIN_GAP_S = 0.2           # at most 5 state messages a second
 MEDIA_KEEP = 40
 MEDIA_TTL_S = 24 * 3600
@@ -52,6 +54,13 @@ EVENT_KIND = {"water": "water", "medication": "medication", "note": "message", "
 
 def iso(t: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if t is None else t).astimezone().isoformat(timespec="seconds")
+
+
+def wire_copy(d: dict[str, Any], drop: tuple[str, ...] = ()) -> dict[str, Any]:
+    """A copy for the wire: no None values (the app's parser rejects null for optional fields, and one
+    bad field drops the whole message) and fresh lists, so later in-place changes to the hub's own
+    dicts still show up as changes in push_state."""
+    return {k: list(v) if isinstance(v, list) else v for k, v in d.items() if v is not None and k not in drop}
 
 
 class FamilyHub:
@@ -77,7 +86,10 @@ class FamilyHub:
         self._last_sent = 0.0
         self._call_task: asyncio.Task | None = None
         self._camera_before: str | None = None
+        self._follow_before = False
         self._pump: asyncio.Task | None = None
+        self._settle: asyncio.TimerHandle | None = None
+        self._last_words = ""            # Miguel's last reply to the family: why a delivery failed
 
     # --- state ----------------------------------------------------------------------------------
 
@@ -120,12 +132,11 @@ class FamilyHub:
         if mode[0] != self._mode[0]:
             self._since = time.time()
         self._mode = mode
-        check_in = {k: v for k, v in self.check_in.items() if k in ("phase", "id", "started_at")}
+        check_in = wire_copy({k: v for k, v in self.check_in.items() if k in ("phase", "id", "started_at")})
         return {"t": "state", "mode": mode[0], "mode_note": mode[1], "since": iso(self._since),
                 "link": "up" if self._link_up() else "down",
-                "delivery": None if self.delivery is None else {k: v for k, v in self.delivery.items()
-                                                                if v is not None and k != "by"},
-                "check_in": check_in, "alert": self.alert}
+                "delivery": None if self.delivery is None else wire_copy(self.delivery, drop=("by",)),
+                "check_in": check_in, "alert": None if self.alert is None else wire_copy(self.alert)}
 
     async def push_state(self, force: bool = False) -> None:
         st = self.snapshot_state()
@@ -229,7 +240,9 @@ class FamilyHub:
                 jpeg = getattr(self.state, "agent_photos", {}).get(int(m.group(1)))
                 photo = self.store_media(jpeg) if jpeg else None
             self.add_event("message", "Miguel", text, photo=photo)
-            if self.alert is not None and self.alert.get("status") == "active":
+            self._last_words = text
+            if self.alert is not None and self.alert.get("status") == "active" \
+                    and "Told the family" not in self.alert["did"]:
                 self.alert["did"].append("Told the family")
         elif kind == "check_in":
             self._check_in_answer(str(data.get("answer", text)))
@@ -238,25 +251,58 @@ class FamilyHub:
         elif kind == "heard" and ev.get("data", {}).get("source", "senior") == "senior":
             if self.alert is not None and self.alert.get("status") == "active" and text:
                 self.alert["heard"] = text[:200]
-        elif kind == "task":
-            # The agent finished without bring reporting a stage (it couldn't or didn't call bring).
-            d = self.delivery
-            status = data.get("status")
-            if d is not None and d["stage"] in ("sent", "loading", "on_the_way") and status in ("failed", "cancelled", "done") \
-                    and getattr(self.state.skills, "running", None) != "bring":
-                if status != "done" or d["stage"] == "sent":
-                    d["stage"] = "failed"
-                    d["detail"] = (data.get("summary") or text or "Miguel stopped")[:200]
-                    self.add_event("delivery", f"{d['label']} didn't arrive", d["detail"])
+        if kind in ("task", "reply", "error") and data.get("status") != "started":
+            self._settle_soon()
+        self.changed()
+
+    # --- requests the agent dropped -----------------------------------------------------------
+
+    def _settle_soon(self) -> None:
+        """A task ended (or he answered, or hit an error): a moment later, once a queued request has had
+        the chance to start, check whether he has stopped working with a family request still open."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._settle is not None:
+            self._settle.cancel()
+        self._settle = loop.call_later(SETTLE_DELAY_S, self._settle_if_idle)
+
+    def _agent_idle(self) -> bool:
+        """True only when the agent says it has nothing running or waiting (ApiState.agent_working)."""
+        working = getattr(self.state, "agent_working", None)
+        if not callable(working):
+            return False   # can't tell: leave it to bring's stages and the check-in timeout
+        try:
+            return not working()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _settle_if_idle(self) -> None:
+        """He finished everything he was asked without finishing the family's request: say so. Another
+        task ending (Mom chatting with him) no longer fails a delivery that's still queued behind it."""
+        self._settle = None
+        if not self._agent_idle():
+            return
+        d = self.delivery
+        if d is not None and d["stage"] in ("sent", "loading", "on_the_way") \
+                and getattr(self.state.skills, "running", None) != "bring":
+            d["stage"] = "failed"
+            d["detail"] = (self._last_words or "Miguel stopped before he got to her.")[:200]
+            self.add_event("delivery", f"{d['label']} didn't arrive", d["detail"])
+        if self.check_in.get("phase") == "asking":
+            self._decline("No answer.")
         self.changed()
 
     def raise_alert(self, saw: str, place: str | None = None, *, tell_agent: bool = True) -> dict[str, Any]:
         aid = f"a{next(self._ids)}"
-        self.alert = {"id": aid, "kind": "possible_fall", "at": iso(), "saw": saw, "did": [], "status": "active",
-                      "photo": self.photo()}
+        self.alert = {"id": aid, "kind": "possible_fall", "at": iso(), "saw": saw, "did": [], "status": "active"}
+        photo = self.photo()   # None before the camera's first frame: then the alert has no photo field
+        if photo:
+            self.alert["photo"] = photo
         if place:
             self.alert["place"] = place
-        self.add_event("alert", "Possible fall", saw, photo=self.alert["photo"])
+        self.add_event("alert", "Possible fall", saw, photo=photo)
         if tell_agent:
             self.state.agent_message(
                 f"[fall alert] The camera thinks {self.short} may have fallen: {saw} Tell the family now with a "
@@ -270,11 +316,13 @@ class FamilyHub:
     async def _request(self, ws: web.WebSocketResponse, viewer: str, m: dict[str, Any]) -> None:
         t, ref = m.get("t"), m.get("ref")
 
+        about = {"ref": ref} if isinstance(ref, str) else {}   # never "ref": null (the app drops it)
+
         async def ok(**extra: Any) -> None:
-            await ws.send_json({"t": "ack", "ref": ref, "ok": True, **extra})
+            await ws.send_json({"t": "ack", **about, "ok": True, **extra})
 
         async def err(code: str, message: str) -> None:
-            await ws.send_json({"t": "error", "ref": ref, "code": code, "message": message})
+            await ws.send_json({"t": "error", **about, "code": code, "message": message})
 
         name = MEMBERS.get(viewer, "your family")
         if t == "send":
@@ -288,6 +336,7 @@ class FamilyHub:
             did = f"d{next(self._ids)}"
             self.delivery = {"id": did, "item": item, "label": label, "message": message, "stage": "sent",
                              "detail": None, "photo": None, "by": name}
+            self._last_words = ""
             note = (" They wrote a note; don't read it or make one up: it is read to her word for word when you "
                     "deliver." if message else "")
             status, why = self.state.agent_message(
@@ -309,6 +358,8 @@ class FamilyHub:
                     "guardian", "family app")
                 if status != 200:
                     self.check_in = {"phase": "declined", "id": cid}
+                else:
+                    asyncio.get_running_loop().call_later(ASK_TIMEOUT_S, self._ask_timed_out, cid)
                 await ok(id=cid)
             elif action == "end":
                 if self.check_in.get("phase") == "asking":   # Miguel is still asking her: call it off
@@ -353,6 +404,7 @@ class FamilyHub:
             self.check_in.update(phase="live", started_at=iso(), t0=time.time())
             settings = getattr(self.state, "settings", None) or {}
             self._camera_before = settings.get("camera")
+            self._follow_before = self._following()
             try:
                 if hasattr(self.state, "set_follow"):
                     self.state.set_follow(False)
@@ -361,8 +413,24 @@ class FamilyHub:
                 log.exception("family: switching to the front camera failed")
             self._call_task = asyncio.get_running_loop().create_task(self._relay(self.check_in["id"]))
         else:
-            self.check_in.update(phase="declined")
-            self.add_event("check_in", "Check-in declined", "Not a good time." if answer == "no" else "No answer.")
+            self._decline("Not a good time." if answer == "no" else "No answer.")
+
+    def _decline(self, note: str) -> None:
+        self.check_in.update(phase="declined")
+        self.add_event("check_in", "Check-in declined", note)
+
+    def _ask_timed_out(self, cid: str) -> None:
+        """Nobody answered in time (the agent never called check_in_result): decline, and tell him to drop
+        it in case the request is still waiting behind something else."""
+        if self.check_in.get("phase") != "asking" or self.check_in.get("id") != cid:
+            return
+        busy = not self._agent_idle() and callable(getattr(self.state, "agent_working", None))
+        if busy:   # the request may still be waiting behind something else: don't let him ask her later
+            self.state.agent_message(
+                f"[check-in cancelled, family app] Nobody answered the video check-in in time. Stop asking "
+                f"{self.short} about it; don't call check_in_result.", "guardian", "family app")
+        self._decline("Miguel was busy and couldn't ask her." if busy else "No answer.")
+        self.changed()
 
     def _end_call(self, why: str) -> None:
         c = self.check_in
@@ -374,6 +442,12 @@ class FamilyHub:
                     self.state.set_settings({"camera": self._camera_before})
                 except Exception:  # noqa: BLE001
                     pass
+            if self._follow_before and hasattr(self.state, "set_follow"):   # back to walking with her
+                try:
+                    self.state.set_follow(True)
+                except Exception:  # noqa: BLE001
+                    log.exception("family: turning follow back on failed")
+            self._follow_before = False
         if self._call_task is not None:
             self._call_task.cancel()
             self._call_task = None
@@ -381,16 +455,25 @@ class FamilyHub:
         log.info("family: check-in %s", why)
         self.changed()
 
+    def _following(self) -> bool:
+        f = getattr(self.state, "following", None) or getattr(self.state, "follow_running", None)
+        try:
+            return bool(f()) if callable(f) else False
+        except Exception:  # noqa: BLE001
+            return False
+
     async def _relay(self, call: str) -> None:
-        """Camera frames to the apps, only while the call is live (consent is checked every frame)."""
+        """Camera frames to the apps, only while the call is live (consent is checked every frame).
+        The JPEG is made off the event loop, so a call doesn't hold up driving or speech."""
         t0 = time.monotonic()
         try:
             while self.check_in.get("phase") == "live" and self.check_in.get("id") == call:
                 if time.monotonic() - t0 > CALL_MAX_S:
                     self._end_call("timed out")
                     return
-                jpeg = self.snapshot() if self.snapshot is not None else None
-                if jpeg:
+                jpeg = await asyncio.to_thread(self.snapshot) if self.snapshot is not None else None
+                live = self.check_in.get("phase") == "live" and self.check_in.get("id") == call
+                if jpeg and live:   # consent again: the call may have ended while the JPEG was made
                     await self._broadcast({"t": "frame", "call": call, "jpeg": base64.b64encode(jpeg).decode()})
                 await asyncio.sleep(1 / FRAME_HZ)
         except asyncio.CancelledError:

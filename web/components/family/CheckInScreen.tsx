@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useFamily, useFamilyActions, useLiveFrame } from "@/lib/family/store";
+import { useDemoControls, useFamily, useFamilyActions, useLiveFrame } from "@/lib/family/store";
 import type { RequestStatus } from "@/lib/family/types";
 import { HoldToTalk } from "./HoldToTalk";
 import { Margaret } from "./Margaret";
@@ -37,6 +37,9 @@ export function CheckInScreen() {
   const elapsed = useElapsed(c.phase === "live" ? c.startedAt : null);
   // Miguel's camera, as JPEG frames from the server (the no-WebRTC fallback). Null in the demo.
   const frame = useLiveFrame();
+  // The real server relays her camera one way (no WebRTC, no voice clips yet): say so, and never show
+  // the illustrated Margaret as if she were live. The demo keeps the full two-way story.
+  const demo = useDemoControls() !== null;
   // The check-in request before you tapped "Ask" (undefined: none yet), so only this visit's error shows.
   const [askedFrom, setAskedFrom] = useState<RequestStatus | undefined | null>(null);
   const askRequest = s.requests.checkIn;
@@ -70,28 +73,41 @@ export function CheckInScreen() {
           {frame ? (
             // eslint-disable-next-line @next/next/no-img-element -- live frames from Miguel's camera
             <img src={frame} alt={`${name}, live through Miguel's camera`} className="block aspect-[3/4] w-full bg-ink object-cover" />
-          ) : (
+          ) : demo ? (
             <Margaret talking={momTalking} className="block h-auto w-full" />
+          ) : (
+            <div className="flex aspect-[3/4] w-full items-center justify-center bg-ink px-8 text-center" role="status">
+              <span className="fg-label !text-[11px] !text-paper/80">Opening Miguel&rsquo;s camera…</span>
+            </div>
           )}
           <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-[#fffaf1]/90 px-3 py-1.5">
-            <span className="h-2 w-2 rounded-full bg-alarm" />
-            <span className="fg-label !text-ink">Live · via Miguel</span>
+            <span className={`h-2 w-2 rounded-full ${frame || demo ? "bg-alarm" : "bg-ink-3"}`} />
+            <span className="fg-label !text-ink">{frame || demo ? "Live · via Miguel" : "Connecting"}</span>
           </div>
           <div className="absolute bottom-3 right-3 rotate-[3deg]">
             <FaceBadge expression="happy" width={46} />
           </div>
         </div>
-        <p className="fg-label mt-3 text-center !text-[10px] text-ink-3">
-          Fig. 3 — {name}, {frame ? "through Miguel's camera" : "in her armchair at home"}
-        </p>
+        {(frame || demo) && (
+          <p className="fg-label mt-3 text-center !text-[10px] text-ink-3">
+            Fig. 3 — {name}, {frame ? "through Miguel's camera" : "in her armchair at home"}
+          </p>
+        )}
         <div className="fg-rise-2 mt-6 space-y-3">
-          <HoldToTalk who={mom} tone="sky" />
+          {demo && <HoldToTalk who={mom} tone="sky" />}
           <PlainButton tone="paper" onClick={() => actions.endCheckIn()}>
             End check-in
           </PlainButton>
         </div>
         <p className="mt-5 text-center text-[13px] leading-relaxed text-ink-2">
-          {mom} sees you on Miguel&rsquo;s screen. Nothing is recorded.
+          {demo ? (
+            <>{mom} sees you on Miguel&rsquo;s screen. Nothing is recorded.</>
+          ) : (
+            <>
+              You see {mom} through Miguel&rsquo;s camera; she can&rsquo;t see or hear you yet. To tell her something, use
+              Ask Miguel on Home. Nothing is recorded.
+            </>
+          )}
         </p>
       </main>
     );
@@ -157,7 +173,9 @@ export function CheckInScreen() {
     <main className="family-page">
       <TopBar />
       <PageTitle label="Check in" title={<>See {mom}, face to face.</>}>
-        Miguel asks her first. If she says yes, you&rsquo;ll see and hear her through his camera, and she&rsquo;ll see you on his screen.
+        {demo
+          ? "Miguel asks her first. If she says yes, you’ll see and hear her through his camera, and she’ll see you on his screen."
+          : "Miguel asks her first. If she says yes, you’ll see her through his camera while you’re on this screen."}
       </PageTitle>
       <div className="fg-rise-2 -mx-5 mt-2">
         <MiguelStage className="h-[300px]" pose={{ mode: s.mode, concerned: false, carrying: false }} />

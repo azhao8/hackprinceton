@@ -821,6 +821,7 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
         log.warning("agent: off (%s)", e)
         return None
     state.agent_inbox = agent.inbox
+    state.agent_working = lambda: agent.working   # the family app knows when he has stopped working
     log.info("agent: on (skills: %s)", ", ".join(factories) or "none, no camera")
     return agent
 

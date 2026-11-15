@@ -192,6 +192,7 @@ class ApiState:
     settings: dict = field(default_factory=default_settings)
     # NEW (#54) the voice agent. All None/empty when the agent is off: the routes then say so.
     agent_inbox: asyncio.Queue | None = None   # the agent's inbox of app.brain.types.Utterance
+    agent_working: Any = None                  # () -> bool: a task runs or messages wait (Agent.working)
     guardian_token: str | None = None          # GUARDIAN_TOKEN: remote callers of /agent/* need it
     family: Any = None                         # app.family.FamilyHub: the family app's /family/ws
     memory: Any = None                         # app.memory.Memory (SQLite): the control page's memory page
