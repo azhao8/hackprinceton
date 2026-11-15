@@ -1623,7 +1623,7 @@ Roles get swapped based on skills. Hardware hack? Repurpose one slot as Hardware
 
 #### Decisions
 
-- Rules (per John, Nov 9): hardware pre-build is OK, and testing the software stack at home is allowed. Source not yet saved here. Keep a screenshot of the organizer reply and disclose pre-event work on Devpost.
+- Rules: correction (Nov 15): this note said the organizers OK'd pre-building hardware and testing software at home, but we never got that approval. Disclose the pre-event work on Devpost and don't claim approval.
 - Parts ordered Nov 9 (Amazon, pickup at ASUC Tue Nov 10). See shopping-list.md.
 - Team repo: _not created yet_ (John creates it; agent doesn't push without OK).
 - Idea: John proposed a modular self-balancing robot (hoverboard base, extrusion mast, IMU, camera), Nov 9. Not locked; see `ideas.md` (top pitch: #2 follow-me & fetch care robot).
