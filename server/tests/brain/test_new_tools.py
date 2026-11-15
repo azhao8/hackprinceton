@@ -304,3 +304,27 @@ def test_find_place_doesnt_guess_between_two_places(tmp_path):
     mem = Memory(tmp_path / "m.db", seed_places={"water station": 5, "charging station": 6})
     assert mem.find_place("station") is None
     assert mem.find_place("charging")["marker"] == 6
+
+
+def test_people_in_view_names_saved_looks_and_strangers():
+    """#78: the agent learns who the camera sees; the mic can't say who spoke."""
+    import time as _time
+
+    from app.vision.types import Box, Person
+
+    alex = Person(Box(0.4, 0.1, 0.6, 0.9), 0.9)       # center, near
+    other = Person(Box(0.05, 0.4, 0.15, 0.6), 0.9)    # left, far
+    p = types.SimpleNamespace(published_at=_time.monotonic(), frame=types.SimpleNamespace(image=None),
+                              detections=types.SimpleNamespace(people=[other, alex]))
+
+    class Registry:
+        def match_person(self, image, person, people):
+            return ("Alex", 0.1) if person is alex else None
+
+    tools = ToolBox(perception=lambda: p, registry=Registry())
+    assert tools.people_in_view() == "Alex (center, near); someone I don't recognize (left, far)"
+    p.detections.people = []
+    assert tools.people_in_view() == "nobody"
+    p.published_at = _time.monotonic() - 10
+    assert "isn't seeing" in tools.people_in_view()
+    assert ToolBox().people_in_view() is None                           # no camera: no note
