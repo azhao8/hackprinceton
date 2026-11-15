@@ -11,18 +11,25 @@ from the arbiter, which lets e-stop and the joystick win.
 - `ctx.perception` is vision's newest result (`app.vision.worker.Perception`, or None before
   the first frame); `ctx.vision` is the worker itself, for `request_engage()` / `disengage()`.
   The worker runs on its own thread, so reading these never blocks the loop.
+- `ctx.telemetry()` is the robot link's newest contract-v1 `tel` dict (`yaw` = heading since `g`
+  in degrees, + left; `x` = metres driven since `g`), or None (no link wired in, nothing received
+  yet). It is the link's own dict: read it, don't change it. It has no timestamp and the link
+  keeps the last one while disconnected, so a skill judges freshness itself (search.py watches
+  for a new dict). Over USB `yaw` is there only when the firmware answers `J` (serial_link.py).
 - It returns a `SkillResult` that the agent reads.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.arbiter import Arbiter, Source
 
 if TYPE_CHECKING:
+    from app.vision.types import Box
     from app.vision.worker import Perception
 
 
@@ -37,7 +44,7 @@ class Vision(Protocol):
 
     def latest(self) -> Perception | None: ...
 
-    def request_engage(self) -> int: ...
+    def request_engage(self, near: Box | None = None) -> int: ...
 
     def disengage(self) -> None: ...
 
@@ -45,15 +52,27 @@ class Vision(Protocol):
 class SkillContext:
     """What a skill can see and do. Grows as vision and memory land."""
 
-    def __init__(self, arbiter: Arbiter, vision: Vision | None = None, memory: Any = None):
+    def __init__(self, arbiter: Arbiter, vision: Vision | None = None, memory: Any = None, *,
+                 telemetry: Callable[[], dict | None] | None = None):
         self._arbiter = arbiter
         self.vision = vision           # the vision worker (#3), or None when running without a camera
         self.memory = memory           # world memory
+        self._telemetry = telemetry    # e.g. `lambda: link.telemetry`; None = no robot link wired in
 
     @property
     def perception(self) -> Perception | None:
         """Vision's newest result, or None (no vision, or no frame processed yet)."""
         return self.vision.latest() if self.vision is not None else None
+
+    def telemetry(self) -> dict | None:
+        """The robot's newest contract-v1 `tel` dict, or None. Never raises (a failing source reads as None)."""
+        if self._telemetry is None:
+            return None
+        try:
+            tel = self._telemetry()
+        except Exception:
+            return None
+        return tel if isinstance(tel, dict) else None
 
     def drive(self, v: float, w: float) -> None:
         """Ask for a speed (m/s, + forward) and turn (rad/s, + left)."""

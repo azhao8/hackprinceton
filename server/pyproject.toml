@@ -7,6 +7,7 @@ dependencies = [
     "pyserial>=3.5",
     "ultralytics>=8.4.213",
     "aiohttp>=3.14.5",
+    "anthropic>=2.8.0",
 ]
 
 [dependency-groups]

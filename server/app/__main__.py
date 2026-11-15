@@ -30,18 +30,34 @@ Safety (CLAUDE.md, firmware/README.md "Safety rules"):
 Voice: with CARTESIA_API_KEY set, the API serves Cartesia speech at `/tts` for the phone page and
 makes the stock lines (api.STOCK_LINES) in the background at startup; without it the phone uses
 Safari's built-in voice.
+
+Voice agent (#54; needs the API): with ANTHROPIC_API_KEY set, the server builds the brain's ToolBox
+(the skill runner, skill factories follow / find_person / go_to / bring, camera snapshots) and its
+Agent, and runs `agent.run()` as a background task. Messages reach its inbox from the API
+(`/agent/message`, the control page, `/ws`) and, with CARTESIA_API_KEY too, from the phone's mic
+(`/mic`, speech-to-text, wake word `--wake-word`, default "Miguel"). Its events go to the API
+(`/agent/events`, `/ws`); `say` events also go to the phone's say queue and open the mic's answer
+window. find_person / go_to / bring need the camera; bring waits for the control page's Tray
+loaded button (`/control/loaded`) at the station. Without the key it logs
+"agent: off" and everything else runs as before. Shutdown cancels the agent before the skill.
+
+"This is Mom" (#62): with a camera, ONE PeopleRegistry (saved looks, server/people.json) is shared by
+find_person, bring, the agent's this_is tool and the control page's "This is" box
+(`/control/this-is`, which works even with the agent off). Skills also get the robot's telemetry
+through their context (`telemetry=`, when SkillContext takes it).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
 import os
 import signal
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any
 
@@ -122,6 +138,11 @@ async def drive_loop(arbiter: Arbiter, link: RobotLink, stop: asyncio.Event | No
         await asyncio.sleep(1 / SEND_HZ)
 
 
+def make_skill_context(arbiter: Arbiter, vision: Any, link: RobotLink) -> SkillContext:
+    """The skills' context: the arbiter, vision and (#62) the robot's newest telemetry dict."""
+    return SkillContext(arbiter, vision, telemetry=lambda: link.telemetry)   # read live, not copied
+
+
 class App:
     """The server's 20 Hz loop: arbiter -> link, keys, debug view. No I/O of its own beyond what it's given."""
 
@@ -142,7 +163,7 @@ class App:
         self.link_kind = link_kind
         self.vision = vision
         self.arbiter = Arbiter()
-        self.skills = SkillRunner(SkillContext(self.arbiter, vision))
+        self.skills = SkillRunner(make_skill_context(self.arbiter, vision, link))
         self.sender = Sender(self.arbiter, link)
         self._follow_factory = follow_factory
         self._window = window
@@ -152,8 +173,21 @@ class App:
         self.face_events: Any = None  # app.vision.face_state.FaceEvents, made on first use (vision only)
         self.note = ""
         self.last: Command = Command(0.0, 0.0, "none")
+        self.background: list[asyncio.Task] = []   # e.g. the voice agent: cancelled first on shutdown
         self._quit = False
         self._closed = False
+
+    def start_background(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
+        """Run a task (the voice agent) until shutdown; a crash is logged, never takes the loop down."""
+        task = asyncio.create_task(coro, name=name)
+
+        def done(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None:
+                log.error("%s stopped: %r", name, t.exception())
+
+        task.add_done_callback(done)
+        self.background.append(task)
+        return task
 
     # --- keys (also callable from the API later) ---
 
@@ -363,6 +397,10 @@ class App:
         if self._closed:
             return
         self._closed = True
+        for t in self.background:   # first, so the agent can't start a skill while we stop
+            t.cancel()
+        if self.background:
+            await asyncio.wait(self.background, timeout=1.0)
         task = self.skills.task
         self.skills.cancel()
         if task is not None and not task.done():
@@ -414,6 +452,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--camera-back", action="store_true", help="the camera faces the robot's back")
     ap.add_argument("--height-m", type=float, default=None, help="camera height above the floor")
     ap.add_argument("--tilt-deg", type=float, default=None, help="camera tilt, up positive")
+    ap.add_argument("--calibration", default=None, metavar="PATH",
+                    help="camera calibration file (default server/calibration.json; "
+                         "make one with python -m app.vision.calibrate)")
     ap.add_argument("--follow", action="store_true", help="start the follow skill at once (useful with --no-window)")
     ap.add_argument("--window", action=argparse.BooleanOptionalAction, default=True,
                     help="show the debug window (keys only work in it)")
@@ -421,6 +462,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="serve the phone page, the control page and the dashboard WebSocket")
     ap.add_argument("--http-port", type=int, default=8080, help="control page, dashboard WebSocket, certificate page")
     ap.add_argument("--https-port", type=int, default=8443, help="the robot's phone page (0 = off)")
+    ap.add_argument("--wake-word", default="Miguel",
+                    help="the voice agent only hears mic speech that starts with this word ('' = hears everything)")
     return ap
 
 
@@ -450,20 +493,44 @@ def make_link(args: argparse.Namespace) -> RobotLink:
     return UdpLink(args.host or default, PORT)
 
 
-def make_follow_config(args: argparse.Namespace) -> Any:
-    from app.vision.follow import CameraGeometry, FollowConfig
+def load_calibration(path: str | None) -> Any:
+    """The camera calibration (#62; app/vision/calibration.py, written by
+    `python -m app.vision.calibrate`), or None: then the built-in guesses are used."""
+    try:
+        from app.vision import calibration
+    except Exception as e:
+        log.warning("calibration: unavailable (%s); using the default camera guesses", e)
+        return None
+    where = path or calibration.DEFAULT_PATH
+    cal = calibration.load(where)   # a corrupt file logs a warning and gives None
+    if cal is None:
+        log.info("calibration: none at %s; using the default camera guesses (python -m app.vision.calibrate)", where)
+    else:
+        log.info("calibration: %s (measured %s)", where, cal.measured_at or "?")
+    return cal
 
+
+def make_follow_config(args: argparse.Namespace, cal: Any = None) -> Any:
+    """The follow skill's config: the calibration's measurements, then --height-m / --tilt-deg on top."""
+    from dataclasses import replace
+
+    from app.vision import calibration
+    from app.vision.follow import FollowConfig
+
+    config = calibration.follow_config(cal, FollowConfig(turn_only=args.turn_only, camera_back=args.camera_back))
     geo: dict[str, float] = {}
     if args.height_m is not None:
         geo["height_m"] = args.height_m
     if args.tilt_deg is not None:
         geo["tilt_deg"] = args.tilt_deg
-    return FollowConfig(camera=CameraGeometry(**geo), turn_only=args.turn_only, camera_back=args.camera_back)
+    return replace(config, camera=replace(config.camera, **geo)) if geo else config
 
 
-def make_vision(args: argparse.Namespace) -> Any:
+def make_vision(args: argparse.Namespace, cal: Any = None) -> Any:
+    from app.vision import calibration
     from app.vision.detector import YoloPoseDetector
     from app.vision.frames import open_source
+    from app.vision.markers import MarkerDetector
     from app.vision.tracking import TargetLock
     from app.vision.worker import VisionWorker
 
@@ -475,7 +542,8 @@ def make_vision(args: argparse.Namespace) -> Any:
         source = PhoneFrameSource()
     else:
         source = open_source(args.source, rotate=args.rotate)
-    return VisionWorker(source, detector, TargetLock())
+    return VisionWorker(source, detector, TargetLock(calibration.lock_config(cal)),
+                        marker_detector=MarkerDetector(**calibration.marker_kwargs(cal)))
 
 
 def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
@@ -591,6 +659,156 @@ async def prewarm_voice(tts: Any) -> None:
         log.exception("voice: prewarming the stock lines failed")
 
 
+# --- the voice agent (#54) ---
+
+SNAPSHOT_MAX_WIDTH = 960   # photos for the family app: small enough to send, big enough to see
+
+
+def make_snapshot(vision: Any) -> Callable[[], bytes | None]:
+    """A function that returns the camera's newest frame as JPEG bytes, or None (no frame yet)."""
+
+    def snapshot() -> bytes | None:
+        p = vision.latest()
+        if p is None:
+            return None
+        import cv2
+
+        img = p.frame.image
+        h, w = img.shape[:2]
+        if w > SNAPSHOT_MAX_WIDTH:
+            img = cv2.resize(img, (SNAPSHOT_MAX_WIDTH, round(h * SNAPSHOT_MAX_WIDTH / w)), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return buf.tobytes() if ok else None
+
+    return snapshot
+
+
+def make_registry() -> Any:
+    """The saved looks (server/people.json; app/vision/people.py), or None if it can't load.
+    Make ONE and share it: find_person, bring, this_is and /control/this-is must see the same looks."""
+    try:
+        from app.vision.people import PeopleRegistry
+
+        return PeopleRegistry()
+    except Exception as e:
+        log.warning("people: no saved looks for find_person or this_is (%s)", e)
+        return None
+
+
+def make_this_is(registry: Any, vision: Any) -> Callable[[str], Any] | None:
+    """The control page's "This is" box (/control/this-is): the this_is tool's save path, or None."""
+    if registry is None or vision is None:
+        return None
+    try:
+        from app.brain.tools import save_look
+    except Exception as e:
+        log.warning("people: this is unavailable (%s)", e)
+        return None
+    return lambda name: save_look(name, registry, vision.latest())
+
+
+def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Callable[[str], Any] | None = None,
+                         wait_loaded: Callable[[], Any] | None = None, registry: Any = None) -> dict[str, Callable[..., Any]]:
+    """Skills the agent may start, by tool name (app/brain/tools.py: each factory takes the tool's
+    arguments as keywords). Only with a camera (`follow_factory` is None without vision): every
+    physical skill needs to see. bring also needs `say` and `wait_loaded` (the Tray loaded button).
+    `registry` (make_registry) is the saved looks find_person and bring match against."""
+    factories: dict[str, Callable[..., Any]] = {}
+    if follow_factory is None:
+        return factories
+    factories["follow"] = lambda **_: follow_factory()
+    try:
+        from app.skills.search import FindPerson, GoTo
+    except Exception as e:   # not landed yet, or broken: the agent runs with follow only
+        log.warning("agent: find_person, go_to and bring unavailable (%s)", e)
+        return factories
+    matcher = None
+    try:
+        from app.brain.vision_check import matches_description as matcher
+    except Exception as e:
+        log.warning("agent: no description check for find_person (%s)", e)
+    factories["find_person"] = lambda name=None, description=None, **_: FindPerson(name, description, registry, matcher)
+    factories["go_to"] = lambda place, **_: GoTo(place)
+    if say is not None and wait_loaded is not None:
+        try:
+            from app.skills.bring import Bring
+
+            factories["bring"] = lambda item, person=None, **_: Bring(item, person, wait_loaded, say,
+                                                                      registry=registry, matcher=matcher)
+        except Exception as e:
+            log.warning("agent: bring unavailable (%s)", e)
+    return factories
+
+
+def on_agent_event(state: Any, ev: Any) -> None:
+    """An agent event: to the API (/agent/events, /ws) and, for `say`, to the phone's say queue."""
+    d = state.publish_agent_event(ev)
+    if d.get("kind") == "say":
+        state.add_say(str(d.get("text", "")))
+        hub = getattr(state.mic, "hub", None)
+        if hub is not None:
+            hub.note_miguel_spoke()   # the senior can answer without the wake word for a few seconds
+    elif d.get("kind") in ("reply", "error", "task"):
+        log.info("agent %s: %s", d["kind"], str(d.get("text", ""))[:120])
+
+
+def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None) -> Any:
+    """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
+    `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        log.info("agent: off (ANTHROPIC_API_KEY not set)")
+        return None
+    try:
+        from app.brain.agent import Agent
+        from app.brain.tools import ToolBox
+
+        factories = make_skill_factories(follow_factory, say=state.add_say, wait_loaded=state.wait_loaded,
+                                         registry=registry)
+        toolbox = ToolBox(app.skills, factories, save_photo=state.save_photo,
+                          snapshot=make_snapshot(app.vision) if app.vision is not None else None,
+                          registry=registry,
+                          perception=app.vision.latest if app.vision is not None else None)
+        agent = Agent(toolbox, events_cb=lambda ev: on_agent_event(state, ev))
+    except Exception as e:
+        log.warning("agent: off (%s)", e)
+        return None
+    state.agent_inbox = agent.inbox
+    log.info("agent: on (skills: %s)", ", ".join(factories) or "none, no camera")
+    return agent
+
+
+def make_hearing(state: Any, wake_word: str | None) -> Any:
+    """The phone's /mic, through speech-to-text into the agent's inbox; returns the STT (to close) or None.
+    Without CARTESIA_API_KEY /mic is still mounted and drops the audio, so the phone page works the same."""
+    try:
+        from app.speech.mic import make_mic_handler
+        from app.speech.stt import CartesiaSTT
+
+        stt = CartesiaSTT.from_env()
+        state.mic = make_mic_handler(stt, state.agent_inbox, wake_word=wake_word)
+    except Exception as e:
+        log.warning("hearing: off (%s)", e)
+        return None
+    if stt is None:
+        log.info("hearing: off (CARTESIA_API_KEY not set); /mic drops the phone's audio")
+    else:
+        log.info("hearing: on, /mic (wake word: %s)", wake_word or "none")
+    return stt
+
+
+async def close_async_quietly(obj: Any, what: str) -> None:
+    """Call obj.aclose() or obj.close() (awaiting it if needed), if it has one."""
+    fn = getattr(obj, "aclose", None) or getattr(obj, "close", None)
+    if fn is None:
+        return
+    try:
+        result = fn()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        log.exception("closing the %s failed", what)
+
+
 def make_window() -> tuple[Any, Any]:
     from app.vision.debug_view import DebugWindow, render
 
@@ -614,13 +832,25 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         if isinstance(e, Exception):
             raise SystemExit(f"Couldn't start the robot link: {e}") from e
         raise
-    runner = tts = warm = None
+    runner = tts = warm = agent = stt = None
     try:
         if args.api:
             tts = make_tts()
-            runner, _ = await api.start(api_state(app, link, vision, tts), args.http_port, args.https_port or None)
+            state = api_state(app, link, vision, tts)
+            state.guardian_token = os.environ.get("GUARDIAN_TOKEN") or None
+            registry = make_registry() if vision is not None else None   # ONE instance for everyone (#62)
+            state.this_is = make_this_is(registry, vision)
+            # The agent's follow uses the control page's follow settings (api_state wraps the factory).
+            agent = make_agent(app, state, app._follow_factory or follow_factory, registry)   # sets state.agent_inbox
+            if agent is not None:
+                stt = make_hearing(state, args.wake_word or None)   # sets state.mic, before the routes are made
+            runner, _ = await api.start(state, args.http_port, args.https_port or None)
+            if agent is not None:
+                app.start_background(agent.run(), "agent")
             if tts is not None:
                 warm = asyncio.create_task(prewarm_voice(tts))   # don't hold up startup
+        else:
+            log.info("agent: off (--no-api: nothing to talk to it)")
         if args.robot == "real":
             if args.link == "serial":
                 print("REAL robot on USB. Nothing moves until someone holds it upright and presses G.", flush=True)
@@ -643,6 +873,10 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
         await app.run()
     finally:
         await app.shutdown()   # already done by run() unless something failed before it: safe twice
+        if agent is not None:
+            await close_async_quietly(agent, "agent")
+        if stt is not None:
+            await close_async_quietly(stt, "speech-to-text")
         if warm is not None:
             warm.cancel()
             await asyncio.gather(warm, return_exceptions=True)
@@ -662,12 +896,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.robot == "real":
         log.warning("REAL ROBOT: only run this with someone at the robot (CLAUDE.md).")
 
-    vision = None if args.no_vision else make_vision(args)
+    cal = None if args.no_vision else load_calibration(args.calibration)
+    vision = None if args.no_vision else make_vision(args, cal)
     follow_factory = None
     if vision is not None:
         from app.skills.follow import FollowSkill
 
-        config = make_follow_config(args)
+        config = make_follow_config(args, cal)
         follow_factory = lambda: FollowSkill(config)  # noqa: E731
         follow_factory.config = config  # type: ignore[attr-defined]  # api_state() applies the control page's settings
 
