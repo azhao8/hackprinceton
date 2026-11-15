@@ -401,7 +401,7 @@ setMode();
 async function openCam(deviceId) {
   if (stream) stream.getTracks().forEach(t => t.stop());
   const video = { width: { ideal: 1280 }, height: { ideal: 720 } };
-  if (deviceId) video.deviceId = { exact: deviceId }; else video.facingMode = { ideal: 'environment' };
+  if (deviceId) video.deviceId = { exact: deviceId }; else video.facingMode = { ideal: wantCamera === 'front' ? 'user' : 'environment' };
   stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
   v.srcObject = stream;
   await v.play();
@@ -422,8 +422,9 @@ async function listCams() {
 async function keepAwake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sending) keepAwake(); });
 
-// Which camera: "back" (default) or "front", set on the control page. Ultra-wide when there is one.
-let wantCamera = 'back';
+// Which camera: "front" (the server's default since #105) or "back", set on the control page.
+// Ultra-wide when there is one. Until the first /tel arrives, start on the server's default.
+let wantCamera = 'front';
 function pickCamera(cams, side) {
   const re = side === 'front' ? /front/i : /back/i;
   return cams.find(c => re.test(c.label) && /ultra ?wide/i.test(c.label)) || cams.find(c => re.test(c.label));

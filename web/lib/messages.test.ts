@@ -23,7 +23,7 @@ describe("contract samples", () => {
   it("status.json parses", () => {
     expect(parseServerMessage(read(web, "status.json"))).toEqual({
       t: "status", follow: false, link: true, estop: false,
-      settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, lag_ms: 27.4, skill: null,
+      settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, defaults: null, lag_ms: 27.4, skill: null,
       vision: { mode: "server", status: "running", camera: { frames: 120, age_s: 0.08 } },
       trim_shift: -8.75, listening: false,
       // #79 fields the sample doesn't carry: their defaults
@@ -39,6 +39,16 @@ describe("contract samples", () => {
 });
 
 describe("parseServerMessage", () => {
+  it("reads the sliders' defaults (#105) and ignores malformed ones", () => {
+    const status = (defaults: unknown) => JSON.stringify({
+      t: "status", follow: false, link: true, estop: false, defaults,
+      settings: { mode: "person", speed: 2, distance: 0.5, voice: true, camera: "front" },
+    });
+    const good = { speed: 0.8, distance: 0.8, drive_speed: 1.1, turn_rate: 1.0 };
+    expect(parseServerMessage(status(good))).toMatchObject({ defaults: good, settings: { camera: "front" } });
+    expect(parseServerMessage(status({ ...good, turn_rate: "1" }))).toMatchObject({ defaults: null });
+  });
+
   it("keeps a fault string", () => {
     const raw = '{"t":"tel","pitch":0,"rate":0,"vl":0,"vr":0,"batt":null,"state":"idle","fault":"fell over"}';
     expect(parseServerMessage(raw)?.t === "tel" && parseServerMessage(raw)).toMatchObject({ fault: "fell over" });

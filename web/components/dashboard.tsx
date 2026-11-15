@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { HISTORY_S, SERVER_WS_URL, useRobot, type Connection } from "@/lib/use-robot";
-import type { AgentEvent, ClientMessage, FollowSettings, KeyLetter, MemoryView, Status, Telemetry } from "@/lib/messages";
+import type { AgentEvent, ClientMessage, FollowSettings, KeyLetter, MemoryView, SliderDefaults, Status, Telemetry } from "@/lib/messages";
 import { LineChart } from "./line-chart";
 
 const STALE_MS = 1000;
@@ -197,8 +197,10 @@ export function Dashboard() {
                 <PadKey label="D" on={held.has("R")} onPress={(on) => pressDir("R", on)} />
               </div>
               <div className="flex flex-1 flex-col gap-3">
-                <Slider label="Top speed" unit="m/s" min={0.1} max={3.2} step={0.05} value={vmax} onChange={(v) => setDrive({ drive_speed: v })} />
-                <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={(v) => setDrive({ turn_rate: v })} />
+                <Slider label="Top speed" unit="m/s" min={0.1} max={3.2} step={0.05} value={vmax} onChange={(v) => setDrive({ drive_speed: v })}
+                  reset={status?.defaults?.drive_speed ?? DRIVE_SPEED} />
+                <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={(v) => setDrive({ turn_rate: v })}
+                  reset={status?.defaults?.turn_rate ?? TURN_RATE} />
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -210,6 +212,7 @@ export function Dashboard() {
             follow={status?.follow ?? false}
             skill={status?.skill ?? null}
             settings={status?.settings ?? null}
+            defaults={status?.defaults ?? null}
             serverVision={status?.vision?.mode === "server"}
             send={send}
             onToggle={toggleFollow}
@@ -261,8 +264,8 @@ export function Dashboard() {
   );
 }
 
-function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
-  follow: boolean; skill: string | null; settings: FollowSettings | null; serverVision: boolean;
+function FollowCard({ follow, skill, settings, defaults, serverVision, send, onToggle }: {
+  follow: boolean; skill: string | null; settings: FollowSettings | null; defaults: SliderDefaults | null; serverVision: boolean;
   send: (m: ClientMessage) => boolean; onToggle: () => void;
 }) {
   const [draft, setDraft] = useState<FollowSettings | null>(null);
@@ -296,9 +299,9 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
             </button>
           </div>
           <Slider label="Follow speed cap" unit="m/s" min={0.05} max={3.2} step={0.05} value={shown.speed}
-            onChange={(v) => set({ speed: v })} />
+            onChange={(v) => set({ speed: v })} reset={defaults?.speed} />
           <Slider label="Closeness (bigger = stops closer)" unit="" min={range[0]} max={range[1]} step={0.05}
-            value={shown.distance} onChange={(v) => set({ distance: v })} />
+            value={shown.distance} onChange={(v) => set({ distance: v })} reset={defaults?.distance} />
         </div>
       ) : (
         <p className="mt-3 text-sm text-muted">Waiting for the server…</p>
@@ -309,7 +312,7 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
 
 /** The server's view: the phone's camera with the server's boxes, target and command drawn on it. */
 function CameraCard({ status, send }: { status: import("@/lib/messages").Status | null; send: (m: ClientMessage) => boolean }) {
-  const camera = status?.settings.camera ?? "back";
+  const camera = status?.settings.camera ?? "front";
   const mirror = status?.settings.mirror ?? false;
   const vision = status?.vision ?? null;
   const httpBase = SERVER_WS_URL.replace(/^ws(s?):/, "http$1:").replace(/\/ws$/, "");
@@ -593,18 +596,31 @@ function Action({ children, onClick, k, tone }: {
   );
 }
 
-function Slider({ label, unit, min, max, step, value, onChange }: {
+/** A labelled range input. With `reset` (the server's default, #105) a small ↺ next to the value sets it
+ * back, sending the setting the same way dragging does; it fades out while the value is the default. */
+function Slider({ label, unit, min, max, step, value, onChange, reset }: {
   label: string; unit: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void;
+  reset?: number;
 }) {
+  const atDefault = reset === undefined || Math.abs(value - reset) < 1e-6;
   return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className="flex justify-between text-muted">
+    <div className="flex flex-col gap-1 text-sm">
+      <span className="flex justify-between gap-2 text-muted">
         <span>{label}</span>
-        <span className="font-mono text-foreground">{value.toFixed(2)} {unit}</span>
+        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+          <span className="font-mono text-foreground">{value.toFixed(2)} {unit}</span>
+          {reset !== undefined && (
+            <button type="button" onClick={() => onChange(reset)} disabled={atDefault}
+              title={`Reset to ${reset.toFixed(2)}${unit ? " " + unit : ""}`} aria-label={`Reset ${label} to ${reset.toFixed(2)}`}
+              className="rounded px-1 leading-none text-muted hover:text-foreground disabled:opacity-30 disabled:hover:text-muted">
+              ↺
+            </button>
+          )}
+        </span>
       </span>
       <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(+e.target.value)}
-        className="accent-[var(--accent)]" />
-    </label>
+        aria-label={label} className="accent-[var(--accent)]" />
+    </div>
   );
 }
 

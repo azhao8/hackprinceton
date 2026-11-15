@@ -357,13 +357,16 @@ def test_control_page_does_not_use_bare_element_ids():
 def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
     async def t(c, s):
         d = await (await c.get("/tel")).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.8, "distance": 0.8, "voice": True, "camera": "back", "mirror": False, "drive_speed": 1.1, "turn_rate": 1.0}
+        assert d["defaults"] == {"speed": 0.8, "distance": 0.8, "drive_speed": 1.1, "turn_rate": 1.0}   # #105
+        assert d["settings"] == {"mode": "person", "speed": 0.8, "distance": 0.8, "voice": True, "camera": "front", "mirror": False, "drive_speed": 1.1, "turn_rate": 1.0}
         d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False, "drive_speed": 9})).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "back", "mirror": False,
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "front", "mirror": False,
                                  "drive_speed": 3.2, "turn_rate": 1.0}   # clamped
         d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
-        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False,
+        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "front", "mirror": False,
                                  "drive_speed": 3.2, "turn_rate": 1.0}    # new mode: its follow defaults; drive kept
+        assert (await (await c.get("/tel")).json())["defaults"] == {"speed": 0.4, "distance": 0.35, "drive_speed": 1.1,
+                                                                   "turn_rate": 1.0}   # #105: the yellow mode's resets
         await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
         assert (await (await c.get("/tel")).json())["settings"]["mode"] == "yellow"
         ws = await c.ws_connect("/ws")
@@ -471,10 +474,11 @@ def test_camera_and_mirror_settings_reach_the_phone_and_the_frame_source():
         state = ApiState(Arbiter(), FakeLink(), phone_frames=src)
         client = TestClient(TestServer(create_app(state)))
         await client.start_server()
-        d = await (await client.post("/control/settings", json={"camera": "front", "mirror": True})).json()
-        assert d["settings"]["camera"] == "front" and d["settings"]["mirror"] is True and src.mirror
+        assert state.settings["camera"] == "front"            # the default since #105
+        d = await (await client.post("/control/settings", json={"camera": "back", "mirror": True})).json()
+        assert d["settings"]["camera"] == "back" and d["settings"]["mirror"] is True and src.mirror
         await client.post("/control/settings", json={"camera": "sideways", "mirror": "yes"})   # ignored
-        assert state.settings["camera"] == "front" and state.settings["mirror"] is True
+        assert state.settings["camera"] == "back" and state.settings["mirror"] is True
         img = np.zeros((10, 20, 3), dtype=np.uint8)
         img[:, :5] = 255                                    # white on the left
         ok, jpg = cv2.imencode(".png", img)
