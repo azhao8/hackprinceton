@@ -664,6 +664,14 @@ def test_phone_actions_from_the_hotspot_only():
             assert (await (await client.post("/phone/action", json={"action": "park"})).json())["ok"]
             assert (await (await client.post("/phone/action", json={"action": "recalibrate"})).json())["ok"]
             assert link.sent == ["P", "c"]
+            r = await (await client.post("/phone/action", json={"action": "tray_loaded"})).json()
+            assert r["ok"] is False and (await (await client.get("/tel")).json())["tray_waiting"] is False
+            waiter = asyncio.ensure_future(state.wait_loaded())
+            await asyncio.sleep(0)
+            assert (await (await client.get("/tel")).json())["tray_waiting"] is True
+            r = await (await client.post("/phone/action", json={"action": "tray_loaded"})).json()
+            assert r["ok"] and await asyncio.wait_for(waiter, 1) is True
+            assert (await (await client.get("/tel")).json())["tray_waiting"] is False
             assert (await client.post("/phone/action", json={"action": "g"})).status == 400
             tunnel = {"X-Forwarded-For": "203.0.113.9"}
             assert (await client.post("/phone/action", json={"action": "start"}, headers=tunnel)).status == 403

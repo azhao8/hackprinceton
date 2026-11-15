@@ -43,9 +43,11 @@ reads them from `/tel` (decision 0053: the phone is the robot's eye, every contr
 
 Start (#79, decision 0059): the API sends `g` only after a person pressed Start (control page or the
 robot's phone) and the robot is then held upright and steady (app/robot_watch.py). Skills, the agent
-and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start|park|recalibrate}`
+and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start|park|recalibrate|tray_loaded}`
 (the hotspot only), `/ws` `cancel_start`, `reset_chat`, `clear_log`, `reset_memory`, and status fields
-`drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent` (contract/web/README.md).
+`drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent`, `tray_waiting` (#90:
+the bring skill waits for someone to load the tray; the phone's "I put items in his tray" button
+lights up) (contract/web/README.md).
 
 NEW (#54, the voice agent and the guardian channel; additive, for Alex's review as W-6 owner).
 Messages in contract/web/README.md ("Agent"). "Agent auth" below = this laptop directly, or
@@ -168,7 +170,7 @@ FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real
 CONTROL_ONLY = {"estop", "joystick", "follow", "say", "settings", "key", "recalibrate", "trim", "arm",
                 "tray_loaded", "test_fall", "this_is", "memory_get", "memory_set",
                 "cancel_start", "reset_chat", "clear_log", "reset_memory"}   # #79
-PHONE_ACTIONS = ("start", "cancel_start", "park", "recalibrate")   # POST /phone/action (#79)
+PHONE_ACTIONS = ("start", "cancel_start", "park", "recalibrate", "tray_loaded")   # POST /phone/action (#79)
 
 # The control page's preset buttons.
 CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
@@ -662,7 +664,8 @@ class ApiState:
                 "autostart": self.autostart.view(), "calibrating": now < self._calibrating_until,
                 "phone": self.phone_seen is not None and now - self.phone_seen < PHONE_SEEN_S,
                 "family": len(getattr(self.family, "clients", None) or ()),
-                "agent": self.agent is not None}
+                "agent": self.agent is not None,
+                "tray_waiting": any(not ev.is_set() for ev in self._tray_waiters)}   # NEW (#90)
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -774,6 +777,9 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         elif action == "park":
             ok = state.key("P")
             note = "Parking" if ok else "Couldn't reach the robot"
+        elif action == "tray_loaded":   # NEW (#90): the phone's "I put items in his tray"
+            ok = state.mark_loaded()
+            note = "Thanks! Got it" if ok else "I wasn't waiting for the tray"
         else:
             ok = state.recalibrate()
             note = "Recalibrating: keep me still" if ok else "Can't recalibrate while balancing"

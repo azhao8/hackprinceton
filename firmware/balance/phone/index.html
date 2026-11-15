@@ -28,8 +28,10 @@
   #suit.on { display: block; }
   #face.on ~ #hud { top: auto; bottom: 0; font-size: 11px; opacity: 0.6; background: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-  /* Robot controls (#79): the faint ⋯ button opens the sheet (tapping the face stays tap-to-talk). The status line and
-     the drift banner stack at the top, over the face. Everything here stays hidden until /tel has the fields. */
+  /* Robot controls (#79, #90): no menu. The buttons that need acting on now (tray loaded, recalibrate) sit just below the
+     face, small and dim; Start balancing and Park sit at the very bottom, dimmer still. Tapping the face or the suit stays
+     tap-to-talk. The status line and the drift banner stack at the top, over the face. Everything here stays hidden until
+     /tel has the fields. */
   #top { position: absolute; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); display: flex;
          flex-direction: column; align-items: center; gap: 10px; pointer-events: none; }   /* taps go through to the face */
   #wrap:not(.faceon) #top { top: 35%; }                                                   /* phone vision: the hud is at the top */
@@ -39,18 +41,20 @@
   #drift { display: none; width: 100%; box-sizing: border-box; padding: 16px; border-radius: 16px; background: #b45309;
            color: #fff; font-size: 22px; font-weight: 600; line-height: 1.3; text-align: center; pointer-events: auto; }
   #driftRecal { margin-top: 12px; font-size: 22px; padding: 14px 28px; background: #fff; color: #7c2d12; font-weight: 700; }
-  #ctlBtn { position: absolute; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 12px); width: 44px; height: 44px;
-            padding: 0; border-radius: 50%; background: #ffffff14; color: #fff8; font-size: 22px; line-height: 44px; display: none; }
-  #sheet { position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 64px); display: none;
-           flex-direction: column; gap: 8px; padding: 12px; border-radius: 16px; background: #111e; }
-  #sheet button { font-size: 18px; padding: 14px; }
-  #sheet button:disabled { opacity: 0.35; }
+  #quick, #low { position: absolute; left: 12px; right: 12px; display: none; justify-content: center; gap: 10px; }
+  #quick { top: calc(50% + 10px); }                                                   /* just below the face */
+  #low { bottom: calc(env(safe-area-inset-bottom) + 56px); }                           /* above the status line */
+  #wrap:not(.faceon) #quick { top: 60%; }
+  #quick button { font-size: 15px; padding: 8px 14px; border-radius: 18px; background: #0b1220b3; color: #ffffffbf; }
+  #quick button.hot { background: #15803d; color: #fff; font-weight: 600; }           /* the tray: someone must load it now */
+  #low button { font-size: 13px; padding: 7px 12px; border-radius: 14px; background: #00000033; color: #ffffff66; }
+  #quick button:disabled, #low button:disabled { opacity: 0.35; }
   #cal { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
          gap: 28px; padding: 0 16px; background: #000d; text-align: center; }
   #calMsg { font-size: 40px; font-weight: 700; }
   #calCancel { font-size: 22px; padding: 14px 36px; }
-  #status.on, #drift.on, #ctlBtn.on { display: block; }
-  #sheet.on, #cal.on { display: flex; }
+  #status.on, #drift.on { display: block; }
+  #quick.on, #low.on, #cal.on { display: flex; }
 </style>
 </head>
 <body>
@@ -76,12 +80,13 @@ Everything else is on the laptop's control page.</div>
     <div id="drift">Tilt sensor drifting. Lay me down flat and still, then recalibrate.<br>
       <button id="driftRecal">Recalibrate</button></div>
   </div>
-  <button id="ctlBtn" aria-label="Robot controls">⋯</button>
-  <div id="sheet">
+  <div id="quick">
+    <button id="actTray">I put items in his tray</button>
+    <button id="actRecal">Recalibrate tilt sensor</button>
+  </div>
+  <div id="low">
     <button id="actStart">Start balancing</button>
     <button id="actPark">Park</button>
-    <button id="actRecal">Recalibrate tilt sensor</button>
-    <button id="actClose">Close</button>
   </div>
   <div id="cal"><div id="calMsg"></div><button id="calCancel">Cancel</button></div>
 </div>
@@ -586,22 +591,20 @@ setInterval(async () => {
   } catch (e) {}
 }, 600);
 
-// ---------- robot controls (#79): Start balancing, Park, Recalibrate tilt sensor; the drift warning ----------
-// The faint ⋯ button (bottom right) opens a sheet; tapping the face stays tap-to-talk. From /tel (main server only):
+// ---------- robot controls (#79, #90): Start balancing, Park, Recalibrate tilt sensor, tray loaded; the drift warning ----------
+// Always on screen, no menu (#90): tray loaded and Recalibrate just below the face, Start and Park dim at the bottom;
+// tapping the face stays tap-to-talk. From /tel (main server only):
 //   drift        the tilt sensor drifts (latched by the server): he must be recalibrated before he can balance
 //   autostart    {waiting, note}: Start was pressed, the server waits for him to be held upright and steady, then balances
 //   calibrating  true for ~3 s after a recalibrate was sent
+//   tray_waiting the bring skill waits for someone to load the tray: the tray button lights up
 // phone_server.py sends none of these: everything here stays hidden. Actions: POST /phone/action {action} -> {ok, note}.
 // Recalibrate counts down "Hands off" first: touching the phone shakes the robot, and the sensor needs him still.
 const Ctl = (() => {
-  const SHEET_MS = 8000, COUNT = 3, NOTE_MS = 2500, CAL_MIN_MS = 3000, CAL_MAX_MS = 10000;
-  let has = false, drift = false, waiting = false, waitNote = '', calibrating = false, balancing = false;
-  let sheetTimer = 0, flash = '', flashWarn = false, flashTimer = 0;
+  const COUNT = 3, NOTE_MS = 2500, CAL_MIN_MS = 3000, CAL_MAX_MS = 10000;
+  let has = false, drift = false, waiting = false, waitNote = '', calibrating = false, balancing = false, tray = false;
+  let flash = '', flashWarn = false, flashTimer = 0;
   let cal = null;                                            // the recalibrate flow: {phase: count|send|cal, n, timer, t0, saw}
-  const sheetOpen = () => $('sheet').classList.contains('on');
-  function armSheet() { clearTimeout(sheetTimer); sheetTimer = setTimeout(closeSheet, SHEET_MS); }   // 8 s without a tap: hide
-  function openSheet() { $('sheet').classList.add('on'); armSheet(); render(); }
-  function closeSheet() { clearTimeout(sheetTimer); $('sheet').classList.remove('on'); }
   function note(text, warn) {                                // a short line in the status line, ~2.5 s
     if (!text) return;
     flash = text; flashWarn = !!warn; clearTimeout(flashTimer);
@@ -621,9 +624,8 @@ const Ctl = (() => {
     log({ event: 'phone action', action, ok, note: msg });
     return ok;
   }
-  function recal() {                                         // the sheet's or the banner's Recalibrate
+  function recal() {                                         // the button's or the banner's Recalibrate
     if (cal || balancing) return;
-    closeSheet();
     cal = { phase: 'count', n: COUNT, timer: 0, t0: 0, saw: false };
     countdown();
   }
@@ -652,8 +654,9 @@ const Ctl = (() => {
     clearTimeout(cal.timer); cal = null; render();
   }
   function render() {
-    $('ctlBtn').classList.toggle('on', has);
-    if (!has) closeSheet();
+    $('quick').classList.toggle('on', has && !cal);
+    $('low').classList.toggle('on', has && !cal);
+    $('actTray').classList.toggle('hot', tray);
     const s = $('actStart');
     s.textContent = waiting ? 'Cancel start' : 'Start balancing';
     s.disabled = balancing;                                  // already balancing
@@ -674,23 +677,21 @@ const Ctl = (() => {
     const a = d.autostart || {}, t = d.tel || {};
     has = d.drift !== undefined || d.autostart !== undefined;
     drift = !!d.drift; calibrating = !!d.calibrating;
-    waiting = !!a.waiting; waitNote = typeof a.note === 'string' ? a.note : '';
+    waiting = !!a.waiting; waitNote = typeof a.note === 'string' ? a.note : ''; tray = !!d.tray_waiting;
     balancing = t.state === 'balance' || t.state === 'drive';
     if (balancing && cal && cal.phase === 'count') { cancel(); note("I'm balancing: park me first", true); }
     render();
   }
-  $('ctlBtn').onclick = () => { if (sheetOpen()) closeSheet(); else openSheet(); };
-  $('sheet').addEventListener('pointerdown', armSheet);      // any tap in the sheet restarts the 8 s
   $('actStart').onclick = async () => {
     const a = waiting ? 'cancel_start' : 'start';
-    if (await act(a)) { waiting = a === 'start'; closeSheet(); render(); }   // /tel confirms on the next poll
+    if (await act(a)) { waiting = a === 'start'; render(); }   // /tel confirms on the next poll
   };
-  $('actPark').onclick = async () => { if (await act('park')) closeSheet(); };
+  $('actPark').onclick = () => act('park');
+  $('actTray').onclick = async () => { if (await act('tray_loaded')) { tray = false; render(); } };
   $('actRecal').onclick = recal;
-  $('actClose').onclick = closeSheet;
   $('driftRecal').onclick = recal;
   $('calCancel').onclick = cancel;
-  return { update, fast: () => sheetOpen() || waiting || !!cal };   // fast: poll /tel ~8 Hz even with the face off
+  return { update, fast: () => waiting || !!cal };   // fast: poll /tel ~8 Hz even with the face off
 })();
 let ctlErrLogged = false;
 
