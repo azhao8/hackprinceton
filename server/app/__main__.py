@@ -843,12 +843,19 @@ def make_memory() -> Any:
     return Memory(**({"path": path} if path else {}), seed_places=places.places(), seed_aliases=places.ALIASES)
 
 
+def brain_available() -> bool:
+    """Claude has a key, or the brain runs on the local model (MIGUEL_LLM=local, #81), which needs none."""
+    from app.brain.local_llm import backend
+
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) or backend() == "local"
+
+
 def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None,
                memory: Any = None) -> Any:
     """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
     `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        log.info("agent: off (ANTHROPIC_API_KEY not set)")
+    if not brain_available():
+        log.info("agent: off (ANTHROPIC_API_KEY not set, and MIGUEL_LLM isn't local)")
         return None
     try:
         from app.brain.agent import Agent
@@ -972,7 +979,7 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
             runner, _ = await api.start(state, args.http_port, args.https_port or None)
             if agent is not None:
                 app.start_background(agent.run(), "agent")
-            if vision is not None and state.family is not None and os.environ.get("ANTHROPIC_API_KEY"):
+            if vision is not None and state.family is not None and brain_available():
                 from app.vision import fall
 
                 if fall.enabled():   # FALL_DETECT=0 turns it off

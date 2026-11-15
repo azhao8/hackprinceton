@@ -502,7 +502,7 @@ def test_serve_without_the_key_runs_as_before(monkeypatch, brain, caplog):
     caplog.set_level("INFO")
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     app, state, link = serve_with_fakes(monkeypatch, ["--no-vision"])
-    assert "agent: off (ANTHROPIC_API_KEY not set)" in caplog.text
+    assert "agent: off (ANTHROPIC_API_KEY not set" in caplog.text
     assert not FakeAgent.instances and state.agent_inbox is None and state.mic is None and not brain
     assert app.background == [] and link.events[-2:] == ["x", "close"]
 

@@ -102,6 +102,18 @@ On the robot's iPhone, allow the camera and the microphone.
 
 Top speed is uncapped (up to the step generator's 3.2 m/s); raise the sliders slowly, with someone ready to catch it.
 
+## 6b. Run the AI on this laptop (optional, no internet)
+
+Brain, hearing and voice can each run locally on an Apple Silicon Mac instead of Claude and Cartesia. Cloud stays the default; set any of these in `server/.env` and restart:
+
+| Switch | Local model | Speed here (M5 Pro, 48 GB) |
+| --- | --- | --- |
+| `MIGUEL_LLM=local` | Qwen3.8 27B through [Ollama](https://ollama.com) (`ollama pull qwen3.8:27b`); it also answers the picture questions and the fall check | first spoken sentence about 2.8 s; first start loads the model for about 30 s |
+| `MIGUEL_STT=local` | Parakeet TDT 0.6B v3 with Silero VAD | a final transcript 65–90 ms after the speaker's pause |
+| `MIGUEL_TTS=local` | Kokoro-82M (`MIGUEL_KOKORO_VOICE`, default `af_heart`) | 0.07 s for a short line |
+
+Once: `cd server && uv sync --group local` (a plain `uv sync` removes these packages again), then start once online so the models download. At the venue set `HF_HUB_OFFLINE=1`. With `MIGUEL_LLM=local` no Anthropic key is needed. Details and tuning names: `server/.env.example`.
+
 ## 7. Troubleshooting
 
 | Symptom | Likely cause and fix |
@@ -133,4 +145,5 @@ Team workflow, lanes and decision rules: `CLAUDE.md`.
 - [Cartesia](https://cartesia.ai) (API): speech to text (Ink) and Miguel's voice (Sonic).
 - [Next.js](https://nextjs.org), [React](https://react.dev), [Tailwind CSS](https://tailwindcss.com), [three.js](https://threejs.org): the web apps.
 - Arduino core for ESP32 (Espressif): the firmware.
+- Local AI (optional, #81): [Ollama](https://github.com/ollama/ollama) (MIT) running [Qwen3.8](https://github.com/QwenLM) (Apache-2.0); [parakeet-mlx](https://github.com/senstella/parakeet-mlx) (Apache-2.0) with NVIDIA's [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC-BY-4.0); [Silero VAD](https://github.com/snakers4/silero-vad) (MIT); [mlx-audio](https://github.com/Blaizzy/mlx-audio) (MIT) with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), [misaki](https://github.com/hexgrad/misaki) (Apache-2.0), [spaCy](https://spacy.io) `en_core_web_sm` (MIT) and [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0); [Apple MLX](https://github.com/ml-explore/mlx) (MIT).
 - John's balance firmware and follow gains; Grant's agent, face and behaviors; Nick's family app.
