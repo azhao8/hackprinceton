@@ -478,6 +478,9 @@ def test_real_models_hear_kokoro_speech():
     except Exception:  # noqa: BLE001
         pytest.skip("Kokoro model not in the Hugging Face cache")
 
+    from app.speech.tts_local import _short_espeak_data
+
+    _short_espeak_data()   # espeak-ng ignores a long data path (a deep checkout) and the process dies
     with MLX_LOCK:
         tts = load_model("mlx-community/Kokoro-82M-bf16")
         audio24 = np.concatenate([np.asarray(r.audio, np.float32) for r in tts.generate(
