@@ -104,7 +104,7 @@ Top speed is uncapped (up to the step generator's 3.2 m/s); raise the sliders sl
 
 ## 6b. Run the AI on this laptop (optional, no internet)
 
-Brain, hearing and voice can each run locally on an Apple Silicon Mac instead of Claude and Cartesia. Cloud stays the default; set any of these in `server/.env` and restart. (The brain can also run on Google Gemini: `MIGUEL_LLM=gemini` with `GEMINI_API_KEY`; model `MIGUEL_GEMINI_MODEL`, default `gemini-4-hydrogen`. Like the local model, it answers the picture questions and the fall check too.)
+Brain, hearing and voice can each run locally on an Apple Silicon Mac instead of Claude and Cartesia. Cloud stays the default; set any of these in `server/.env` and restart. (The brain can also run on Google Gemini: `MIGUEL_LLM=gemini` with `GEMINI_API_KEY`; model `MIGUEL_GEMINI_MODEL`, default `gemini-3.5-flash-lite`: first spoken sentence 0.8 s for chat, 2.6 s for a task. Like the local model, it answers the picture questions and the fall check too.)
 
 | Switch | Local model | Speed here (M5 Pro, 48 GB) |
 | --- | --- | --- |

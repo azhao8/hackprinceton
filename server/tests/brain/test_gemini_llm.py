@@ -12,8 +12,8 @@ from aiohttp.test_utils import TestServer
 
 from app.arbiter import Arbiter
 from app.brain.agent import Agent
-from app.brain.gemini_llm import (SKIP_SIGNATURE, GeminiClient, GeminiError, chat_body, message_from_openai,
-                                  messages_to_openai, tools_to_openai)
+from app.brain.gemini_llm import (SKIP_SIGNATURE, GeminiClient, GeminiError, _error_detail, chat_body,
+                                  message_from_openai, messages_to_openai, tools_to_openai)
 from app.brain.prompt import SYSTEM_PROMPT, get_client
 from app.brain.tools import ToolBox
 from app.brain.types import Utterance
@@ -359,3 +359,14 @@ def test_matches_description_asks_for_json_schema():
     assert answer == (True, "red shirt")
     rf = gem.requests[0]["response_format"]
     assert rf["type"] == "json_schema" and rf["json_schema"]["schema"]["required"] == ["match", "reason"]
+
+
+def test_error_detail_keeps_the_message_and_the_quota_line():
+    body = json.dumps([{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message":
+                                  "You exceeded your current quota.\n* Quota exceeded for metric: free_tier_requests, "
+                                  "limit: 0, model: gemini-4-argon\n* Please retry in 20s."}}])
+    assert _error_detail(body) == ("You exceeded your current quota. "
+                                   "Quota exceeded for metric: free_tier_requests, limit: 0, model: gemini-4-argon")
+    assert _error_detail('{"error": {"message": "This model is currently experiencing high demand."}}') == \
+        "This model is currently experiencing high demand."
+    assert _error_detail("<html>bad gateway</html>") == "<html>bad gateway</html>"

@@ -47,7 +47,10 @@ from app.brain.local_llm import _get, _image_data, _result_text, system_text
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-4-hydrogen"
+# Measured Nov 15 on a free-tier key: the only model that answered every call, and the fastest (first
+# sentence 0.8 s for chat, 2.6 s for a task; 0.9 s for a picture question). gemini-4-hydrogen and
+# gemini-3.8-flash gave 503 "high demand" after 20-50 s; gemini-4-argon has no free-tier quota.
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_EFFORT = "low"
 # For a call that has no signature of its own (Google's documented placeholder, for calls the API didn't make).
@@ -247,6 +250,22 @@ def _merge_call(calls: dict[int, dict[str, Any]], i: int, delta: dict[str, Any])
         c["extra_content"] = delta["extra_content"]
 
 
+def _error_detail(text: str) -> str:
+    """Gemini's error message from an error body (a JSON object, or a one-element list of one),
+    with the quota line when there is one; else the start of the body."""
+    try:
+        data = json.loads(text)
+        err = (data[0] if isinstance(data, list) and data else data).get("error") or {}
+        msg = str(err.get("message") or "").strip()
+    except (ValueError, AttributeError):
+        msg = ""
+    if not msg:
+        return text[:300]
+    first, _, rest = msg.partition("\n")
+    quota = next((ln.strip(" *") for ln in rest.splitlines() if "Quota exceeded" in ln), "")
+    return f"{first[:200]}{' ' + quota[:200] if quota else ''}"
+
+
 # --- the client ---------------------------------------------------------------------------------
 
 
@@ -281,7 +300,7 @@ class _Stream:
                 raise GeminiError(f"Gemini unreachable: {type(e).__name__}: {e}", url) from e
             if self._resp.status == 200:
                 return self
-            detail = (await self._resp.text())[:300]
+            detail = _error_detail(await self._resp.text())
             self._resp.release()
             if self._resp.status in RETRY_STATUSES and attempt < self.client.retries:
                 log.info("gemini %s, retrying: %s", self._resp.status, detail[:120])
@@ -400,7 +419,7 @@ class GeminiClient:
     label = "Gemini"   # in the agent's error events
 
     def __init__(self, model: str | None = None, api_key: str | None = None, url: str | None = None, *,
-                 effort: str | None = None, stream: bool | None = None, timeout_s: float = 45.0,
+                 effort: str | None = None, stream: bool | None = None, timeout_s: float = 20.0,
                  retries: int = 1) -> None:
         self.model = model or gemini_model()
         self.api_key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "").strip()
