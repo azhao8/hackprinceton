@@ -97,9 +97,12 @@ def test_find_clone_explains_what_is_missing(tmp_path, monkeypatch):
     def missing(*a, **k):
         raise FileNotFoundError("not cached")
 
-    import huggingface_hub
+    import sys
+    import types
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing)
+    huggingface_hub = types.ModuleType("huggingface_hub")   # CI doesn't install it (local group only)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing, raising=False)
     path, text, why = find_clone(ref=tmp_path / "v.wav")
     assert path is None and "hf download" in why
     snap = tmp_path / "snap"
