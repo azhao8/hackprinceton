@@ -380,6 +380,21 @@ class ApiState:
                 log.warning("memory change failed: %s", e)
         return self.memory_view()
 
+    def recalibrate(self) -> bool:
+        """Re-measure the tilt sensor's zero (firmware c): the robot must lie still for 2 s. Refused while
+        it balances (the firmware ignores it then too)."""
+        tel = self.link.telemetry or {}
+        if tel.get("state") in ("balance", "drive"):
+            log.warning("recalibrate refused: the robot is balancing")
+            return False
+        try:
+            self.link.send_letter("c")
+        except Exception as e:  # noqa: BLE001
+            log.warning("recalibrate failed: %s", e)
+            return False
+        log.info("recalibrating the tilt sensor (robot must be still for 2 s)")
+        return True
+
     def trim(self, steps: Any) -> bool:
         """Shift the robot's balance angle by steps x 0.25 deg over the link (firmware t / y). While it
         balances, only one step at a time: a big jump in the target angle makes it lurch."""
@@ -722,6 +737,11 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                     state.set_settings(m)
                 elif t == "key":
                     state.key(str(m.get("letter", "")))
+                elif t == "recalibrate":
+                    if local:
+                        state.recalibrate()
+                    else:
+                        log.warning("recalibrate refused: not from this laptop (%s)", request.remote)
                 elif t == "trim":
                     if local:
                         state.trim(m.get("steps"))

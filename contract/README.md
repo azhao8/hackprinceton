@@ -43,6 +43,7 @@ The mock robot (`cd server && uv run python -m mock`) speaks the same UDP messag
 | `5` | Stop and hold here |
 | `L` / `R` | Turn exactly 90° left / right on the gyro |
 | `F` / `B` | Drive exactly 0.5 m forward / back |
+| `c` | Recalibrate the tilt sensor (gyro zero); only while not balancing, robot still for 2 s |
 | `t` / `y` | Raise / lower the balance angle (trim) by 0.25°. Several in one packet shift it several steps. Lost when the robot reboots |
 
 The rest (gain tuning, tests) are for the bench; see the top of `balance.ino`.

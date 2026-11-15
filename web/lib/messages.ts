@@ -98,6 +98,7 @@ export type ClientMessage =
   | { t: "key"; letter: KeyLetter }
   | { t: "arm" }
   | { t: "trim"; steps: number }
+  | { t: "recalibrate" }
   | { t: "agent_message"; text: string }
   | { t: "tray_loaded" }
   | { t: "test_fall" }

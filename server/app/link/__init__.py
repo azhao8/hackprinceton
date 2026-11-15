@@ -29,7 +29,7 @@ log = logging.getLogger("app.link")
 
 PORT = 4210
 FRESH_S = 0.5            # telemetry or ack older than this means the link is down
-ALLOWED_LETTERS = set("xP5LRFBty")   # never "g": a person arms the robot. t/y: trim +/- 0.25 deg
+ALLOWED_LETTERS = set("xP5LRFBtyc")   # never "g": a person arms the robot. t/y: trim +/- 0.25 deg; c: recalibrate the gyro
 TRIM_STEP_DEG = 0.25
 
 

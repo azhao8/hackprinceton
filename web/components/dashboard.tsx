@@ -199,7 +199,7 @@ export function Dashboard() {
 
       <SayCard send={send} />
 
-      <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null}
+      <TrimCard shift={status?.trim_shift ?? 0} pitch={tel?.pitch ?? null} rate={tel?.rate ?? null}
         balancing={tel?.state === "balance" || tel?.state === "drive"} send={send} />
 
       <details className="rounded-xl border border-line bg-panel p-4 shadow-sm">
@@ -462,8 +462,8 @@ function MemoryCard({ memory, send }: { memory: MemoryView | null; send: (m: Cli
 }
 
 /** The balance angle (trim): the tilt the robot treats as upright. Live changes (firmware t / y) last until it reboots. */
-function TrimCard({ shift, pitch, balancing, send }: {
-  shift: number; pitch: number | null; balancing: boolean; send: (m: ClientMessage) => boolean;
+function TrimCard({ shift, pitch, rate, balancing, send }: {
+  shift: number; pitch: number | null; rate: number | null; balancing: boolean; send: (m: ClientMessage) => boolean;
 }) {
   const now = FIRMWARE_TRIM + shift;
   const [target, setTarget] = useState("");
@@ -475,11 +475,19 @@ function TrimCard({ shift, pitch, balancing, send }: {
         <div className="text-sm">
           Target <span className="font-mono text-lg">{fmtSigned(now)}°</span>
           <span className="ml-2 text-xs text-muted">(shifted {fmtSigned(shift)}° from here)</span>
-          <div className="text-xs text-muted">Tilt now: {pitch === null ? "—" : `${fmtSigned(pitch)}°`}</div>
+          <div className="text-xs text-muted">Tilt now: {pitch === null ? "—" : `${fmtSigned(pitch)}°`}
+            {rate !== null && Math.abs(rate) > 3 && !balancing && (
+              <span className="ml-2 font-medium text-danger">Tilt sensor drifting ({Math.round(rate)}°/s while still?): recalibrate</span>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           <Action onClick={() => send({ t: "trim", steps: -1 })}>−0.25°</Action>
           <Action onClick={() => send({ t: "trim", steps: 1 })}>+0.25°</Action>
+          <Action onClick={() => {
+            if (!balancing && window.confirm("Recalibrate the tilt sensor?\n\nLay the robot down so it can't move and don't touch it for 3 s. Not while it balances."))
+              send({ t: "recalibrate" });
+          }}>Recalibrate tilt sensor</Action>
         </div>
         <form className="flex items-center gap-2" onSubmit={(e) => {
           e.preventDefault();

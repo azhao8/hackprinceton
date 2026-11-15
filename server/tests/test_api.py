@@ -442,3 +442,12 @@ def test_websocket_trim_from_this_laptop():
         await ws.close()
         await client.close()
     asyncio.run(go())
+
+
+def test_recalibrate_only_when_not_balancing():
+    link = TrimLink()
+    state = ApiState(Arbiter(), link)
+    link.telemetry = {"t": "tel", "state": "balance"}
+    assert not state.recalibrate() and link.sent == []
+    link.telemetry = {"t": "tel", "state": "idle"}
+    assert state.recalibrate() and link.sent == ["c"]

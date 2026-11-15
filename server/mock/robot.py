@@ -105,6 +105,8 @@ class MockRobot:
             self.turning = self.moving = False
             self.pitch, self.run_start = self.trim, now
             self._say("BALANCING")
+        elif c == "c" and not self.running:
+            self.rate = 0.0   # recalibrated: the mock's gyro has no bias anyway
         elif c in "ty":
             self.trim += 0.25 if c == "t" else -0.25
         elif c == "x":
