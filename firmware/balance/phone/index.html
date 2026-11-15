@@ -501,22 +501,25 @@ setInterval(() => {                                         // ~12 frames a seco
 // the face shows a glowing ring and he pings once when it starts. The state comes over the mic socket the moment it
 // changes ({type: 'listen', on, why}); /tel's `listening` covers the times that socket is down.
 const Listen = (() => {
-  let on = false, why = null;
-  function set(next, reason) {
+  let on = false, why = null, heard = 0;                      // heard: when the server last told us
+  function set(next, reason, fromServer) {
     next = !!next;
+    if (fromServer) heard = Date.now();
     if (next && !on) Voice.ping();                            // listening starts: ping (once, whatever turned it on)
     on = next; why = next ? (reason || why) : null;
     if (face) face.setListening(on);
   }
-  return { set, get on() { return on; }, get why() { return why; } };
+  return { set, get on() { return on; }, get why() { return why; }, get heard() { return heard; } };
 })();
 
 // Tap-to-talk: tapping Miguel (face or suit) stops him talking and listens for one sentence, no "Miguel" needed.
 function tapToTalk() {
   if (!window.Mic || !Mic.running) return;
   if (Voice.busy()) Voice.stopAll();
-  if (Mic.send({ type: 'listen' })) Listen.set(true, 'tap');   // the server confirms, and turns it off after
-  else log({ event: 'tap-to-talk: the mic is not connected' });
+  if (!Mic.send({ type: 'listen' })) { log({ event: 'tap-to-talk: the mic is not connected' }); return; }
+  const t0 = Date.now();
+  Listen.set(true, 'tap');                                    // at once; the server confirms, and turns it off after
+  setTimeout(() => { if (Listen.on && Listen.heard < t0) Listen.set(false); }, 9000);   // never confirmed: drop it
 }
 $('face').addEventListener('click', tapToTalk);
 $('suit').addEventListener('click', tapToTalk);
@@ -528,7 +531,7 @@ function hearSay(id, text) {
   sayAfter = id; Voice.now(text, id);
 }
 window.onMicMessage = msg => {
-  if (msg.type === 'listen') Listen.set(msg.on, msg.why);
+  if (msg.type === 'listen') Listen.set(msg.on, msg.why, true);
   else if (msg.type === 'say') hearSay(msg.id, String(msg.text || ''));
 };
 setInterval(async () => {
