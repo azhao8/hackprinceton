@@ -56,6 +56,11 @@ KEEPALIVE_S = _env_seconds("MIGUEL_LLM_KEEPALIVE_S", 240.0)
 ACK_SPOKEN = "On it!"
 ACK_GUARDIAN = "Got it, I'm on it."
 FALL_CHANNEL = "fall detector"   # the channel of a fall alert's message (family.raise_alert): no ack
+# Miguel's introduction for judges and visitors (the introduce_yourself tool): about 15 seconds out
+# loud. api.AGENT_LINES has a copy, so the server makes it at startup and it plays at once.
+INTRO_LINE = ("Hi, I'm Miguel! I help seniors live at home without being alone: I fetch things, check in, "
+              "and alert family after a fall. What should I show you? Following you, fetching something, "
+              "or a fall alert? Just say \"Miguel\" first.")
 
 # Words that suggest a request needs action (several tool calls), so it gets more thinking.
 _TASK_WORDS = re.compile(
@@ -179,6 +184,8 @@ you did use say() or reply_to_guardian(), end with at most a few words of plain 
 note.
 - When you ask the senior something, make the question your last sentence: they can answer \
 without saying your name for a few seconds after a question.
+- When someone asks you to introduce yourself, who you are or what you do, call \
+introduce_yourself with no text before it, and add nothing after it.
 - Sometimes speech nearby reaches you that was not meant for you: people talking to each \
 other, the TV, half a sentence. If a mic message clearly was not for you, call stay_silent \
 and write no text, so nothing is said. If it could be an answer to what you just asked, answer.

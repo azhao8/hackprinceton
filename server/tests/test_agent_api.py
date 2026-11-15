@@ -275,6 +275,7 @@ def test_tray_loaded_wakes_every_waiter():
 class FakeHub:
     def __init__(self):
         self.ptt, self.spoke, self.lines, self.pushed, self.awaiting = [], 0, [], [], []
+        self.asks = []
         self.on_voice = None
 
     def push_to_talk(self, text, source="operator"):
@@ -283,8 +284,9 @@ class FakeHub:
     def note_miguel_spoke(self):
         self.spoke += 1
 
-    def note_line(self, text):
+    def note_line(self, text, asks=False):
         self.lines.append(text)
+        self.asks.append(asks)
 
     def push_say(self, sid, text):
         self.pushed.append((sid, text))
@@ -294,6 +296,28 @@ class FakeHub:
 
     def listening(self):
         return bool(self.awaiting and self.awaiting[-1])
+
+
+def test_a_say_event_that_asks_marks_its_last_line_for_the_answer_window():
+    """#120: introduce_yourself's line asks though it ends with a period; split into sentences (a voice
+    that makes lines whole, before its audio is ready), only the last sentence opens the window."""
+    class WavVoice:
+        MEDIA_TYPE = "audio/wav"
+
+        def cached(self, text):
+            return None
+
+    async def mic(request):
+        return web.Response()
+    mic.hub = FakeHub()
+    s = ApiState(Arbiter(), FakeLink(), mic=mic)
+    server.on_agent_event(s, AgentEvent(1, "say", "Here is your water."))
+    server.on_agent_event(s, AgentEvent(2, "say", "Hi. Just say Miguel first.", data={"asks": True}))
+    assert mic.hub.lines == ["Here is your water.", "Hi. Just say Miguel first."] and mic.hub.asks == [False, True]
+    mic.hub = FakeHub()
+    s = ApiState(Arbiter(), FakeLink(), mic=mic, tts=WavVoice())
+    server.on_agent_event(s, AgentEvent(3, "say", "Hi. Just say Miguel first.", data={"asks": True}))
+    assert mic.hub.lines == ["Hi.", "Just say Miguel first."] and mic.hub.asks == [False, True]
 
 
 def test_operator_messages_go_through_the_mics_push_to_talk():

@@ -40,7 +40,7 @@ Turn-taking (Alex, Sat Nov 14): Miguel only takes speech that is meant for him.
 - Without the wake word, only while listening is open:
   - "reply": the agent is waiting for an answer (wait_for_reply, a check-in question);
   - "question": for `answer_window_s` (default 4 s) after Miguel finishes a line that ends
-    with "?";
+    with "?" (or one queued as asking, like his introduction: `note_line(asks=True)`, #120);
   - "tap": for `tap_window_s` (default 8 s) after the face is tapped, for one utterance;
   - "wake": the same, after "Miguel" alone.
   A turn that *starts* while listening is open counts even if it ends after the window closed.
@@ -149,6 +149,7 @@ class MicHub:
         self.voice_busy = False                # Miguel is talking on the phone (from the page)
         self.voice_text: str | None = None     # the line he is saying, or said last
         self._queued_text: str | None = None   # the last line queued for the phone (fallback)
+        self._asking_text: str | None = None   # that line asks though it doesn't end in "?" (#120)
         self._speech_due_until = float("-inf")  # a line is queued but not playing yet: not listening
         self._turn: dict[str, Any] | None = None     # the turn being transcribed: {opened, wake}
         self._ending: dict[str, Any] | None = None   # the turn that just ended (for on_heard)
@@ -234,11 +235,14 @@ class MicHub:
             self.send({"type": "call", "call": ended.get("call"), "on": False})
             self._sync()
 
-    def note_line(self, text: str) -> None:
+    def note_line(self, text: str, asks: bool = False) -> None:
         """A line was queued for the phone (fallback for which line he said last). Until the phone says it
         started playing (or SPEECH_DUE_MAX_S passes), he isn't listening: the ring used to light ~2 s
-        before his voice, while Cartesia made the audio (Sat night check-in test)."""
+        before his voice, while Cartesia made the audio (Sat night check-in test).
+        asks: the line asks something though it doesn't end in "?" (his introduction, #120, ends with
+        'Just say "Miguel" first.'): it opens the answer window like a question."""
         self._queued_text = " ".join(str(text).split()) or None
+        self._asking_text = self._queued_text if asks else None
         if self._ws is not None:             # only when a phone is there to play it
             self._speech_due_until = self.clock() + SPEECH_DUE_MAX_S
         self._sync()
@@ -257,7 +261,8 @@ class MicHub:
         if busy and not self.voice_busy:     # he starts talking: earlier windows are over
             self._question_until = self._once_until = float("-inf")
         if not busy and self.voice_busy:     # he finished: a question opens the answer window
-            if _is_question(self.voice_text or self._queued_text):
+            line = self.voice_text or self._queued_text
+            if _is_question(line) or (line is not None and line == self._asking_text):
                 self._question_until = self.clock() + self.answer_window_s
         self.voice_busy = busy
         if self.on_voice is not None:
