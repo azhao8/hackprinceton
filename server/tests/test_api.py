@@ -357,11 +357,13 @@ def test_control_page_does_not_use_bare_element_ids():
 def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
     async def t(c, s):
         d = await (await c.get("/tel")).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.7, "voice": True, "camera": "back", "mirror": False}
-        d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False})).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "back", "mirror": False}   # clamped
+        assert d["settings"] == {"mode": "person", "speed": 0.8, "distance": 0.8, "voice": True, "camera": "back", "mirror": False, "drive_speed": 1.1, "turn_rate": 1.0}
+        d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False, "drive_speed": 9})).json()
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "back", "mirror": False,
+                                 "drive_speed": 3.2, "turn_rate": 1.0}   # clamped
         d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
-        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False}    # new mode: its defaults
+        assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False,
+                                 "drive_speed": 3.2, "turn_rate": 1.0}    # new mode: its follow defaults; drive kept
         await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
         assert (await (await c.get("/tel")).json())["settings"]["mode"] == "yellow"
         ws = await c.ws_connect("/ws")
@@ -400,10 +402,15 @@ def test_websocket_keys_arm_and_status():
                 break
         assert got_status
         state.follow = True
+        link.telemetry = {"t": "tel", "state": "idle", "pitch": 11.2, "rate": 0.0}   # lying down
         await ws.send_json({"t": "key", "letter": "P"})
         await ws.send_json({"t": "key", "letter": "g"})          # refused: g only through arm
-        await ws.send_json({"t": "arm"})                           # the test client is local
+        await ws.send_json({"t": "arm"})                           # the test client is local: Start waits
         await asyncio.sleep(0.1)
+        assert link.sent == ["P"] and state.autostart.waiting
+        for i in range(25):                                        # held upright and steady for 1.25 s
+            link.telemetry = {"t": "tel", "state": "idle", "pitch": -3.65 + 0.3, "rate": 1.0}
+            state.watch(100.0 + i * 0.05)
         assert link.sent == ["P", "g"] and state.follow is False
         await ws.close()
         await client.close()
@@ -576,4 +583,153 @@ def test_a_tunnel_on_this_laptop_is_not_this_laptop():
         assert not arb.estopped
         await ws.close()
         await client.close()
+    asyncio.run(go())
+
+
+# --- #79: auto-start, drift, the phone's controls, the resets ---------------------------------------
+
+
+def held(state, link, t0, seconds, pitch=-3.65, rate=0.5, state_name="idle"):
+    """Feed `seconds` of 20 Hz telemetry to the API's watchers."""
+    n = int(seconds * 20)
+    for i in range(n):
+        link.telemetry = {"t": "tel", "state": state_name, "pitch": pitch, "rate": rate}
+        state.watch(t0 + i * 0.05)
+    return t0 + n * 0.05
+
+
+def test_start_waits_for_upright_and_steady_then_sends_g():
+    link = LetterLink()
+    state = ApiState(Arbiter(), link)
+    link.telemetry = {"t": "tel", "state": "idle", "pitch": 11.0, "rate": 0.0}
+    assert state.arm() and state.autostart.waiting and link.sent == []
+    t = held(state, link, 0.0, 2.0, pitch=11.0)                   # lying down: nothing
+    t = held(state, link, t, 2.0, pitch=-3.65, rate=25.0)        # upright but swinging: nothing
+    assert link.sent == []
+    held(state, link, t, 1.2, pitch=-2.0, rate=2.0)              # upright and steady
+    assert link.sent == ["g"]
+    held(state, link, 50.0, 0.2, state_name="balance")
+    assert not state.autostart.waiting and state.status()["autostart"] == {"waiting": False, "note": ""}
+
+
+def test_stop_park_and_cancel_end_the_wait():
+    link = LetterLink()
+    state = ApiState(Arbiter(), link)
+    link.telemetry = {"t": "tel", "state": "idle", "pitch": 11.0, "rate": 0.0}
+    for end in (lambda: state.estop(True), lambda: state.key("P"), state.cancel_start):
+        state.arm()
+        end()
+        assert not state.autostart.waiting
+    held(state, link, 0.0, 2.0)
+    assert "g" not in link.sent
+
+
+def test_drift_is_said_out_loud_and_blocks_start():
+    from app.api import DRIFT_LINE
+    link = LetterLink()
+    state = ApiState(Arbiter(), link)
+    held(state, link, 0.0, 2.5, pitch=12.0, rate=27.0)           # lying still, gyro reads 27 deg/s
+    assert state.drift.on and state.status()["drift"] is True
+    assert [m["text"] for m in state.say] == [DRIFT_LINE]
+    assert not state.arm() and not state.autostart.waiting       # refused, and said again
+    assert [m["text"] for m in state.say] == [DRIFT_LINE, DRIFT_LINE]
+    assert state.recalibrate() and link.sent == ["c"] and not state.drift.on
+    assert state.status()["calibrating"] is True
+    held(state, link, 10.0, 3.0, pitch=12.0, rate=0.1)
+    assert not state.drift.on and state.arm()
+
+
+def test_drift_mid_wait_cancels_the_start():
+    link = LetterLink()
+    state = ApiState(Arbiter(), link)
+    link.telemetry = {"t": "tel", "state": "idle", "pitch": 12.0, "rate": 0.0}
+    state.arm()
+    held(state, link, 0.0, 2.5, pitch=12.0, rate=-8.0)
+    assert state.drift.on and not state.autostart.waiting and "drifting" in state.autostart.note
+    assert "g" not in link.sent
+
+
+def test_phone_actions_from_the_hotspot_only():
+    async def go():
+        link = LetterLink()
+        link.telemetry = {"t": "tel", "state": "idle", "pitch": 11.0, "rate": 0.0}
+        state = ApiState(Arbiter(), link)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        try:
+            r = await (await client.post("/phone/action", json={"action": "start"})).json()
+            assert r["ok"] and state.autostart.waiting
+            r = await (await client.post("/phone/action", json={"action": "cancel_start"})).json()
+            assert r["ok"] and not state.autostart.waiting
+            assert (await (await client.post("/phone/action", json={"action": "park"})).json())["ok"]
+            assert (await (await client.post("/phone/action", json={"action": "recalibrate"})).json())["ok"]
+            assert link.sent == ["P", "c"]
+            assert (await client.post("/phone/action", json={"action": "g"})).status == 400
+            tunnel = {"X-Forwarded-For": "203.0.113.9"}
+            assert (await client.post("/phone/action", json={"action": "start"}, headers=tunnel)).status == 403
+            assert (await (await client.get("/tel")).json())["phone"] is True   # it just polled
+        finally:
+            await client.close()
+    asyncio.run(go())
+
+
+def test_status_says_who_is_connected():
+    state = ApiState(Arbiter(), FakeLink())
+    st = state.status()
+    assert st["phone"] is False and st["family"] == 0 and st["agent"] is False and st["drift"] is False
+
+    class Family:
+        clients = {"a": 1, "b": 2}
+    state.family = Family()
+    assert state.status()["family"] == 2
+
+
+class FakeAgent:
+    def __init__(self):
+        self.calls = []
+
+    def reset_conversation(self):
+        self.calls.append("reset")
+
+    def clear_events(self):
+        self.calls.append("clear")
+
+
+def test_resets_from_the_control_page(tmp_path):
+    from app.memory import Memory
+
+    async def go():
+        state = ApiState(Arbiter(), FakeLink())
+        state.agent = FakeAgent()
+        state.memory = Memory(tmp_path / "m.db", seed_places={"water station": 3})
+        state.memory.facts["pills"] = "blue bottle"
+        state.memory.set_place("kitchen", marker=7)
+        state.memory.add_event("delivery", "Brought water")
+        for i in (1, 2):
+            state.publish_agent_event({"id": i, "kind": "say", "text": "hi", "to": None, "data": {}})
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        try:
+            ws = await client.ws_connect("/ws")
+            await ws.send_json({"t": "reset_chat"})
+            await ws.send_json({"t": "clear_log"})
+            got = None
+            for _ in range(20):
+                m = await asyncio.wait_for(ws.receive_json(), 1)
+                if m["t"] == "agent_clear":
+                    got = m
+                    break
+            assert got is not None and state.agent_events == [] and state.agent.calls == ["reset", "clear"]
+            d = state.publish_agent_event({"id": 1, "kind": "say", "text": "new", "to": None, "data": {}})
+            assert d["id"] == 3                                    # ids keep increasing after a clear
+            await ws.send_json({"t": "reset_memory"})
+            for _ in range(20):
+                m = await asyncio.wait_for(ws.receive_json(), 1)
+                if m["t"] == "memory":
+                    break
+            assert m["facts"] == [] and [p["name"] for p in m["places"]] == ["water station"]
+            assert state.memory.today() == [] and state.agent.calls[-1] == "reset"
+            await ws.close()
+        finally:
+            await client.close()
     asyncio.run(go())

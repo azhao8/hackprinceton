@@ -6,6 +6,16 @@
 
 **Listening (voice turn-taking, Sat Nov 14).** `status` (and `GET /tel`) carries `listening`: bool, true while Miguel is listening for a command without needing his name: right after "Miguel" (spotted mid-sentence), for a few seconds after he asks a question (`MIGUEL_ANSWER_WINDOW_S`, default 4), while the agent waits for a spoken answer, and for one sentence after someone taps his face (`MIGUEL_TAP_LISTEN_S`, default 8). The robot's face shows a glowing ring then. It is the same state as the family app's `listening` mode (`server/app/speech/mic.py`, `MicHub.listening`). `status` and `/tel` also carry `tts` (the voice is set up) and `tts_stream` (the phone should play `/tts` straight from the URL; `MIGUEL_TTS_STREAM`, default off).
 
+**Start, drift and resets (#79, decision 0059).** `status` (and `GET /tel`) also carries:
+- `drift` (bool) and `drift_rate` (deg/s or null): the tilt sensor is drifting (`server/app/robot_watch.py`); Start is refused until a recalibration.
+- `autostart`: `{waiting: bool, note: str}`. Start waits until the robot is held upright and steady, then sends `g`.
+- `calibrating` (bool, about 3 s after a recalibrate), `phone` (bool: the robot's phone polled `/tel` in the last 3 s), `family` (number of family apps connected), `agent` (bool: the voice agent is on).
+- `settings` also has `drive_speed` (m/s, default 1.1) and `turn_rate` (rad/s, default 1.0): the Drive card's sliders and the agent's `move` defaults. Follow defaults are now speed 0.8, distance 0.8.
+
+Web to server, this laptop only: `{"t":"arm"}` now starts the wait (no immediate `g`), `{"t":"cancel_start"}`, `{"t":"reset_chat"}` (stop the task, forget the conversation), `{"t":"clear_log"}` (every page gets `{"t":"agent_clear"}` and drops its agent log; event ids keep increasing), `{"t":"reset_memory"}` (erase facts, places back to the seed signs, today's timeline and saved looks; answers with `memory`; the family app gets an empty `events`).
+
+The robot's phone: `POST /phone/action {"action": "start"|"cancel_start"|"park"|"recalibrate"}` from the hotspot (403 otherwise, 400 unknown action) answers `{ok, note}`.
+
 ## Agent (the family app and the control page; #54, draft for Nick and Alex)
 
 The family's iOS app (decision 0052, open question P-7) talks to Miguel's agent over plain HTTP(S). Paths are relative to the server's address (`http://<laptop>:8080` or `https://<laptop>:8443` on the same Wi-Fi; a tunnel later, T-17).

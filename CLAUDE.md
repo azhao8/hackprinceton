@@ -71,7 +71,7 @@ refactors inside your lane aren't decisions; just do them.
 - Everything except firmware runs against the mock robot.
 - Only the server's link code talks to the robot, using contract/.
 - Drive commands go through one arbiter: e-stop > manual joystick > skills.
-- The LLM picks skills; it never sends speeds.
+- The LLM picks skills; it never drives the wheels. Only `move` takes a speed, when the person asked for one, and the server clamps it (decision 0059).
 - A contract change updates the mock and the firmware in the same PR.
 - Don't send commands to the real robot unless the user says someone is with it.
 - Secrets live in .env (git-ignored); names go in .env.example.

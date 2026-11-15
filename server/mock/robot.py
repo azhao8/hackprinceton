@@ -26,6 +26,8 @@ PARK_S = 1.0
 MOVE_DIST, MOVE_V = 0.5, 0.2
 FF_RR = 0.5              # deg of extra lean while moving
 TURN_TIMEOUT_S = 8.0
+FILTER_TAU_S = 0.495     # the complementary filter's time constant (0.99 at 200 Hz): a gyro bias b reads as a tilt offset of b x this
+HAND_SWAY_DEG, HAND_SWAY_HZ = 0.8, 0.5   # held upright by a person: a slow sway (#79)
 
 
 def _clamp(x: float, lim: float) -> float:
@@ -55,6 +57,10 @@ class MockRobot:
     park_start: float | None = None
     run_start: float = 0.0
     log: list[str] = field(default_factory=list)
+    # Test hooks, not in the firmware (#79): a person holding it upright while the motors are off, and a
+    # gyro zero that's off (it calibrated while moving). c clears the bias, like the firmware's recalibrate.
+    held: bool = False
+    gyro_bias: float = 0.0   # deg/s
 
     # ---- input
 
@@ -106,7 +112,7 @@ class MockRobot:
             self.pitch, self.run_start = self.trim, now
             self._say("BALANCING")
         elif c == "c" and not self.running:
-            self.rate = 0.0   # recalibrated: the mock's gyro has no bias anyway
+            self.rate, self.gyro_bias = 0.0, 0.0   # recalibrated: the gyro's zero is right again
         elif c in "ty":
             self.trim += 0.25 if c == "t" else -0.25
         elif c == "x":
@@ -148,8 +154,15 @@ class MockRobot:
             self._say("run time limit reached: parking")
             self.handle_char("P", now)
         if not self.running:
-            self.vcmd, self.rate = 0.0, 0.0
-            self.pitch = KICK_ANGLE
+            self.vcmd = 0.0
+            if self.held:   # a person holds it upright: a slow sway around the balance point
+                phase = 2 * math.pi * HAND_SWAY_HZ * now
+                self.pitch = self.trim + HAND_SWAY_DEG * math.sin(phase)
+                self.rate = HAND_SWAY_DEG * 2 * math.pi * HAND_SWAY_HZ * math.cos(phase)
+            else:           # lying still
+                self.pitch, self.rate = KICK_ANGLE, 0.1 * math.sin(2 * math.pi * 7 * now)   # sensor noise
+            self.rate += self.gyro_bias
+            self.pitch += self.gyro_bias * FILTER_TAU_S
             return
         if self.park_start is not None:
             if now - self.park_start >= PARK_S:

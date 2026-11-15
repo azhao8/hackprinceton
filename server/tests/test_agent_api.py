@@ -486,7 +486,7 @@ def test_serve_runs_the_agent_and_its_say_events_reach_the_phone(monkeypatch, br
     assert [m["text"] for m in state.say] == ["Hi, I'm listening."]             # say -> the phone's say queue
     assert [e["kind"] for e in state.agent_events] == ["say", "reply"]
     assert isinstance(agent.tools, FakeToolBox) and agent.tools.runner is app.skills
-    assert agent.tools.skill_factories == {} and agent.tools.snapshot is None   # no camera: no physical skills
+    assert set(agent.tools.skill_factories) == {"move"} and agent.tools.snapshot is None   # no camera: only move (#79)
     assert agent.tools.save_photo == state.save_photo
     stt, inbox, wake = brain[0]
     assert inbox is agent.inbox and wake == "Miguel" and state.mic is not None and stt.closed
@@ -554,7 +554,7 @@ def test_with_a_camera_the_agent_gets_snapshots_and_skills(monkeypatch, brain):
                              follow_factory=lambda: "follow-skill", window=FakeWindow([-1, -1, "q"]),
                              render=lambda p, h: h))
     tools = FakeAgent.instances[-1].tools
-    assert set(tools.skill_factories) == {"follow", "find_person", "go_to", "bring"}
+    assert set(tools.skill_factories) == {"move", "follow", "find_person", "go_to", "bring"}
     assert tools.snapshot() is None   # FakeVision has no frame yet
     b = tools.skill_factories["bring"](item="pills", person=None)
     assert b.args[2] == seen["state"].wait_loaded and b.args[3] == seen["state"].add_say

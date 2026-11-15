@@ -26,6 +26,9 @@ describe("contract samples", () => {
       settings: { mode: "person", speed: 0.25, distance: 0.45, voice: true }, lag_ms: 27.4, skill: null,
       vision: { mode: "server", status: "running", camera: { frames: 120, age_s: 0.08 } },
       trim_shift: -8.75, listening: false,
+      // #79 fields the sample doesn't carry: their defaults
+      drift: false, drift_rate: null, autostart: { waiting: false, note: "" }, calibrating: false,
+      phone: false, family: 0, agent: false,
     });
   });
 
