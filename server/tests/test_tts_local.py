@@ -308,3 +308,15 @@ def test_the_real_model_speaks_a_line():
     assert (channels, width, rate) == (1, 2, 24000)
     assert 1.0 < len(pcm) / 2 / rate < 4.0               # about 1.9 s of speech
     assert np.abs(np.frombuffer(pcm, "<i2")).max() > 1000   # not silence
+
+
+def test_silence_lengths_from_env():
+    # #103: MIGUEL_TTS_LEAD_S / MIGUEL_TTS_TAIL_S, seconds clamped to 0..1, the default otherwise
+    f = tts_local._env_seconds
+    assert f("X", 0.2, {}) == 0.2
+    assert f("X", 0.2, {"X": "0.05"}) == 0.05
+    assert f("X", 0.2, {"X": " 0 "}) == 0.0
+    assert f("X", 0.2, {"X": "5"}) == 1.0
+    assert f("X", 0.2, {"X": "-1"}) == 0.0
+    assert f("X", 0.2, {"X": "abc"}) == 0.2
+    assert f("X", 0.2, {"X": "nan"}) == 0.2

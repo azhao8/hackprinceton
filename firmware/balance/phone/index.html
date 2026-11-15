@@ -130,6 +130,8 @@ dist.oninput = spd.oninput = labels;
 // With /tel tts_stream: true (MIGUEL_TTS_STREAM=1 on the server), a line plays straight from the /tts URL, so it can
 // start on the first chunk instead of after the whole download; if that ever fails, the page goes back to
 // downloading each line whole (and logs it).
+// A downloaded line plays as a Web Audio buffer (#103: sample-exact, so the edges aren't clipped); the <audio> element
+// is the fallback, and the streamed path uses it.
 // The mouth follows the voice: Cartesia audio goes through a Web Audio analyser (its loudness opens the mouth);
 // Safari's voice can't be measured, so each spoken word (and a steady beat, if words aren't reported) pulses it.
 // Voice.current() is the line playing now ({text, id, n}); mic.js tells the server when it changes.
@@ -142,6 +144,7 @@ const Voice = (() => {
   let ready = false, muted = false, voice = null, lastT = 0, cloud = false, queue = Promise.resolve(), pending = 0, endClip = null;
   let actx = null, analyser = null, buf = null, mouthId = 0, mouthRaf = 0, mouthTimer = 0, lastWord = 0;
   let cur = null, lineN = 0, gen = 0, streamOn = false, streamBroken = false;   // the line playing; queue generation
+  let curSrc = null, bufferBroken = false;                  // the Web Audio buffer playing now (#103)
   function pick() {
     const vs = ok ? speechSynthesis.getVoices() : [];
     voice = vs.find(x => /^Fred\b/i.test(x.name)) || vs.find(x => /en-US/i.test(x.lang) && x.localService) ||
@@ -191,7 +194,11 @@ const Voice = (() => {
     if (id !== undefined && id !== mouthId) return;          // an older line finishing late: not ours to close (no id: stop all)
     mouthId++; cancelAnimationFrame(mouthRaf); clearInterval(mouthTimer); Mouth.level(0);
   }
-  function silence() { if (ok) speechSynthesis.cancel(); audio.pause(); if (endClip) endClip(); mouthStop(); cur = null; }
+  function silence() {
+    if (ok) speechSynthesis.cancel(); audio.pause();
+    if (curSrc) { try { curSrc.stop(); } catch (e) {} }
+    if (endClip) endClip(); mouthStop(); cur = null;
+  }
   function speak(text, sid) {                             // Safari's voice; resolves when it's done
     if (!ok) return Promise.resolve();
     const u = new SpeechSynthesisUtterance(text); if (voice) u.voice = voice;
@@ -223,6 +230,33 @@ const Voice = (() => {
       }, e => { off(); fail(e); });
     });
   }
+  // A downloaded clip, played as a Web Audio buffer on the context that is already running (#103). Swapping the
+  // <audio> element's src restarts iOS's media player and its tap into Web Audio, which ate the first and last
+  // 0.1-0.2 s of each clip; a buffer starts and ends on the exact sample, and nothing is flushed when the next
+  // sentence starts. Resolves when it ends (or is silenced); rejects before any sound if it can't play.
+  function decode(bytes) {                                 // older Safari: decodeAudioData takes callbacks only
+    return new Promise((res, rej) => {
+      const p = actx.decodeAudioData(bytes, res, e => rej(e || new Error('could not decode the clip')));
+      if (p && typeof p.catch === 'function') p.catch(rej);
+    });
+  }
+  async function playBuffer(bytes, line) {
+    if (actx.state !== 'running') {
+      await Promise.race([actx.resume().catch(() => {}), new Promise(r => setTimeout(r, 800))]);
+      if (actx.state !== 'running') throw new Error('audio context ' + actx.state);
+    }
+    const buffer = await decode(bytes);
+    if (muted) return;
+    return new Promise(done => {
+      const src = actx.createBufferSource(), id = mouthStart('level');
+      src.buffer = buffer; src.connect(analyser);           // analyser -> speaker: the mouth follows it as before
+      const off = () => { src.onended = null; endClip = null; if (curSrc === src) curSrc = null; mouthStop(id); if (cur === line) cur = null; };
+      endClip = () => { off(); done(); };
+      src.onended = endClip;
+      curSrc = src; cur = line;                              // playing: mic.js tells the server
+      src.start();
+    });
+  }
   async function cartesia(text, sid) {
     if (muted) return;
     const src = '/tts?text=' + encodeURIComponent(text), line = { text, id: sid, n: ++lineN };
@@ -236,11 +270,22 @@ const Voice = (() => {
     let url = '';
     try {
       const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 4000);
+      let bytes, type;
       try {
         const res = await fetch(src, { signal: ctl.signal, cache: 'no-store' });
         if (!res.ok) throw new Error('/tts answered ' + res.status);
-        url = URL.createObjectURL(await res.blob());
+        type = res.headers.get('Content-Type') || 'audio/wav';
+        bytes = await res.arrayBuffer();
       } finally { clearTimeout(timer); }
+      if (muted) return;
+      if (analyser && !bufferBroken) {                      // #103: as a Web Audio buffer; the element if that fails
+        try { await playBuffer(bytes.slice(0), line); return; } catch (e) {   // decoding detaches its copy
+          if (muted) return;
+          bufferBroken = true;
+          log({ event: 'Web Audio voice failed; using the audio element from now on', text, error: String(e) });
+        }
+      }
+      url = URL.createObjectURL(new Blob([bytes], { type }));
       if (!muted) await play(url, line);
     } catch (e) {
       log({ event: 'cartesia voice failed, using Safari voice', text, error: String(e) });
