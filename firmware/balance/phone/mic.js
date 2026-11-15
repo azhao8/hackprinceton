@@ -131,6 +131,9 @@ registerProcessor('mic-tap', MicTap);`;
     }
 
     async function startCapture() {
+      // The page sets the iOS audio session to 'playback' for Miguel's voice; capture needs
+      // 'play-and-record' (else: "AudioSession category is not compatible with audio capture").
+      try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) {}
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false,
