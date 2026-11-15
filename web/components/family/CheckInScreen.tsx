@@ -10,7 +10,7 @@ import { FaceBadge } from "./miguel/FaceBadge";
 import { MiguelStage } from "./miguel/MiguelStage";
 import { hasLine, speak } from "./miguel/voice";
 import { PageTitle, PlainButton, QuietLink, StickerButton, TopBar } from "./ui";
-import { CameraHereNote, NoCameraBubble, SelfBubble, StreamVideo, useCameraPage, useVideoCall } from "./VideoCall";
+import { SelfBubble, StreamVideo, useVideoCall } from "./VideoCall";
 
 function useElapsed(since: number | null) {
   const [now, setNow] = useState(0);
@@ -42,8 +42,6 @@ export function CheckInScreen() {
   // video plays. Never the illustrated Margaret as if she were live. The demo keeps the illustration.
   const demo = useDemoControls() !== null;
   const call = useVideoCall(c.phase === "live" && !demo && c.id ? c.id : null);
-  // Null when this page can use your camera; otherwise the https address that can (or "").
-  const cameraPage = useCameraPage();
   // Which call's video is playing (so a new call starts on "Connecting"), and whether its sound needs a tap.
   const [playingCall, setPlayingCall] = useState<string | null>(null);
   const [soundBlocked, setSoundBlocked] = useState<string | null>(null);
@@ -116,11 +114,7 @@ export function CheckInScreen() {
             <span className={`h-2 w-2 rounded-full ${live ? "bg-alarm" : "bg-ink-3"}`} />
             <span className="fg-label !text-ink">{live ? "Live · via Miguel" : "Connecting"}</span>
           </div>
-          {call?.local ? (
-            <SelfBubble stream={call.local} className="absolute bottom-4 left-4" />
-          ) : call && call.media !== "asking" ? (
-            <NoCameraBubble className="absolute bottom-4 left-4" />
-          ) : null}
+          {call?.local && <SelfBubble stream={call.local} className="absolute bottom-4 left-4" />}
           <div className="absolute bottom-3 right-3 rotate-[3deg]">
             <FaceBadge expression="happy" width={46} />
           </div>
@@ -131,7 +125,6 @@ export function CheckInScreen() {
           </p>
         )}
         <div className="fg-rise-2 mt-6 space-y-3">
-          {!demo && cameraPage !== null && <CameraHereNote mom={mom} url={cameraPage} during />}
           {demo && <HoldToTalk who={mom} tone="sky" />}
           <PlainButton tone={demo ? "paper" : "alarm"} onClick={() => actions.endCheckIn()}>
             {demo ? "End check-in" : "End call"}
@@ -143,8 +136,11 @@ export function CheckInScreen() {
               {mom} sees and hears you on Miguel&rsquo;s screen{demo ? "" : ", and can end the call there too"}. Nothing
               is recorded.
             </>
-          ) : call?.media === "insecure" || cameraPage !== null ? (
-            <>Nothing is recorded.</>
+          ) : call?.media === "insecure" ? (
+            <>
+              You can see and hear {mom}, but she can&rsquo;t see or hear you: this page needs its https address for
+              your camera and microphone. Nothing is recorded.
+            </>
           ) : call?.media === "denied" ? (
             <>
               You can see and hear {mom}, but she can&rsquo;t see or hear you: allow the camera and microphone for this
@@ -239,11 +235,6 @@ export function CheckInScreen() {
           }}
         />
       </div>
-      {!demo && cameraPage !== null && (
-        <div className="mt-5">
-          <CameraHereNote mom={mom} url={cameraPage} during={false} />
-        </div>
-      )}
       {askError && (
         <p className="mt-5 text-center text-[14px] leading-snug text-alarm" role="status">
           {askError}

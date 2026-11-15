@@ -71,10 +71,6 @@
   #wrap.incall #endCall { display: block; }
   #call { position: absolute; top: 0; left: 0; right: 0; height: 50%; background: #05070a; overflow: hidden; }
   #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #05070a; }
-  #callInitial { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 34vmin; height: 34vmin;
-                 border-radius: 50%; background: #f0b25a; color: #05070a; font-size: 18vmin; font-weight: 700;
-                 display: none; align-items: center; justify-content: center; }
-  #callInitial.on { display: flex; }
   #callWho { position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 14px); transform: translateX(-50%);
              max-width: 80%; padding: 8px 18px; border-radius: 22px; background: #000a; color: #fff; font-size: 22px;
              font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -101,7 +97,6 @@
   <canvas id="suit"></canvas>
   <div id="call">   <!-- the family video call (#118): the caller, her own bubble -->
     <video id="remote" playsinline autoplay></video>
-    <div id="callInitial"></div>   <!-- the caller's initial while their camera is off -->
     <div id="callWho"></div>
     <div id="selfBubble"><div id="selfRing"></div><div id="selfClip"><video id="selfView" playsinline muted autoplay></video></div></div>
   </div>
@@ -753,12 +748,10 @@ const Call = (() => {
     if (st.remote) remoteV.play().catch(e => log({ event: 'call video would not play', error: String(e) }));
     const selfStream = on && stream ? stream : null;
     if (selfV.srcObject !== selfStream) { selfV.srcObject = selfStream; if (selfStream) selfV.play().catch(() => {}); }
-    const vw = CallKit.view({ call: st.call, remote: st.playing, video: st.video, self: !!selfStream, state: st.state });
+    const vw = CallKit.view({ call: st.call, remote: st.playing, self: !!selfStream, state: st.state });
     $('wrap').classList.toggle('incall', on);
     $('selfBubble').classList.toggle('on', vw.self);
     $('callWho').textContent = vw.label;
-    $('callInitial').textContent = vw.initial;
-    $('callInitial').classList.toggle('on', !!vw.initial);
     if (!on) remoteV.srcObject = null;
     shown = st;
   }
