@@ -85,7 +85,7 @@ from app.brain.prompt import (
 )
 from app.brain.local_llm import NUM_CTX, backend, is_local
 from app.brain.spoken import clean_spoken
-from app.brain.tools import ToolBox, ToolOutcome
+from app.brain.tools import ToolBox, ToolOutcome, speaker_note
 from app.brain.types import AgentEvent, EventKind, Source, Utterance
 
 log = logging.getLogger(__name__)
@@ -311,6 +311,7 @@ class Agent:
         self._stop_note: str | None = None
         self._ctx_tokens = 0   # local model: the last call's prompt + output tokens (for trimming)
         self._generation = 0   # bumped by reset_conversation: older tasks don't write history back
+        self._talked_with: list[str] = []   # people this conversation was with (camera or this_is), newest last
         tools.bind(self)
 
     # --- public API -----------------------------------------------------------------------------
@@ -424,6 +425,7 @@ class Agent:
         self._stop_note = None
         forgot = len(self._history)
         self._history.clear()
+        self._talked_with.clear()
         self._ctx_tokens = 0
         log.info("agent: conversation reset (forgot %d exchanges, dropped %d queued messages)",
                  forgot, dropped)
@@ -510,9 +512,9 @@ class Agent:
         effort = EFFORT_TASK if EFFORT_TASK in efforts else EFFORT_CHAT
         content: list[dict[str, Any]] = [{"type": "text", "text": _label(u)} for u in utterances]
         content.append({"type": "text", "text": f"World memory: {self.tools.memory_summary()}"})
-        in_view = self.tools.people_in_view() if hasattr(self.tools, "people_in_view") else None
-        if in_view is not None:   # who might be talking (#78): the mic doesn't say
-            content.append({"type": "text", "text": f"People in view now: {in_view}."})
+        note = self._camera_note(spoken=last.source == "senior")
+        if note is not None:   # who is talking (#78, #113): the mic doesn't say, and the chat doesn't either
+            content.append({"type": "text", "text": note})
         ex: list[dict[str, Any]] = [{"role": "user", "content": content}]
         if self.per_message_effort:   # this task's effort, without touching the cached prefix
             ex.append({"role": "system", "content": [], "output_config": {"effort": effort}})
@@ -771,12 +773,35 @@ class Agent:
             st.said = True
         elif name == "reply_to_guardian" and out.ok:
             st.replied = True
+        elif name == "this_is" and out.ok and str(args.get("name") or "").strip():
+            self._met(str(args["name"]).strip())   # "this is Mom": the chat is with Mom now
         if step is not None and not out.ok:
             self._set_step(st, step, "failed", out.text)
         result: dict[str, Any] = {"type": "tool_result", "tool_use_id": block.id, "content": out.text}
         if not out.ok:
             result["is_error"] = True
         return result
+
+    def _camera_note(self, spoken: bool = True) -> str | None:
+        """Who the camera sees and who is most likely speaking, for the end of a new request (#113).
+        None without a camera. Logged, so a wrong name can be traced to what the agent was told.
+        A message from the app or control page says who sent it: just who is in view (#78)."""
+        view_of = getattr(self.tools, "camera_view", None)
+        if view_of is None:
+            return None
+        view = view_of()
+        if view is None:
+            return None
+        if not spoken:
+            return f"People in view now: {view.text}."
+        note = speaker_note(view, self._talked_with)
+        log.info("agent: %s", note)
+        if view.speaker:
+            self._met(view.speaker)
+        return note
+
+    def _met(self, name: str) -> None:
+        self._talked_with = [n for n in self._talked_with if n.lower() != name.lower()] + [name]
 
     def _drain_pending(self, st: _TaskState) -> list[dict[str, Any]]:
         pending, self._pending = self._pending, []

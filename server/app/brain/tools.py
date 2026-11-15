@@ -74,7 +74,95 @@ class ToolOutcome:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-Handler = Callable[[dict[str, Any]], Awaitable[ToolOutcome]]
+# --- who is in front of Miguel (#78, #113) -----------------------------------------------------
+
+UNRECOGNIZED = "someone I don't recognize"
+_DIST_RANK = {"near": 0, "middle distance": 1, "far": 2}
+
+
+@dataclass(frozen=True)
+class Seen:
+    """One person the camera sees: their saved-look name (None = not recognized), side and distance."""
+    name: str | None
+    side: str = "center"   # left / center / right
+    dist: str = "near"     # near / middle distance / far
+
+    def __str__(self) -> str:
+        return f"{self.name or UNRECOGNIZED} ({self.side}, {self.dist})"
+
+
+@dataclass(frozen=True)
+class CameraView:
+    """Who the camera sees right now, closest first. seeing=False: no fresh picture."""
+    seeing: bool = True
+    people: tuple[Seen, ...] = ()
+    more: int = 0   # people past the listed ones (farther away)
+
+    @property
+    def text(self) -> str:
+        if not self.seeing:
+            return "the camera isn't seeing anything right now"
+        if not self.people:
+            return "nobody"
+        return "; ".join(map(str, self.people)) + (f"; and {self.more} more" if self.more else "")
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The recognized people in view, closest first."""
+        return tuple(p.name for p in self.people if p.name)
+
+    @property
+    def speaker(self) -> str | None:
+        """Who is most likely talking: the closest person, if recognized, not far, and nobody else
+        is as close. None when the camera can't tell (a stranger, nobody, a crowd, no picture)."""
+        if not self.people:
+            return None
+        first = self.people[0]
+        if first.name is None or first.dist == "far":
+            return None
+        rank = _DIST_RANK.get(first.dist, 2)
+        if any(_DIST_RANK.get(p.dist, 2) <= rank for p in self.people[1:]):
+            return None
+        return first.name
+
+
+def _join(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def speaker_note(view: CameraView, earlier: list[str] | tuple[str, ...] = ()) -> str:
+    """The note that ends every request (#113): who the camera sees, who is most likely speaking,
+    and which people from earlier in the conversation are not in view now. The mic doesn't say who
+    spoke, and Claude otherwise assumes the speaker is whoever it talked with before."""
+    in_view = {n.lower() for n in view.names}
+    gone: list[str] = []
+    for n in reversed(earlier):   # most recent first, each once
+        if n.lower() not in in_view and n.lower() not in {g.lower() for g in gone}:
+            gone.append(n)
+    gone = gone[:3]
+    out = [f"Camera now (your only clue to who is speaking): {view.text}."]
+    if view.speaker:
+        out.append(f"The speaker is most likely {view.speaker}.")
+        if gone:
+            out.append(f"Earlier in this chat you talked with {_join(gone)}, who {'is' if len(gone) == 1 else 'are'} "
+                       f"not in view now: the speaker is {view.speaker}, not {_join(gone)}.")
+        return " ".join(out)
+    if not view.seeing:
+        out.append("You can't tell who is speaking.")
+    elif not view.people:
+        out.append("Nobody is in view, so you can't tell who is speaking.")
+    elif view.people[0].name is None:
+        out.append("You don't recognize them, so you don't know who is speaking.")
+    else:
+        out.append("You can't tell which person is speaking.")
+    if gone:
+        out.append(f"Earlier in this chat you talked with {_join(gone)}, but that doesn't mean "
+                   f"{'it is' if len(gone) == 1 else 'it is one of them'} now: people take turns in front of you.")
+    out.append("Use no name and no one's personal memories; if it matters, ask who they are.")
+    return " ".join(out)
+
+
+Handler =Callable[[dict[str, Any]], Awaitable[ToolOutcome]]
 Snapshot = Callable[[], "bytes | None | Awaitable[bytes | None]"]
 
 
@@ -250,8 +338,14 @@ class ToolBox:
 
     def people_in_view(self, max_people: int = 4, stale_s: float = 2.0) -> str | None:
         """Who the camera sees right now, by saved look (#78): "Alex (center, near); someone I don't
-        recognize (left, far)". None when there is no camera. The mic gives words, not a speaker, so this
-        is the agent's only clue to who is talking; it knows clothes, not faces."""
+        recognize (left, far)". None when there is no camera. See camera_view."""
+        view = self.camera_view(max_people, stale_s)
+        return None if view is None else view.text
+
+    def camera_view(self, max_people: int = 4, stale_s: float = 2.0) -> CameraView | None:
+        """Who the camera sees right now, closest first, named by saved look. None when there is no
+        camera. The mic gives words, not a speaker, so this is the agent's only clue to who is
+        talking (#78, #113); it knows clothes, not faces."""
         if self.perception is None:
             return None
         try:
@@ -259,12 +353,10 @@ class ToolBox:
         except Exception:  # noqa: BLE001 - a broken camera must not break every request
             return None
         if p is None or time.monotonic() - float(getattr(p, "published_at", 0.0)) > stale_s:
-            return "the camera isn't seeing anything right now"
+            return CameraView(seeing=False)
         people = list(getattr(p.detections, "people", []) or [])
-        if not people:
-            return "nobody"
         people.sort(key=lambda q: q.box.x2 - q.box.x1, reverse=True)   # closest (widest) first
-        out = []
+        seen = []
         for person in people[:max_people]:
             name = None
             if self.registry is not None:
@@ -276,9 +368,8 @@ class ToolBox:
             cx, h = (person.box.x1 + person.box.x2) / 2, person.box.y2 - person.box.y1
             side = "left" if cx < 0.35 else "right" if cx > 0.65 else "center"
             dist = "near" if h > 0.6 else "middle distance" if h > 0.3 else "far"
-            out.append(f"{name or 'someone I don\'t recognize'} ({side}, {dist})")
-        extra = len(people) - max_people
-        return "; ".join(out) + (f"; and {extra} more" if extra > 0 else "")
+            seen.append(Seen(name, side, dist))
+        return CameraView(people=tuple(seen), more=max(0, len(people) - max_people))
 
     def memory_summary(self, max_items: int = 12, max_chars: int = 600) -> str:
         parts = [f"{k}: {v}" for k, v in list(self.memory.items())[-max_items:]]
