@@ -50,14 +50,32 @@ def hub(tmp_path, **kw) -> tuple[FamilyHub, FakeState]:
     return FamilyHub(st, Memory(tmp_path / "m.db"), snapshot=lambda: b"\xff\xd8jpeg", token="secret", **kw), st
 
 
-async def connect(h: FamilyHub, token: str = "secret"):
+async def connect(h: FamilyHub, token: str = "secret", viewer: str = "m1"):
     app = web.Application()
     app.add_routes(h.routes())
     client = TestClient(TestServer(app))
     await client.start_server()
     ws = await client.ws_connect("/family/ws")
-    await ws.send_json({"t": "hello", "v": 1, "token": token, "viewer": "m1"})
+    await ws.send_json({"t": "hello", "v": 1, "token": token, "viewer": viewer})
     return client, ws
+
+
+async def nothing(ws, t: str, seconds: float = 0.6) -> bool:
+    """True if no message of type `t` arrives within `seconds`."""
+    try:
+        while True:
+            m = await asyncio.wait_for(ws.receive_json(), seconds)
+            if m.get("t") == t:
+                return False
+    except asyncio.TimeoutError:
+        return True
+
+
+async def go_live(h: FamilyHub, ws) -> None:
+    await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
+    await until(ws, "ack")
+    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+    await until(ws, "frame")
 
 
 async def until(ws, t: str, pred=lambda m: True):
@@ -351,3 +369,140 @@ def test_an_error_without_a_ref_has_no_null_ref(tmp_path):
         assert "ref" not in m and m["code"] == "bad_request"
         await client.close()
     asyncio.run(go())
+
+
+def test_frames_and_the_check_in_belong_to_whoever_asked(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        c1, sarah = await connect(h)
+        c2, david = await connect(h, viewer="m2")
+        await until(david, "events")
+        await go_live(h, sarah)
+        s = await until(david, "state", lambda m: m["mode_note"].startswith("On a call"))
+        assert s["check_in"] == {"phase": "idle"}            # David sees Mom's on a call, not Sarah's call
+        assert await nothing(david, "frame")
+        await david.send_json({"t": "check_in", "ref": "d", "action": "request"})
+        assert (await until(david, "error"))["code"] == "busy"
+        await c1.close()
+        await c2.close()
+    asyncio.run(go())
+
+
+def test_the_call_ends_when_the_caller_leaves(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await go_live(h, ws)
+        await ws.close()
+        for _ in range(50):
+            if h.check_in["phase"] == "idle":
+                break
+            await asyncio.sleep(0.02)
+        assert h.check_in["phase"] == "idle" and st.settings["camera"] == "back" and h._call_task is None
+        await client.close()
+    asyncio.run(go())
+
+
+def test_she_can_end_the_call(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await go_live(h, ws)
+        h.on_agent_event({"kind": "check_in", "text": "no", "data": {"answer": "no"}})   # "that's enough"
+        await until(ws, "state", lambda m: m["check_in"]["phase"] == "idle")
+        await go_live(h, ws)
+        h.on_agent_event({"kind": "heard", "text": "Miguel, stop", "data": {"source": "senior"}})
+        await until(ws, "state", lambda m: m["check_in"]["phase"] == "idle")
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_new_check_in_waits_while_he_may_still_answer_the_called_off_one(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "check_in", "ref": "c1", "action": "request"})
+        await until(ws, "ack")
+        st.working = True                                        # still asking her about c1
+        await ws.send_json({"t": "check_in", "ref": "e", "action": "end"})
+        await until(ws, "ack", lambda m: m["ref"] == "e")
+        await ws.send_json({"t": "check_in", "ref": "c2", "action": "request"})
+        assert (await until(ws, "error"))["code"] == "busy"
+        st.working = False                                       # done: no late answer can come now
+        await ws.send_json({"t": "check_in", "ref": "c3", "action": "request"})
+        await until(ws, "ack", lambda m: m["ref"] == "c3")
+        assert h.check_in["phase"] == "asking"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_bring_mom_asked_for_doesnt_move_the_familys_delivery(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "send", "ref": "r1", "item": "water", "label": "Water", "message": "Love you"})
+        await until(ws, "ack")
+        h.on_bring_step("delivered", "here are your pills", item="pills")    # her own request, by voice
+        assert h.delivery["stage"] == "sent" and st.said == []
+        h.on_bring_step("loading", "waiting for the glass of water", item="glass of water")
+        assert h.delivery["stage"] == "loading"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_hello_that_isnt_an_object_is_refused(tmp_path):
+    async def go():
+        h, _ = hub(tmp_path)
+        app = web.Application()
+        app.add_routes(h.routes())
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        ws = await client.ws_connect("/family/ws")
+        await ws.send_json(["hello"])
+        m = await ws.receive_json()
+        assert m["code"] == "unauthorized"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_camera_error_doesnt_stop_the_calls_video(tmp_path):
+    async def go():
+        st = FakeState()
+        shots = iter([RuntimeError("camera hiccup"), b"\xff\xd8ok"])
+
+        def snapshot():
+            shot = next(shots, b"\xff\xd8ok")
+            if isinstance(shot, Exception):
+                raise shot
+            return shot
+
+        h = FamilyHub(st, Memory(tmp_path / "m.db"), snapshot=snapshot, token="secret")
+        client, ws = await connect(h)
+        await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
+        await until(ws, "ack")
+        h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+        assert (await until(ws, "frame"))["jpeg"]
+        await client.close()
+    asyncio.run(go())
+
+
+def test_through_a_tunnel_on_this_laptop_the_app_needs_the_token(tmp_path):
+    from unittest import mock
+
+    from aiohttp.test_utils import make_mocked_request
+
+    laptop = mock.Mock()
+    laptop.get_extra_info.return_value = ("127.0.0.1", 5555)   # cloudflared connects from this laptop
+    h = FamilyHub(FakeState(), None, token="")
+    direct = make_mocked_request("GET", "/family/ws", transport=laptop)
+    tunneled = make_mocked_request("GET", "/family/ws", headers={"CF-Connecting-IP": "203.0.113.9"}, transport=laptop)
+    assert h._token_ok("", direct) is True and h._token_ok("", tunneled) is False
+
+
+def test_alert_did_keeps_the_latest_lines(tmp_path):
+    h, _ = hub(tmp_path)
+    h.alert = {"id": "a1", "did": [], "status": "active"}
+    for i in range(20):
+        h._did(f"Said: line {i}")
+    h._did("Said: line 19")
+    assert h.alert["did"] == [f"Said: line {i}" for i in range(12, 20)]
