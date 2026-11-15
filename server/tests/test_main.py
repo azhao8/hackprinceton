@@ -379,6 +379,16 @@ def test_hud_shows_health_and_contract_telemetry():
     assert render(None, hud).shape[2] == 3  # the real overlay draws it
 
 
+def test_skills_get_the_robots_telemetry():
+    """#62: the search reads the robot's heading (yaw) through its skill context."""
+    link = FakeUdpLink(dict(TEL))
+    app = App(link, hz=100)
+    ctx = app.skills._ctx
+    assert ctx.telemetry() == link.telemetry
+    link.telemetry = dict(TEL, yaw=42.0)
+    assert ctx.telemetry()["yaw"] == 42.0   # read live, not copied at startup
+
+
 # --- serve(): link start, flags, shutdown ---
 
 
@@ -480,3 +490,23 @@ def test_serve_closes_the_voice_if_the_api_fails_to_start(monkeypatch):
         asyncio.run(server.serve(parse_args([]), FakeUdpLink(dict(TEL)), window=FakeWindow(["q"]),
                                  render=lambda p, h: h))
     assert tts.closed
+
+
+def test_calibration_file_sets_the_camera_and_flags_still_win(tmp_path):
+    """#62: server/calibration.json (python -m app.vision.calibrate) feeds the follow config;
+    --height-m / --tilt-deg given on the command line override it."""
+    from app.vision import calibration
+    from app.vision.follow import FollowConfig
+
+    assert server.load_calibration(str(tmp_path / "missing.json")) is None   # no file: defaults
+    path = tmp_path / "cal.json"
+    calibration.save(calibration.Calibration(hfov_deg=60.0, height_m=0.5, tilt_deg=8.0, target_box_w=0.33), path)
+    cal = server.load_calibration(str(path))
+    assert cal is not None and cal.hfov_deg == 60.0
+
+    config = server.make_follow_config(parse_args(["--turn-only"]), cal)
+    assert (config.camera.hfov_deg, config.camera.height_m, config.camera.tilt_deg) == (60.0, 0.5, 8.0)
+    assert config.target_box_w == 0.33 and config.turn_only
+    config = server.make_follow_config(parse_args(["--height-m", "0.4", "--tilt-deg", "5"]), cal)
+    assert (config.camera.height_m, config.camera.tilt_deg, config.camera.hfov_deg) == (0.4, 5.0, 60.0)
+    assert server.make_follow_config(parse_args([])) == FollowConfig()   # no file, no flags: unchanged

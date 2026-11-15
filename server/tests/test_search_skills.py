@@ -1,7 +1,9 @@
 """FindPerson / GoTo against a simulated room: the robot turns and drives by what the arbiter
 decides, the fake camera sees people and markers from the robot's pose, and a fake lock engages
 like TargetLock (the person overlapping the requested box, else the widest person near the
-center). Time is simulated: `World.sleep` advances it."""
+center). Time is simulated: `World.sleep` advances it. Optionally the robot turns slower than asked
+(`turn_gain`) and late (`turn_lag_s`), and publishes contract telemetry with its yaw every
+`tel_period_s` (20 Hz like UDP, or 5 Hz like the USB `J` polls)."""
 
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import pytest
 
 from app.arbiter import Arbiter
 from app.skills import SkillContext
-from app.skills.search import FindPerson, GoTo
+from app.skills.search import FindPerson, GoTo, HeadingWatch, Search, SearchConfig, wrap_deg
 from app.vision.tracking import BodyParts, LockConfig, body_part_histograms, parts_distance
 from app.vision.types import Box, Detections, Frame, Marker, Person, TargetState, TargetStatus
 
@@ -79,19 +81,33 @@ class Sample:
     v: float
     w: float
     source: str
+    heading: float = 0.0  # deg, the robot's true heading after this step
 
 
 class World:
     """The room, the robot's pose (driven by the arbiter's decisions) and simulated time."""
 
-    def __init__(self, bodies: list[Body] = (), tags: list[Tag] = ()) -> None:  # type: ignore[assignment]
+    def __init__(self, bodies: list[Body] = (), tags: list[Tag] = (), *,  # type: ignore[assignment]
+                 turn_gain: float = 1.0, turn_lag_s: float = 0.0, heading_deg: float = 0.0,
+                 tel_period_s: float | None = None, tel_until: float = math.inf,
+                 tel_yaw: bool = True, wrap_yaw: bool = False) -> None:
         self.t = 0.0
         self.arb = Arbiter(clock=self.now)
         self.bodies = list(bodies)
         self.tags = list(tags)
-        self.rx = self.ry = self.th = 0.0
+        self.rx = self.ry = 0.0
+        self.th = math.radians(heading_deg)
         self.samples: list[Sample] = []
         self.on_advance = None  # optional hook(world), called every simulation step
+        self.turn_gain = turn_gain  # the robot turns at this fraction of the commanded rate...
+        self.turn_lag_s = turn_lag_s  # ...reached with this time constant
+        self.w_actual = 0.0
+        self.tel_period_s = tel_period_s  # None: no telemetry
+        self.tel_until = tel_until  # telemetry stops after this time (the link died)
+        self.tel_yaw = tel_yaw  # False: like the USB status line, no yaw
+        self.wrap_yaw = wrap_yaw  # yaw in [-180, 180) instead of counting on
+        self.tel: dict | None = None
+        self._next_tel = 0.0
 
     def now(self) -> float:
         return self.t
@@ -105,13 +121,33 @@ class World:
         h = dt / steps
         for _ in range(steps):
             cmd = self.arb.decide()
-            self.th += cmd.w * h
+            target = self.turn_gain * cmd.w
+            if self.turn_lag_s > 0:
+                self.w_actual += (target - self.w_actual) * min(1.0, h / self.turn_lag_s)
+            else:
+                self.w_actual = target
+            self.th += self.w_actual * h
             self.rx += cmd.v * h * math.cos(self.th)
             self.ry += cmd.v * h * math.sin(self.th)
             self.t += h
-            self.samples.append(Sample(self.t, cmd.v, cmd.w, cmd.source))
+            self.samples.append(Sample(self.t, cmd.v, cmd.w, cmd.source, self.heading_deg()))
+            self._publish()
             if self.on_advance is not None:
                 self.on_advance(self)
+
+    def _publish(self) -> None:
+        if self.tel_period_s is None or self.t >= self.tel_until or self.t < self._next_tel - 1e-9:
+            return
+        self._next_tel += self.tel_period_s
+        tel = {"t": "tel", "pitch": 5.6, "rate": 0.0, "vl": 0.0, "vr": 0.0, "batt": None,
+               "state": "balance", "fault": None, "x": 0.0}
+        if self.tel_yaw:
+            yaw = self.heading_deg()
+            tel["yaw"] = round(wrap_deg(yaw) if self.wrap_yaw else yaw, 1)  # balance.ino prints %.1f
+        self.tel = tel  # a new dict per message, like the links
+
+    def telemetry(self) -> dict | None:
+        return self.tel
 
     def dist(self, x: float, y: float) -> float:
         return math.hypot(x - self.rx, y - self.ry)
@@ -275,10 +311,10 @@ class FakeMatcher:
         return color in description, f"wearing {color}"
 
 
-def setup(bodies=(), tags=()) -> tuple[World, FakeVision, SkillContext]:
-    world = World(list(bodies), list(tags))
+def setup(bodies=(), tags=(), **world_kw) -> tuple[World, FakeVision, SkillContext]:
+    world = World(list(bodies), list(tags), **world_kw)
     vision = FakeVision(world)
-    return world, vision, SkillContext(world.arb, vision)
+    return world, vision, SkillContext(world.arb, vision, telemetry=world.telemetry)
 
 
 def sim(world: World) -> dict:
@@ -290,6 +326,21 @@ def run(coro, timeout: float = 30.0):
         return await asyncio.wait_for(coro, timeout)
 
     return asyncio.run(main())
+
+
+def turn_durations(world: World) -> list[float]:
+    """Seconds of each run of consecutive non-zero-w samples."""
+    out, current, prev_t = [], 0.0, 0.0
+    for s in world.samples:
+        if s.w != 0.0:
+            current += s.t - prev_t
+        elif current:
+            out.append(current)
+            current = 0.0
+        prev_t = s.t
+    if current:
+        out.append(current)
+    return out
 
 
 def turn_segments(world: World) -> list[float]:
@@ -556,3 +607,162 @@ def test_unknown_name_without_description_fails_before_moving():
     world, vision, ctx = setup([Body("Bob", *at(0, 2.0), "blue")])
     result = run(FindPerson("Zed", registry=FakeRegistry({"bob": look_of("blue")}), **sim(world)).run(ctx))
     assert not result.ok and "Zed" in result.detail and world.samples == []
+
+
+# ---------------------------------------------------------------------------
+# Turning by heading (issue #62)
+
+STEP_S = math.radians(40.0) / 0.5  # the timed step: ~1.4 s
+
+
+def search_stops(world: World, ctx: SkillContext, direction: int = 1, **cfg) -> tuple[Search, list[float]]:
+    """Run the bare Search over an empty room; the robot's TRUE heading (deg) at each stop."""
+    search = Search(SearchConfig(**cfg), **sim(world))
+    headings: list[float] = []
+
+    async def found(p) -> None:  # never a hit: a full circle
+        headings.append(world.heading_deg())
+
+    outcome = run(search.run(ctx, found, direction))
+    assert outcome.found is None and outcome.stops == len(headings)
+    assert world.arb.decide().w == 0.0  # stopped (the skills withdraw the request in `finally`)
+    return search, headings
+
+
+def steps_of(headings: list[float]) -> list[float]:
+    return [b - a for a, b in zip(headings, headings[1:])]
+
+
+def covers_the_circle(headings: list[float]) -> bool:
+    """Every pair of neighbouring stops (the last and the first included) is less than one camera
+    view apart, so together the views see all around."""
+    gaps = [abs(s) for s in steps_of(headings)] + [360.0 - abs(headings[-1] - headings[0])]
+    return all(0.0 < g < HFOV_DEG for g in gaps)
+
+
+def test_heading_steps_are_40_deg_on_a_robot_that_turns_slower_than_asked():
+    # The robot reaches only 80 % of the commanded rate, late; yaw comes 5 times a second (USB J polls).
+    world, vision, ctx = setup(turn_gain=0.8, turn_lag_s=0.15, tel_period_s=0.2)
+    search, headings = search_stops(world, ctx)
+
+    assert search.modes == ["heading"] * 8
+    assert len(headings) == 9
+    assert all(s == pytest.approx(40.0, abs=3.0) for s in steps_of(headings)), steps_of(headings)
+    assert covers_the_circle(headings)
+    assert search.turned_deg == pytest.approx(headings[-1], abs=1.0)  # counted by what it really turned
+
+    # The same robot turning by time: 32 deg steps, and 9 stops leave part of the room unseen.
+    world2, _, ctx2 = setup(turn_gain=0.8, turn_lag_s=0.15)
+    timed, headings2 = search_stops(world2, ctx2)
+    assert timed.modes == ["time"] * 8
+    assert all(s == pytest.approx(32.0, abs=1.5) for s in steps_of(headings2))
+    assert not covers_the_circle(headings2)
+
+
+def test_heading_steps_with_20_hz_telemetry_turning_right():
+    world, vision, ctx = setup(tel_period_s=0.05)
+    search, headings = search_stops(world, ctx, direction=-1)
+
+    assert search.modes == ["heading"] * 8
+    assert all(s == pytest.approx(-40.0, abs=2.0) for s in steps_of(headings))
+    assert covers_the_circle(headings)
+    assert all(s.w <= 0 for s in world.samples)  # never turned the wrong way
+
+
+def test_heading_steps_across_the_wraparound():
+    # Starts at 170 deg and the source wraps at +-180: the 2nd step crosses it.
+    world, vision, ctx = setup(heading_deg=170.0, tel_period_s=0.05, wrap_yaw=True)
+    search, headings = search_stops(world, ctx)
+
+    assert search.modes == ["heading"] * 8 and len(headings) == 9
+    assert all(s == pytest.approx(40.0, abs=2.0) for s in steps_of(headings))
+    assert headings[2] > 180.0 + 20.0  # really went past +-180
+    assert covers_the_circle(headings)
+
+
+@pytest.mark.parametrize("tel", ["none", "frozen", "no yaw"])
+def test_without_fresh_yaw_it_falls_back_to_timed_steps(tel):
+    if tel == "none":
+        world, vision, ctx = setup()
+    elif tel == "frozen":  # the link died: its last dict stays, never updated
+        world, vision, ctx = setup(tel_period_s=0.05, tel_until=0.01)
+    else:  # USB status lines without J: new dicts, no yaw
+        world, vision, ctx = setup(tel_period_s=0.1, tel_yaw=False)
+    search, headings = search_stops(world, ctx)
+
+    assert search.modes == ["time"] * 8 and len(headings) == 9
+    assert all(s == pytest.approx(40.0, abs=1.0) for s in turn_segments(world))
+    assert all(d == pytest.approx(STEP_S, abs=0.06) for d in turn_durations(world))
+
+
+def test_heading_step_times_out_and_the_circle_counts_what_was_turned():
+    # Turns at 30 % of the commanded rate: 2.8 s (2 x the timed step) gives only ~24 deg.
+    world, vision, ctx = setup(turn_gain=0.3, tel_period_s=0.05)
+    search, headings = search_stops(world, ctx)
+
+    assert set(search.modes) == {"heading"}
+    assert all(d == pytest.approx(2 * STEP_S, abs=0.06) for d in turn_durations(world))
+    assert all(s == pytest.approx(24.0, abs=1.5) for s in steps_of(headings))
+    # More, shorter steps until the circle is covered by heading (not 9 stops of 24 deg = 192 deg).
+    assert len(headings) == 14
+    assert covers_the_circle(headings)
+
+
+def test_a_robot_that_does_not_turn_stops_trusting_yaw_after_one_timeout():
+    world, vision, ctx = setup(turn_gain=0.0, tel_period_s=0.05)  # stuck: yaw fresh but never changes
+    search, headings = search_stops(world, ctx)
+
+    assert search.modes == ["heading"] + ["time"] * 7 and len(headings) == 9
+    durations = turn_durations(world)
+    assert durations[0] == pytest.approx(2 * STEP_S, abs=0.06)
+    assert all(d == pytest.approx(STEP_S, abs=0.06) for d in durations[1:])
+
+
+def test_yaw_lost_mid_turn_finishes_the_step_by_time():
+    # Telemetry stops 0.2 s into the first turn (it starts at ~0.8 s, after the first stop).
+    world, vision, ctx = setup(tel_period_s=0.05, tel_until=1.0)
+    search, headings = search_stops(world, ctx)
+
+    assert search.modes == ["heading"] + ["time"] * 7 and len(headings) == 9
+    durations = turn_durations(world)
+    assert durations[0] == pytest.approx(STEP_S, abs=0.06)  # 0.7 s by heading (until stale) + the rest by time
+    assert all(s == pytest.approx(40.0, abs=1.0) for s in steps_of(headings))
+
+
+def test_find_person_on_a_slow_robot_still_finds_bob_at_the_third_stop():
+    # Bob at 80 deg: by time, 32 deg steps would put the 3rd stop at 64 deg; by heading it is 80.
+    alice = Body("Alice", *at(0, 2.0), "red")
+    bob = Body("Bob", *at(80, 3.0), "blue")
+    world, vision, ctx = setup([alice, bob], turn_gain=0.8, turn_lag_s=0.15, tel_period_s=0.2)
+    skill = FindPerson("Bob", registry=FakeRegistry({"bob": look_of("blue")}), **sim(world))
+
+    result = run(skill.run(ctx))
+
+    assert result.ok, result.detail
+    assert skill.search.stops == 3 and skill.search.modes == ["heading", "heading"]
+    assert world.dist(bob.x, bob.y) == pytest.approx(1.05, abs=0.1)
+
+
+def test_heading_watch_needs_a_new_dict_to_call_yaw_fresh():
+    t = [0.0]
+    tel = [{"t": "tel", "yaw": 10.0}]
+    watch = HeadingWatch(lambda: tel[0], lambda: t[0], fresh_s=0.5)
+
+    assert watch.observe() is None  # first sight: age unknown
+    t[0] = 0.1
+    tel[0] = {"t": "tel", "yaw": 12.0}
+    assert watch.observe() == 12.0
+    t[0] = 0.55
+    assert watch.observe() == 12.0  # same dict, still within 0.5 s of when it was new
+    t[0] = 0.7
+    assert watch.observe() is None  # not updated for 0.6 s: stale
+    t[0] = 5.0
+    tel[0] = {"t": "tel", "yaw": 179.0}
+    assert watch.observe() is None  # new, but nobody looked for 4.3 s: age unknown
+    t[0] = 5.05
+    tel[0] = {"t": "tel", "yaw": -175.0}  # a wrapping source: +6 deg, not -354
+    assert watch.observe() == pytest.approx(185.0)
+    tel[0] = {"t": "tel", "yaw": True}
+    assert watch.observe() is None and not watch.has_yaw
+    tel[0] = None
+    assert watch.observe() is None

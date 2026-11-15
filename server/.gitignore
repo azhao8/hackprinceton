@@ -7,3 +7,6 @@ models/
 markers/
 # Saved looks of people ("this is Mom"), personal data
 people.json
+
+# Camera calibration (python -m app.vision.calibrate), per robot and camera
+calibration.json

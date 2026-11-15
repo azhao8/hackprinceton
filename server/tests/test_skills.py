@@ -50,3 +50,17 @@ def test_new_skill_replaces_the_old_one():
         assert arb.decide().source == "none"   # a finished skill leaves no request behind
 
     asyncio.run(scenario())
+
+
+def test_context_telemetry_is_optional_and_never_raises():
+    arb = Arbiter()
+    assert SkillContext(arb).telemetry() is None                     # no link wired in
+    tel = {"t": "tel", "yaw": 12.5, "x": 0.3}
+    assert SkillContext(arb, telemetry=lambda: tel).telemetry() is tel
+    assert SkillContext(arb, None, None, telemetry=lambda: None).telemetry() is None
+
+    def broken() -> dict:
+        raise RuntimeError("link gone")
+
+    assert SkillContext(arb, telemetry=broken).telemetry() is None
+    assert SkillContext(arb, telemetry=lambda: "not a dict").telemetry() is None  # type: ignore[arg-type,return-value]

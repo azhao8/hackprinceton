@@ -9,8 +9,20 @@ It speaks contract v1 (contract/README.md) as far as `firmware/balance/balance.i
   newline. `send_letter` never sends `g`, `G` or `i` (`i` toggles the status line this link reads).
 - In: the readable status line the firmware prints 10 times a second over USB on its own
   (`RUN pitch ... (err ...) rate ... v ... x ... vt ... wt ...`), turned into a contract `tel` dict
-  (see `status_to_tel`); `STOP: <why>` lines (the `fault`); the `V` version reply; and a `{"t":"tel"}`
-  JSON line if a later firmware prints one over USB (used as is, acks included).
+  (see `status_to_tel`); `STOP: <why>` lines (the `fault`); the `V` version reply; and `{"t":"tel"}`
+  JSON lines (used as is, acks included).
+
+Yaw over USB (issue #62): the status line has no `yaw`, but `J` makes balance.ino print one
+contract `tel` JSON line (`formatTelemetry()`, the same as the Wi-Fi one: `yaw` %.1f degrees since
+`g`, + left, and `ack`). The writer thread sends `J` about `yaw_poll_hz` (5) times a second, from
+the first status line or `V` reply after the port (re)opens: both are printed from loop(), so the
+firmware is reading commands. `J` is sent internally only: it is NOT in `ALLOWED_LETTERS`, and
+`send_letter("J")` still raises. If no JSON reply arrives within `yaw_poll_give_up_s` (3 s) of
+the firmware first talking (a firmware without `J` ignores the unknown letter), polling stops and
+that is logged once; a reconnect tries again. While the last JSON reply is fresh (< FRESH_S), each
+status-line dict also carries its `yaw` (not its `ack`), so `telemetry` keeps a yaw between replies
+(at most one poll, ~0.2 s, old). With replies, `health()` requires fresh acks (they come at the poll
+rate, < FRESH_S), and `lag_ms` includes up to one drive period of waiting for the next poll.
 
 Arming is separate on purpose: `arm()` sends `g` and is not part of `RobotLink`. Over USB the server
 holds the serial port, so drive.py can't be run next to it to arm the robot; `arm()` exists only for a
@@ -138,7 +150,8 @@ class SerialLink:
 
     def __init__(self, port: str | None = None, baud: int = 115200, *,
                  serial_factory: Callable[[str, int], Any] | None = None,
-                 reconnect: bool = True, clock: Callable[[], float] = time.monotonic):
+                 reconnect: bool = True, clock: Callable[[], float] = time.monotonic,
+                 yaw_poll_hz: float = 5.0, yaw_poll_give_up_s: float = 3.0):
         self._port_arg = port
         self.port: str | None = port
         self._baud = baud
@@ -166,6 +179,16 @@ class SerialLink:
         self._ack_at: float | None = None
         self._lag: float | None = None
         self._best_ack = 0
+        # J polling (module docstring). State, guarded by _out_cv: "off" (disabled or gave up),
+        # "waiting" (port open, firmware not heard yet), "polling" (no reply yet), "answered".
+        # Poll timing is wall time (time.monotonic); `clock` is only for telemetry/ack ages.
+        self._poll_period = 1.0 / yaw_poll_hz if yaw_poll_hz > 0 else None
+        self._poll_give_up_s = yaw_poll_give_up_s
+        self._poll_state = "off"
+        self._poll_since = 0.0     # first status line / V reply since (re)open
+        self._poll_next = 0.0
+        self._json_at: float | None = None    # last JSON tel line (clock)
+        self._json_yaw: float | None = None
 
     # ---- RobotLink
     async def start(self) -> None:
@@ -257,6 +280,7 @@ class SerialLink:
         ser = self._factory(port, self._baud)
         with self._io:
             self._ser, self.port, self._connected, self._closing = ser, port, True, False
+        self._reset_poll()
         atexit.register(self._atexit_motors_off)
         self._reader = threading.Thread(target=self._read_loop, name="serial-link-reader", daemon=True)
         self._writer = threading.Thread(target=self._write_loop, name="serial-link-writer", daemon=True)
@@ -320,10 +344,17 @@ class SerialLink:
         while True:
             with self._out_cv:
                 while not self._out and not self._closing:
-                    self._out_cv.wait(0.5)
+                    due = self._poll_due_in(time.monotonic())
+                    if due is not None and due <= 0:
+                        break
+                    self._out_cv.wait(0.5 if due is None else min(0.5, due))
                 if self._closing:
                     return
-                _, data = self._out.popleft()
+                if self._out:     # queued commands first; J only when nothing else waits
+                    _, data = self._out.popleft()
+                else:
+                    data = b"J\n"
+                    self._poll_next = time.monotonic() + (self._poll_period or 0.0)
                 self._writing = True
             try:
                 self._write_now(data)
@@ -350,6 +381,43 @@ class SerialLink:
         with self._out_cv:
             self._out.clear()
             self._out_cv.notify_all()
+
+    # ---- J polling (yaw over USB; module docstring)
+    def _reset_poll(self) -> None:
+        """Port (re)opened: wait for the firmware to talk before polling."""
+        with self._out_cv:
+            self._poll_state = "waiting" if self._poll_period is not None else "off"
+
+    def _poll_due_in(self, now: float) -> float | None:
+        """Seconds until the next J (<= 0: now), or None while not polling. Caller holds _out_cv."""
+        if self._poll_state not in ("polling", "answered") or not self._connected:
+            return None
+        if self._poll_state == "polling" and now - self._poll_since >= self._poll_give_up_s:
+            self._poll_state = "off"
+            log.warning("robot link: no reply to J in %.0f s (firmware without JSON telemetry over USB?); "
+                        "no yaw over USB, so searches turn by time", self._poll_give_up_s)
+            return None
+        return self._poll_next - now
+
+    def _firmware_talking(self) -> None:
+        """A status line or V reply (printed from loop(): the firmware reads commands): start polling."""
+        if self._poll_state != "waiting":   # unlocked peek: the reader is the only one leaving "waiting"
+            return
+        with self._out_cv:
+            if self._poll_state == "waiting":
+                self._poll_state = "polling"
+                self._poll_since = self._poll_next = time.monotonic()
+                self._out_cv.notify_all()
+
+    def _got_json(self) -> None:
+        if self._poll_state == "answered" or self._poll_period is None:
+            return
+        with self._out_cv:
+            if self._poll_state != "answered":
+                self._poll_state = "answered"
+                self._poll_next = time.monotonic()
+                self._out_cv.notify_all()
+        log.info("robot link: the robot answers J; telemetry has yaw over USB (%.0f Hz)", 1.0 / self._poll_period)
 
     def _drain(self, timeout: float = 1.0) -> bool:
         """Wait until everything queued is written (for tests and scripts)."""
@@ -427,6 +495,8 @@ class SerialLink:
                 return False
             self._ser, self.port, self._connected = ser, port, True
         self._fault = None   # the ESP32 rebooted: its lastFault is null again
+        self._json_at = self._json_yaw = None   # ...and its yaw is 0 again
+        self._reset_poll()
         log.info("robot link back on %s (motors are off after a reboot; arm again by hand)", port)
         self._enqueue("letter", b"V\n")
         return True
@@ -440,12 +510,17 @@ class SerialLink:
             self._fault = None
         elif FIRMWARE_TAG in line:
             self.firmware = line
+            self._firmware_talking()
         if line.startswith("{"):
             self._handle_json(line)
             return
         tel = status_to_tel(line, self._fault)
         if tel is not None:
-            self.telemetry, self._tel_at = tel, self._clock()
+            now = self._clock()
+            if self._json_yaw is not None and self._json_at is not None and now - self._json_at < FRESH_S:
+                tel["yaw"] = self._json_yaw    # the line has none: the last J reply's
+            self.telemetry, self._tel_at = tel, now
+            self._firmware_talking()
         elif line.isprintable():
             self.messages.append(line)
 
@@ -460,6 +535,9 @@ class SerialLink:
             return   # not usable telemetry
         now = self._clock()
         self.telemetry, self._tel_at = msg, now
+        yaw = msg.get("yaw")
+        self._json_at, self._json_yaw = now, (float(yaw) if _is_number(yaw) and math.isfinite(yaw) else None)
+        self._got_json()
         ack = msg.get("ack")
         if isinstance(ack, int) and ack in self._sent and ack > self._best_ack:
             self._best_ack, self._ack_at = ack, now

@@ -335,9 +335,19 @@ class FakeAgent:
 
 
 class FakeToolBox:
-    def __init__(self, runner=None, skill_factories=None, *, snapshot=None, describe=None, save_photo=None):
+    def __init__(self, runner=None, skill_factories=None, *, snapshot=None, describe=None, save_photo=None,
+                 registry=None, perception=None):
         self.runner, self.skill_factories, self.snapshot = runner, skill_factories, snapshot
-        self.save_photo = save_photo
+        self.save_photo, self.registry, self.perception = save_photo, registry, perception
+
+
+class FakeRegistry:
+    """Stands in for app.vision.people.PeopleRegistry; counts how many were made (#62: exactly one)."""
+
+    made: list = []
+
+    def __init__(self):
+        FakeRegistry.made.append(self)
 
 
 class FakeSTT:
@@ -355,6 +365,7 @@ class FakeSTT:
 def brain(monkeypatch):
     """Fake app.brain.agent / tools / app.speech.stt / mic / the search skills, as importable modules."""
     FakeAgent.instances = []
+    FakeRegistry.made = []
     mic_calls: list = []
 
     def make_mic_handler(stt, inbox, wake_word=None):
@@ -380,10 +391,15 @@ def brain(monkeypatch):
     async def matches_description(jpeg, description):
         return True, "fake"
 
-    mods = {"app.brain.agent": {"Agent": FakeAgent}, "app.brain.tools": {"ToolBox": FakeToolBox},
+    def save_look(name, registry, perception):
+        return types.SimpleNamespace(ok=True, text=f"saved {name}", data={"name": name, "registry": registry,
+                                                                          "perception": perception})
+
+    mods = {"app.brain.agent": {"Agent": FakeAgent},
             "app.speech.stt": {"CartesiaSTT": FakeSTT}, "app.speech.mic": {"make_mic_handler": make_mic_handler},
             "app.skills.search": {"FindPerson": FindPerson, "GoTo": GoTo}, "app.skills.bring": {"Bring": Bring},
-            "app.vision.people": {"PeopleRegistry": lambda: "registry"},
+            "app.brain.tools": {"ToolBox": FakeToolBox, "save_look": save_look},
+            "app.vision.people": {"PeopleRegistry": FakeRegistry},
             "app.brain.vision_check": {"matches_description": matches_description}}
     for name, attrs in mods.items():
         m = types.ModuleType(name)
@@ -450,7 +466,7 @@ def test_without_an_stt_key_mic_is_still_mounted_and_drops_audio(monkeypatch, br
 def test_skill_factories_build_skills_from_the_tools_arguments(brain):
     vision_check = sys.modules["app.brain.vision_check"]
     say, wait_loaded = (lambda text: None), (lambda: None)
-    f = server.make_skill_factories(lambda: "follow-skill", say=say, wait_loaded=wait_loaded)
+    f = server.make_skill_factories(lambda: "follow-skill", say=say, wait_loaded=wait_loaded, registry="registry")
     assert set(f) == {"follow", "find_person", "go_to", "bring"}
     assert f["follow"]() == "follow-skill"
     fp = f["find_person"](name="Mom", description=None)
@@ -459,6 +475,7 @@ def test_skill_factories_build_skills_from_the_tools_arguments(brain):
     b = f["bring"](item="water", person="Mom")
     assert b.args == ("water", "Mom", wait_loaded, say)
     assert b.kw == {"registry": "registry", "matcher": vision_check.matches_description}
+    assert not FakeRegistry.made   # the caller makes the one registry (serve), not the factories
     assert server.make_skill_factories(None) == {}                        # no camera: none
     assert "bring" not in server.make_skill_factories(lambda: 1)          # no say / wait_loaded: no bring
 
@@ -483,6 +500,93 @@ def test_with_a_camera_the_agent_gets_snapshots_and_skills(monkeypatch, brain):
     assert tools.snapshot() is None   # FakeVision has no frame yet
     b = tools.skill_factories["bring"](item="pills", person=None)
     assert b.args[2] == seen["state"].wait_loaded and b.args[3] == seen["state"].add_say
+
+
+def test_one_people_registry_is_shared_by_find_person_bring_this_is_and_the_control_page(monkeypatch, brain):
+    """#62: a look saved with this_is (or the control page) is the look find_person and bring match."""
+    from tests.test_main import TEL, FakeUdpLink, FakeVision, FakeWindow, fake_api_start
+
+    seen = fake_api_start(monkeypatch)
+    monkeypatch.setattr(server, "make_tts", lambda: None)
+    vision = FakeVision()
+    asyncio.run(server.serve(server.parse_args([]), FakeUdpLink(dict(TEL)), vision=vision,
+                             follow_factory=lambda: "follow-skill", window=FakeWindow([-1, -1, "q"]),
+                             render=lambda p, h: h))
+    assert len(FakeRegistry.made) == 1
+    registry = FakeRegistry.made[0]
+    tools = FakeAgent.instances[-1].tools
+    assert tools.registry is registry
+    assert tools.perception == vision.latest            # the vision worker's newest Perception
+    assert tools.skill_factories["find_person"](name="Mom", description=None).args[2] is registry
+    assert tools.skill_factories["bring"](item="pills", person="Mom").kw["registry"] is registry
+    out = seen["state"].this_is("Mom")                 # the control page's box: same save path, same registry
+    assert out.ok and out.data["registry"] is registry and out.data["perception"] is None
+
+
+def test_without_a_camera_there_is_no_registry_and_no_this_is(monkeypatch, brain):
+    _, state, _ = serve_with_fakes(monkeypatch, ["--no-vision"])
+    assert not FakeRegistry.made and state.this_is is None
+    assert FakeAgent.instances[-1].tools.registry is None and FakeAgent.instances[-1].tools.perception is None
+
+
+def test_this_is_works_on_the_control_page_with_the_agent_off(monkeypatch, brain):
+    from tests.test_main import TEL, FakeUdpLink, FakeVision, FakeWindow, fake_api_start
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    seen = fake_api_start(monkeypatch)
+    monkeypatch.setattr(server, "make_tts", lambda: None)
+    asyncio.run(server.serve(server.parse_args([]), FakeUdpLink(dict(TEL)), vision=FakeVision(),
+                             follow_factory=lambda: "follow-skill", window=FakeWindow(["q"]), render=lambda p, h: h))
+    assert not FakeAgent.instances and seen["state"].this_is("Dad").data["registry"] is FakeRegistry.made[0]
+
+
+# --- POST /control/this-is (#62) ---
+
+
+def test_control_this_is_saves_through_the_hook():
+    calls = []
+
+    def this_is(name):
+        calls.append(name)
+        return types.SimpleNamespace(ok=True, text=f"Saved what {name} looks like (shirt).", data={"name": name})
+
+    async def t(c, s):
+        r = await c.post("/control/this-is", json={"name": "  Mom  "})
+        assert r.status == 503 and (await r.json())["ok"] is False   # no camera: no hook
+        s.this_is = this_is
+        r = await c.post("/control/this-is", json={"name": "  Mom  "})
+        assert r.status == 200 and (await r.json()) == {"ok": True, "text": "Saved what Mom looks like (shirt).",
+                                                        "name": "Mom"}
+        assert calls == ["Mom"]
+        assert (await c.post("/control/this-is", json={"name": " "})).status == 400
+        assert (await c.post("/control/this-is", json={"name": "x" * 41})).status == 400
+        assert (await c.post("/control/this-is", data="junk")).status == 400
+        assert calls == ["Mom"]
+
+        async def fails(name):   # an async hook, and a failure: 200 with the text to show
+            return types.SimpleNamespace(ok=False, text="Nobody is standing in front of me.", data={})
+        s.this_is = fails
+        r = await c.post("/control/this-is", json={"name": "Dad"})
+        assert r.status == 200 and (await r.json()) == {"ok": False, "text": "Nobody is standing in front of me."}
+        page = await (await c.get("/control")).text()
+        assert "id=saveLook" in page and "'/control/this-is'" in page
+    run_client(t)
+
+
+def test_control_this_is_is_this_laptop_only(remote):
+    async def t(c, s):
+        s.this_is = lambda name: pytest.fail("must not save from afar")
+        assert (await c.post("/control/this-is", json={"name": "Mom"},
+                             headers={"Authorization": f"Bearer {TOKEN}"})).status == 403
+    run_client(t)
+
+
+def test_control_this_is_refuses_a_tunnel_on_this_laptop():
+    async def t(c, s):
+        s.this_is = lambda name: pytest.fail("must not save through a tunnel")
+        for h in api.FORWARDED_HEADERS:
+            assert (await c.post("/control/this-is", json={"name": "Mom"}, headers={h: "203.0.113.9"})).status == 403
+    run_client(t)
 
 
 def test_snapshot_is_a_small_jpeg_of_the_newest_frame():

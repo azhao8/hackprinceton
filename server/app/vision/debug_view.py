@@ -5,20 +5,23 @@ shows it with OpenCV; macOS only allows that from the main thread, so the server
 calls `show()` once per tick (imshow + waitKey(1), which doesn't block).
 
 Drawn: every person (gray), the locked target (green, thick), hip/knee/ankle keypoints and leg
-lines, the center line; text for fps and detector time, target status (LOST with seconds),
+lines, the center line, each printed marker (a thin blue square with its place and distance,
+e.g. "station 1.8 m"); text for fps and detector time, target status (LOST with seconds),
 distance, the follow skill's v/w and reason, what the arbiter sends and from whom (e-stop in
 red), and the robot link: connected, state, pitch, fault.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import cv2
 import numpy as np
 
-from app.vision.types import DriveCommand, Person, TargetState, TargetStatus
+from app.vision.places import place_for
+from app.vision.types import DriveCommand, Marker, Person, TargetState, TargetStatus
 from app.vision.worker import Perception
 
 # Body points worth drawing from 40 cm up (hips down), and the leg lines between them.
@@ -30,6 +33,7 @@ TORSO_LINES = (("left_shoulder", "right_shoulder"), ("left_shoulder", "left_hip"
 
 GREEN, GRAY, ORANGE, WHITE, RED, YELLOW = (
     (60, 220, 60), (160, 160, 160), (0, 165, 255), (255, 255, 255), (60, 60, 230), (0, 220, 255))
+MARKER_COLOR = (235, 190, 60)  # BGR light blue: apart from the people's green/gray and the text colors
 
 KEYS_HELP = "F follow on/off   Space e-stop   G arm   P park   X motors off   Q quit"
 WINDOW_NAME = "Miguel.exe"
@@ -68,7 +72,37 @@ def draw_person(img: np.ndarray, p: Person, color: tuple[int, int, int], thick: 
             cv2.circle(img, _px(k.x, k.y, w, h), 5, color, -1)
 
 
-def _text(img: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]], scale: float) -> None:
+def marker_label(m: Marker) -> str:
+    """What a marker is called on screen: its place (places.place_for) or "marker <id>", and its
+    distance if known, e.g. "station 1.8 m"."""
+    try:
+        name = place_for(m.id)
+    except ValueError:  # a malformed $PLACES must not take the view down
+        name = None
+    label = name or f"marker {m.id}"
+    return label if m.distance_m is None else f"{label} {m.distance_m:.1f} m"
+
+
+def draw_markers(img: np.ndarray, markers: Sequence[Marker]) -> None:
+    """A thin square at each marker's position and size, labeled above it. Nothing if none."""
+    h, w = img.shape[:2]
+    font = max(0.45, min(0.7, w / 1800))
+    for m in markers:
+        side = 2.0 * m.size * w * h / (w + h)  # Marker.size is the mean of side/width and side/height
+        half = max(4.0, side / 2.0)
+        x1, y1 = int(round(m.cx * w - half)), int(round(m.cy * h - half))
+        x2, y2 = int(round(m.cx * w + half)), int(round(m.cy * h + half))
+        cv2.rectangle(img, (x1, y1), (x2, y2), MARKER_COLOR, 2, cv2.LINE_AA)
+        label = marker_label(m)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
+        tx = min(max(2, x1), max(2, w - tw - 2))
+        ty = y1 - 8 if y1 - 8 - th >= 0 else min(h - 4, y2 + th + 8)  # above the square, else below
+        cv2.putText(img, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(img, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font, MARKER_COLOR, 1, cv2.LINE_AA)
+
+
+def draw_text(img: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]], scale: float) -> None:
+    """Outlined text lines from the top-left corner."""
     step = int(34 * scale / 0.9)
     for i, (text, color) in enumerate(lines):
         y = step + i * step
@@ -131,6 +165,7 @@ def render(perception: Perception | None, hud: Hud, max_width: int = 1280) -> np
                 draw_person(img, p, GRAY, 2)
         if target is not None:
             draw_person(img, target, GREEN, 5)
+        draw_markers(img, perception.markers)
         cv2.line(img, (w // 2, 0), (w // 2, h), WHITE, 1)  # center line
         lines.append((f"{perception.fps:4.1f} fps   detector {perception.detect_s * 1000:3.0f} ms   "
                       f"latency {perception.latency_s * 1000:3.0f} ms   people {len(perception.people)}", WHITE))
@@ -150,7 +185,7 @@ def render(perception: Perception | None, hud: Hud, max_width: int = 1280) -> np
     if hud.note:
         lines.append((hud.note, YELLOW))
     lines.append((KEYS_HELP, GRAY))
-    _text(img, lines, scale)
+    draw_text(img, lines, scale)
     return img
 
 

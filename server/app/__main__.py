@@ -40,6 +40,11 @@ Agent, and runs `agent.run()` as a background task. Messages reach its inbox fro
 window. find_person / go_to / bring need the camera; bring waits for the control page's Tray
 loaded button (`/control/loaded`) at the station. Without the key it logs
 "agent: off" and everything else runs as before. Shutdown cancels the agent before the skill.
+
+"This is Mom" (#62): with a camera, ONE PeopleRegistry (saved looks, server/people.json) is shared by
+find_person, bring, the agent's this_is tool and the control page's "This is" box
+(`/control/this-is`, which works even with the agent off). Skills also get the robot's telemetry
+through their context (`telemetry=`, when SkillContext takes it).
 """
 
 from __future__ import annotations
@@ -132,6 +137,11 @@ async def drive_loop(arbiter: Arbiter, link: RobotLink, stop: asyncio.Event | No
         await asyncio.sleep(1 / SEND_HZ)
 
 
+def make_skill_context(arbiter: Arbiter, vision: Any, link: RobotLink) -> SkillContext:
+    """The skills' context: the arbiter, vision and (#62) the robot's newest telemetry dict."""
+    return SkillContext(arbiter, vision, telemetry=lambda: link.telemetry)   # read live, not copied
+
+
 class App:
     """The server's 20 Hz loop: arbiter -> link, keys, debug view. No I/O of its own beyond what it's given."""
 
@@ -152,7 +162,7 @@ class App:
         self.link_kind = link_kind
         self.vision = vision
         self.arbiter = Arbiter()
-        self.skills = SkillRunner(SkillContext(self.arbiter, vision))
+        self.skills = SkillRunner(make_skill_context(self.arbiter, vision, link))
         self.sender = Sender(self.arbiter, link)
         self._follow_factory = follow_factory
         self._window = window
@@ -421,6 +431,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--camera-back", action="store_true", help="the camera faces the robot's back")
     ap.add_argument("--height-m", type=float, default=None, help="camera height above the floor")
     ap.add_argument("--tilt-deg", type=float, default=None, help="camera tilt, up positive")
+    ap.add_argument("--calibration", default=None, metavar="PATH",
+                    help="camera calibration file (default server/calibration.json; "
+                         "make one with python -m app.vision.calibrate)")
     ap.add_argument("--follow", action="store_true", help="start the follow skill at once (useful with --no-window)")
     ap.add_argument("--window", action=argparse.BooleanOptionalAction, default=True,
                     help="show the debug window (keys only work in it)")
@@ -459,25 +472,51 @@ def make_link(args: argparse.Namespace) -> RobotLink:
     return UdpLink(args.host or default, PORT)
 
 
-def make_follow_config(args: argparse.Namespace) -> Any:
-    from app.vision.follow import CameraGeometry, FollowConfig
+def load_calibration(path: str | None) -> Any:
+    """The camera calibration (#62; app/vision/calibration.py, written by
+    `python -m app.vision.calibrate`), or None: then the built-in guesses are used."""
+    try:
+        from app.vision import calibration
+    except Exception as e:
+        log.warning("calibration: unavailable (%s); using the default camera guesses", e)
+        return None
+    where = path or calibration.DEFAULT_PATH
+    cal = calibration.load(where)   # a corrupt file logs a warning and gives None
+    if cal is None:
+        log.info("calibration: none at %s; using the default camera guesses (python -m app.vision.calibrate)", where)
+    else:
+        log.info("calibration: %s (measured %s)", where, cal.measured_at or "?")
+    return cal
 
+
+def make_follow_config(args: argparse.Namespace, cal: Any = None) -> Any:
+    """The follow skill's config: the calibration's measurements, then --height-m / --tilt-deg on top."""
+    from dataclasses import replace
+
+    from app.vision import calibration
+    from app.vision.follow import FollowConfig
+
+    config = calibration.follow_config(cal, FollowConfig(turn_only=args.turn_only, camera_back=args.camera_back))
     geo: dict[str, float] = {}
     if args.height_m is not None:
         geo["height_m"] = args.height_m
     if args.tilt_deg is not None:
         geo["tilt_deg"] = args.tilt_deg
-    return FollowConfig(camera=CameraGeometry(**geo), turn_only=args.turn_only, camera_back=args.camera_back)
+    return replace(config, camera=replace(config.camera, **geo)) if geo else config
 
 
-def make_vision(args: argparse.Namespace) -> Any:
+def make_vision(args: argparse.Namespace, cal: Any = None) -> Any:
+    from app.vision import calibration
     from app.vision.detector import YoloPoseDetector
     from app.vision.frames import open_source
+    from app.vision.markers import MarkerDetector
     from app.vision.tracking import TargetLock
     from app.vision.worker import VisionWorker
 
     detector = YoloPoseDetector()  # loads the weights now, so a missing file fails before anything starts
-    return VisionWorker(open_source(args.source, rotate=args.rotate), detector, TargetLock())
+    return VisionWorker(open_source(args.source, rotate=args.rotate), detector,
+                        TargetLock(calibration.lock_config(cal)),
+                        marker_detector=MarkerDetector(**calibration.marker_kwargs(cal)))
 
 
 def make_tts() -> Any:
@@ -529,11 +568,36 @@ def make_snapshot(vision: Any) -> Callable[[], bytes | None]:
     return snapshot
 
 
+def make_registry() -> Any:
+    """The saved looks (server/people.json; app/vision/people.py), or None if it can't load.
+    Make ONE and share it: find_person, bring, this_is and /control/this-is must see the same looks."""
+    try:
+        from app.vision.people import PeopleRegistry
+
+        return PeopleRegistry()
+    except Exception as e:
+        log.warning("people: no saved looks for find_person or this_is (%s)", e)
+        return None
+
+
+def make_this_is(registry: Any, vision: Any) -> Callable[[str], Any] | None:
+    """The control page's "This is" box (/control/this-is): the this_is tool's save path, or None."""
+    if registry is None or vision is None:
+        return None
+    try:
+        from app.brain.tools import save_look
+    except Exception as e:
+        log.warning("people: this is unavailable (%s)", e)
+        return None
+    return lambda name: save_look(name, registry, vision.latest())
+
+
 def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Callable[[str], Any] | None = None,
-                         wait_loaded: Callable[[], Any] | None = None) -> dict[str, Callable[..., Any]]:
+                         wait_loaded: Callable[[], Any] | None = None, registry: Any = None) -> dict[str, Callable[..., Any]]:
     """Skills the agent may start, by tool name (app/brain/tools.py: each factory takes the tool's
     arguments as keywords). Only with a camera (`follow_factory` is None without vision): every
-    physical skill needs to see. bring also needs `say` and `wait_loaded` (the Tray loaded button)."""
+    physical skill needs to see. bring also needs `say` and `wait_loaded` (the Tray loaded button).
+    `registry` (make_registry) is the saved looks find_person and bring match against."""
     factories: dict[str, Callable[..., Any]] = {}
     if follow_factory is None:
         return factories
@@ -543,13 +607,7 @@ def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Calla
     except Exception as e:   # not landed yet, or broken: the agent runs with follow only
         log.warning("agent: find_person, go_to and bring unavailable (%s)", e)
         return factories
-    registry = matcher = None
-    try:
-        from app.vision.people import PeopleRegistry
-
-        registry = PeopleRegistry()   # saved looks, server/people.json
-    except Exception as e:
-        log.warning("agent: no saved looks for find_person (%s)", e)
+    matcher = None
     try:
         from app.brain.vision_check import matches_description as matcher
     except Exception as e:
@@ -579,8 +637,9 @@ def on_agent_event(state: Any, ev: Any) -> None:
         log.info("agent %s: %s", d["kind"], str(d.get("text", ""))[:120])
 
 
-def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None) -> Any:
-    """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken)."""
+def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None) -> Any:
+    """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
+    `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         log.info("agent: off (ANTHROPIC_API_KEY not set)")
         return None
@@ -588,9 +647,12 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None) -
         from app.brain.agent import Agent
         from app.brain.tools import ToolBox
 
-        factories = make_skill_factories(follow_factory, say=state.add_say, wait_loaded=state.wait_loaded)
+        factories = make_skill_factories(follow_factory, say=state.add_say, wait_loaded=state.wait_loaded,
+                                         registry=registry)
         toolbox = ToolBox(app.skills, factories, save_photo=state.save_photo,
-                          snapshot=make_snapshot(app.vision) if app.vision is not None else None)
+                          snapshot=make_snapshot(app.vision) if app.vision is not None else None,
+                          registry=registry,
+                          perception=app.vision.latest if app.vision is not None else None)
         agent = Agent(toolbox, events_cb=lambda ev: on_agent_event(state, ev))
     except Exception as e:
         log.warning("agent: off (%s)", e)
@@ -661,7 +723,9 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
             tts = make_tts()
             state = api.ApiState(app.arbiter, link, skills=app.skills, tts=tts,
                                  guardian_token=os.environ.get("GUARDIAN_TOKEN") or None)
-            agent = make_agent(app, state, follow_factory)   # sets state.agent_inbox; None when off
+            registry = make_registry() if vision is not None else None   # ONE instance for everyone (#62)
+            state.this_is = make_this_is(registry, vision)
+            agent = make_agent(app, state, follow_factory, registry)   # sets state.agent_inbox; None when off
             if agent is not None:
                 stt = make_hearing(state, args.wake_word or None)   # sets state.mic, before the routes are made
             runner, _ = await api.start(state, args.http_port, args.https_port or None)
@@ -716,12 +780,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.robot == "real":
         log.warning("REAL ROBOT: only run this with someone at the robot (CLAUDE.md).")
 
-    vision = None if args.no_vision else make_vision(args)
+    cal = None if args.no_vision else load_calibration(args.calibration)
+    vision = None if args.no_vision else make_vision(args, cal)
     follow_factory = None
     if vision is not None:
         from app.skills.follow import FollowSkill
 
-        config = make_follow_config(args)
+        config = make_follow_config(args, cal)
         follow_factory = lambda: FollowSkill(config)  # noqa: E731
 
     window = render = None

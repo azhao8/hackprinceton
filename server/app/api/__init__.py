@@ -51,12 +51,21 @@ X-Real-IP) never counts as this laptop, so a tunnel (open question T-17) needs t
 - NEW `/mic` (WebSocket, the robot's phone over HTTPS): the hearing module's handler
   (app.speech.mic.make_mic_handler); mounted when the agent is on (without CARTESIA_API_KEY it
   drops the audio). NEW `/mic.js`: the phone page's mic streamer (firmware/balance/phone/mic.js).
+
+NEW (#62, "Miguel, this is Mom"; additive, for Alex's review as W-6 owner):
+- NEW `POST /control/this-is {"name": "Mom"}` (this laptop directly, not through a tunnel; the control
+  page's "This is: [name] [Save look]" box, a backup for the agent's this_is tool): saves the clothes
+  of the person in front of the camera under that name, by the same path as the tool
+  (app.brain.tools.save_look). 200 `{ok: true, text, name}` when saved; 200 `{ok: false, text}` when
+  it couldn't see who to save (nobody, too far, two people, blocked, stale camera); 400 empty name or
+  over 40 characters; 403 not this laptop; 503 no camera in this run (`text` says why).
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import inspect
 import json
 import logging
 from collections import OrderedDict
@@ -115,6 +124,7 @@ TTS_MAX_CHARS = 300   # the same cap as a /say line
 AGENT_TEXT_MAX = 1000     # one message to the agent
 AGENT_EVENTS_KEPT = 200   # for GET /agent/events
 AGENT_PHOTOS_KEPT = 20    # snapshots for reply events, in memory
+THIS_IS_NAME_MAX = 40     # NEW (#62) a person's name for /control/this-is (same cap as the this_is tool)
 FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real-IP")
 
 # The control page's preset buttons.
@@ -145,6 +155,9 @@ class ApiState:
     agent_inbox: asyncio.Queue | None = None   # the agent's inbox of app.brain.types.Utterance
     guardian_token: str | None = None          # GUARDIAN_TOKEN: remote callers of /agent/* need it
     mic: Any = None                            # aiohttp handler for the phone's /mic WebSocket
+    # NEW (#62) save the look of the person in front: name -> outcome with .ok, .text, .data (sync or
+    # async; app.brain.tools.save_look). None without a camera: /control/this-is says so.
+    this_is: Any = None
     agent_events: list[dict] = field(default_factory=list)
     agent_photos: OrderedDict = field(default_factory=OrderedDict)   # photo id -> JPEG bytes
     _tray: asyncio.Event | None = field(default=None, repr=False)    # set by "Tray loaded"
@@ -407,6 +420,25 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             raise web.HTTPForbidden()
         return web.Response(text=CONTROL_PAGE, content_type="text/html")
 
+    @routes.post("/control/this-is")   # NEW (#62); before /control/{what}, so it wins on any aiohttp
+    async def control_this_is(request: web.Request) -> web.Response:
+        if not _direct_local(request):   # never through a tunnel: it writes server/people.json
+            raise web.HTTPForbidden()
+        name = " ".join(str((await _json(request)).get("name", "")).split())
+        if not name or len(name) > THIS_IS_NAME_MAX:
+            return web.json_response({"ok": False, "text": f"name must be 1 to {THIS_IS_NAME_MAX} characters"},
+                                     status=400)
+        if state.this_is is None:
+            return web.json_response({"ok": False, "text": "unavailable: no camera in this run"}, status=503)
+        out = state.this_is(name)
+        if inspect.isawaitable(out):
+            out = await out
+        body: dict[str, Any] = {"ok": bool(out.ok), "text": str(out.text)}
+        if out.ok:
+            body["name"] = (getattr(out, "data", None) or {}).get("name", name)
+        log.info("this is %r: %s", name, out.text)
+        return web.json_response(body)
+
     @routes.post("/control/{what}")
     async def control_action(request: web.Request) -> web.Response:
         if not _local(request):
@@ -575,7 +607,10 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <button id=release style='font:inherit;padding:14px 18px'>Release</button>
 <button id=fon style='font:inherit;padding:14px 18px'>Follow ON</button>
 <button id=foff style='font:inherit;padding:14px 18px'>Follow off</button>
-<button id=loaded style='font:inherit;padding:14px 18px'>Tray loaded</button></p>
+<button id=loaded style='font:inherit;padding:14px 18px'>Tray loaded</button>
+<span style='white-space:nowrap'>This is: <input id=who maxlength=40 placeholder='Mom' style='font:inherit;width:7em;padding:10px'>
+<button id=saveLook style='font:inherit;padding:14px 18px'>Save look</button></span></p>
+<p id=lookSt style='color:#9c9;margin:0'></p>
 <pre id=st style='background:#222;padding:10px;white-space:pre-wrap'>...</pre>
 <h3>Follow settings</h3>
 <p><select id=mode style='font:inherit;padding:8px'><option value=person>Follow a person</option><option value=yellow>Follow yellow</option></select>
@@ -593,6 +628,10 @@ const $=id=>document.getElementById(id);   // not bare ids: `stop` is the browse
 const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
 $('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon').onclick=()=>act('follow-on');$('foff').onclick=()=>act('follow-off');
 $('loaded').onclick=()=>fetch('/control/loaded',{method:'POST'});
+// NEW (#62) "This is: [name] [Save look]": save the clothes of the person in front of the camera.
+$('saveLook').onclick=async()=>{const name=$('who').value.trim(),o=$('lookSt');if(!name){o.textContent='Type a name first.';return}
+o.textContent='Looking...';try{const d=await (await fetch('/control/this-is',{method:'POST',body:JSON.stringify({name})})).json();
+o.textContent=d.text;o.style.color=d.ok?'#9c9':'#f99'}catch(e){o.textContent='server not answering';o.style.color='#f99'}};
 function say(text){fetch('/say',{method:'POST',body:JSON.stringify({text})})}
 $('f').onsubmit=e=>{e.preventDefault();const t=$('t');if(t.value.trim())say(t.value.trim());t.value=''};
 for(const x of __PRESETS__){const b=document.createElement('button');b.textContent=x;b.style.cssText='font:inherit;margin:4px;padding:8px 12px';b.onclick=()=>say(x);$('p').appendChild(b)}

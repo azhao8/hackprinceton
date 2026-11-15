@@ -3,9 +3,24 @@
 Search (shared): the robot turns in place in steps (~40 deg, so the ~67 deg camera view of each
 stop overlaps the next), stops, waits for a frame taken AFTER it stopped (the camera lags ~0.2 s
 and a turning picture is blurred), then asks a `found(perception)` predicate. One full circle
-without a hit is a failure. Turning is a timed `ctx.drive(0, +-w)`, re-sent every tick (the
-arbiter drops a request older than 0.3 s), so a step is approximate; the next stop's view
-overlaps it anyway.
+without a hit is a failure. Turning is `ctx.drive(0, +-w)`, re-sent every tick (the arbiter
+drops a request older than 0.3 s), and each step is one of (issue #62):
+
+- By heading, when `ctx.telemetry()` has a fresh numeric `yaw` (contract v1: degrees since `g`,
+  + left; UDP sends it at 20 Hz, USB only when the firmware answers `J`, ~5 Hz): turn until the
+  heading has changed by `step_deg` (slowing over the last `turn_slow_deg`, never below
+  `turn_w_min`), or give up after `turn_timeout_x` times the timed duration. The circle is counted
+  by the heading actually turned (coasting after the stop included): the search ends once the
+  next stop would land within half a step of the start heading (8 x 40 deg = 9 stops, as timed),
+  at most 2 x `max_stops` stops. A step that turned less than `min_turn_frac` of a step (yaw with
+  the wrong sign, robot stuck) stops trusting yaw for the rest of the search. Yaw going stale
+  mid-turn finishes that step by time.
+- By time otherwise (no telemetry, no yaw, or a yaw that stopped updating): `step_deg / turn_w`
+  seconds, `max_stops` stops. A step is approximate (a robot that turns slower than asked turns
+  less); the next stop's view overlaps it anyway.
+
+The mode is logged once per search, and again if it changes. "Fresh" = a NEW telemetry dict seen
+within `yaw_fresh_s` (the dict has no timestamp, but the links build a new one per message).
 
 - `FindPerson` ("find_person"): picks a person at a stop by saved look (PeopleRegistry), else by
   a description checked by a vision model on a crop (slow, so only a few candidates per stop,
@@ -78,6 +93,15 @@ class SearchConfig:
     frame_after_stop_s: float = 0.3  # GUESS: only trust frames stamped this long after the stop
     max_stops: int = 9  # 9 x 40 deg = one full circle (the start heading counts as the first stop)
     max_searches: int = 3  # GUESS: search again at most this many times after losing the target
+
+    # --- Turning by heading (telemetry `yaw`), when it is fresh ---
+    yaw_fresh_s: float = 0.5  # = app.link.FRESH_S: a new telemetry dict within this long counts as fresh
+    turn_timeout_x: float = 2.0  # a heading step gives up after this many times its timed duration (~2.8 s)
+    turn_slow_deg: float = 10.0  # GUESS: slow down over the last this many degrees (USB yaw comes at ~5 Hz)
+    turn_w_min: float = 0.15  # GUESS: rad/s floor while slowing down (= center_w_min, the robot's deadband)
+    turn_tol_deg: float = 1.0  # GUESS: this close to step_deg counts as there (no creeping at the floor rate)
+    min_turn_frac: float = 0.5  # a heading step that turned less than this x step_deg: stop trusting yaw
+    circle_deg: float = 360.0
 
     # --- Picking a person at a stop ---
     min_person_w: float = 0.06  # GUESS: narrower boxes are too far away (~7 m) to bother
@@ -185,13 +209,80 @@ class SearchOutcome(Generic[T]):
     stops: int  # stops checked
 
 
+def wrap_deg(a: float) -> float:
+    """An angle in degrees, wrapped into [-180, 180)."""
+    return (a + 180.0) % 360.0 - 180.0
+
+
+def _finite(x: Any) -> float | None:
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+        return None
+    return float(x)
+
+
+class HeadingWatch:
+    """The robot's heading from telemetry `yaw` (degrees, + left), and whether it is fresh.
+
+    Sample it every control tick with `observe()`. Telemetry dicts carry no timestamp, but every
+    link builds a new dict per message (UdpLink per packet, SerialLink per line), so a dict is
+    fresh while a NEW one was seen within `fresh_s`. A dict seen for the first time, or first seen
+    after not looking for longer than `fresh_s`, has an unknown age: it only counts once the next
+    one arrives. `heading` sums the wrapped differences between yaw samples, so it keeps counting
+    past +-180 / 360 whether or not the source wraps (the firmware's yaw doesn't).
+    """
+
+    def __init__(self, telemetry: Callable[[], dict | None], clock: Clock, fresh_s: float) -> None:
+        self._telemetry = telemetry
+        self._clock = clock
+        self._fresh_s = fresh_s
+        self._tel: Any = None  # the dict last seen
+        self._obs_at: float | None = None  # when observe() last looked
+        self._new_at: float | None = None  # when a new dict with yaw was seen (None: age unknown / no yaw)
+        self._yaw: float | None = None  # the raw yaw last seen
+        self.heading: float | None = None  # unwrapped heading, degrees (None until a yaw was seen)
+        self.has_yaw = False  # the newest dict has a numeric yaw (fresh or not)
+
+    def gap(self) -> float:
+        """Seconds since observe() last looked (inf if never)."""
+        return math.inf if self._obs_at is None else self._clock() - self._obs_at
+
+    def observe(self) -> float | None:
+        """Look at the telemetry now: the unwrapped heading if it is fresh, else None."""
+        now = self._clock()
+        try:
+            tel = self._telemetry()
+        except Exception:
+            tel = None
+        if tel is not self._tel:
+            age_known = self._obs_at is not None and now - self._obs_at <= self._fresh_s
+            self._tel = tel
+            yaw = _finite(tel.get("yaw")) if isinstance(tel, dict) else None
+            self.has_yaw = yaw is not None
+            if yaw is None:
+                self._new_at = None
+            else:
+                self.heading = yaw if self._yaw is None or self.heading is None else self.heading + wrap_deg(yaw - self._yaw)
+                self._yaw = yaw
+                self._new_at = now if age_known else None
+        self._obs_at = now
+        return self.heading if self.fresh(now) else None
+
+    def fresh(self, now: float | None = None) -> bool:
+        now = self._clock() if now is None else now
+        return self.has_yaw and self._new_at is not None and now - self._new_at <= self._fresh_s
+
+
 class Search(_Timing):
-    """Turn in steps; at each stop check the newest post-stop frame with `found`."""
+    """Turn in steps (by heading when telemetry has a fresh yaw, else by time); at each stop
+    check the newest post-stop frame with `found`."""
 
     def __init__(self, config: SearchConfig = SearchConfig(), *, clock: Clock = time.monotonic,
                  sleep: Sleep = asyncio.sleep) -> None:
         super().__init__(config, clock, sleep)
         self.stops = 0  # stops checked in the current/last run
+        self.modes: list[str] = []  # how each step turned: "heading" or "time"
+        self.turned_deg = 0.0  # the circle so far: measured by heading, or step_deg per timed step
+        self._watch: HeadingWatch | None = None
 
     async def run(
         self,
@@ -201,13 +292,46 @@ class Search(_Timing):
     ) -> SearchOutcome[T]:
         cfg = self.config
         step_s = math.radians(cfg.step_deg) / cfg.turn_w
-        w = cfg.turn_w if direction >= 0 else -cfg.turn_w
+        sign = 1 if direction >= 0 else -1
         self.stops = 0
-        for stop in range(cfg.max_stops):
-            if stop > 0:
-                await self._turn(ctx, w, step_s)
+        self.modes = []
+        self.turned_deg = 0.0
+        watch = self._watch = HeadingWatch(getattr(ctx, "telemetry", lambda: None), self.clock, cfg.yaw_fresh_s)
+        trust_yaw = True  # until a heading step shows yaw doesn't follow the turn
+        by_heading = False  # some step of this search turned by heading: count the circle by degrees
+        logged: str | None = None
+        while True:
+            pending: tuple[str, float, float] | None = None  # a heading step: (outcome, seconds, start heading)
+            if self.stops > 0:
+                if not self._another_step(by_heading):
+                    break
+                mode = "heading" if trust_yaw and await self._yaw_ready(ctx) else "time"
+                if mode != logged:
+                    log.info("search: turning by %s", "heading (telemetry yaw)" if mode == "heading"
+                             else "time (no fresh yaw in the telemetry)")
+                    logged = mode
+                self.modes.append(mode)
+                if mode == "heading":
+                    by_heading = True
+                    y0 = watch.heading
+                    assert y0 is not None
+                    outcome, took_s = await self._turn_by_heading(ctx, sign, step_s, y0)
+                    pending = (outcome, took_s, y0)
+                else:
+                    await self._turn(ctx, sign * cfg.turn_w, step_s)
+                    self.turned_deg += cfg.step_deg
             stopped_at = await self._hold(ctx, cfg.pause_s)
             p = await self._frame_after(ctx, stopped_at + cfg.frame_after_stop_s)
+            if pending is not None:  # measured after the hold, so coasting after the stop counts
+                outcome, took_s, y0 = pending
+                now_h = watch.heading if watch.heading is not None else y0
+                turned = cfg.step_deg if outcome == "lost" else sign * (now_h - y0)
+                if outcome != "lost" and turned < cfg.min_turn_frac * cfg.step_deg:
+                    log.warning("search: yaw changed only %.0f deg in a %.1f s turn (robot stuck? yaw sign wrong?); "
+                                "turning by time for the rest of this search", turned, took_s)
+                    trust_yaw = False
+                    turned = cfg.step_deg
+                self.turned_deg += turned
             self.stops += 1
             ctx.drive(0.0, 0.0)
             hit = await found(p)
@@ -216,9 +340,76 @@ class Search(_Timing):
                 return SearchOutcome(hit, p, self.stops)
         return SearchOutcome(None, None, self.stops)
 
+    def _another_step(self, by_heading: bool) -> bool:
+        """Turn once more? Timed: `max_stops` stops. By heading: until the next stop would land
+        within half a step of the start heading (its view is already covered), capped."""
+        cfg = self.config
+        if not by_heading:
+            return self.stops < cfg.max_stops
+        if self.stops >= 2 * cfg.max_stops:
+            log.warning("search: %d stops but only %.0f deg turned; giving up the circle", self.stops, self.turned_deg)
+            return False
+        return self.turned_deg + cfg.step_deg <= cfg.circle_deg - cfg.step_deg / 2 + 1e-6
+
+    async def _yaw_ready(self, ctx: SkillContext) -> bool:
+        """Fresh yaw now? If the telemetry has a yaw whose age is unknown (nobody looked during a
+        long `found()` check), hold still up to `yaw_fresh_s` for the next telemetry dict."""
+        watch = self._watch
+        assert watch is not None
+        gap = watch.gap()
+        if watch.observe() is not None:
+            return True
+        if not watch.has_yaw or gap <= self.config.yaw_fresh_s:
+            return False  # no yaw, or watched all along and it stopped updating
+        start = self.clock()
+        while self.clock() - start < self.config.yaw_fresh_s - 1e-9:
+            ctx.drive(0.0, 0.0)
+            await self.sleep(self.period_s)
+            if watch.observe() is not None:
+                return True
+        return False
+
+    async def _turn_by_heading(self, ctx: SkillContext, sign: int, step_s: float, y0: float) -> tuple[str, float]:
+        """Turn until the heading is `step_deg` past `y0`. Returns (outcome, seconds turning):
+        "done", "timeout", or "lost" (yaw went stale mid-turn: the step was finished by time)."""
+        cfg = self.config
+        watch = self._watch
+        assert watch is not None
+        timeout_s = cfg.turn_timeout_x * step_s
+        w_min = min(cfg.turn_w_min, cfg.turn_w)
+        start = self.clock()
+        while True:
+            elapsed = self.clock() - start
+            heading = watch.observe()
+            if heading is None:
+                log.warning("search: yaw stopped updating mid-turn; finishing this step by time")
+                await self._turn(ctx, sign * cfg.turn_w, step_s - elapsed)
+                return "lost", max(elapsed, step_s)
+            left_deg = cfg.step_deg - sign * (heading - y0)
+            if left_deg <= cfg.turn_tol_deg:
+                outcome = "done"
+                break
+            if elapsed >= timeout_s - 1e-9:
+                log.info("search: heading step timed out after %.1f s (%.0f of %.0f deg)",
+                         elapsed, cfg.step_deg - left_deg, cfg.step_deg)
+                outcome = "timeout"
+                break
+            w = cfg.turn_w
+            if cfg.turn_slow_deg > 0:
+                w = _clamp(cfg.turn_w * left_deg / cfg.turn_slow_deg, w_min, cfg.turn_w)
+            ctx.drive(0.0, sign * w)
+            await self.sleep(min(self.period_s, timeout_s - elapsed))
+        ctx.drive(0.0, 0.0)
+        return outcome, self.clock() - start
+
+    def _observe(self) -> None:
+        if self._watch is not None:
+            self._watch.observe()
+
     async def _turn(self, ctx: SkillContext, w: float, duration_s: float) -> None:
         start = self.clock()
         while (left := duration_s - (self.clock() - start)) > 1e-9:
+            self._observe()
             ctx.drive(0.0, w)
             await self.sleep(min(self.period_s, left))
         ctx.drive(0.0, 0.0)
@@ -226,6 +417,7 @@ class Search(_Timing):
     async def _hold(self, ctx: SkillContext, duration_s: float) -> float:
         stopped_at = self.clock()
         while self.clock() - stopped_at < duration_s - 1e-9:
+            self._observe()
             ctx.drive(0.0, 0.0)
             await self.sleep(self.period_s)
         return stopped_at
@@ -234,6 +426,7 @@ class Search(_Timing):
         """The newest fresh perception whose frame was taken at or after `t` (holding still)."""
         start = self.clock()
         while True:
+            self._observe()
             p = ctx.perception
             now = self.clock()
             if p is not None and now - p.published_at <= self.config.stale_after_s and p.frame_t >= t - 1e-9:

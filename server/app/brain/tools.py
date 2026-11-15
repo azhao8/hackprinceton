@@ -19,6 +19,11 @@ Factories are called with keyword arguments:
 
 The agent binds itself as the `ToolHost` (events, waiting for the senior's reply, the
 "someone spoke while you were working" signal) with `ToolBox.bind(agent)`.
+
+`this_is(name)` (#62, "Miguel, this is Mom") saves the clothes of the person in front under a
+name in the PeopleRegistry (app/vision/people.py), so `find_person(name)` can find them later.
+It needs `registry=` and `perception=` (a function returning the vision worker's newest
+`Perception`); `save_look()` is the same save path for the control page's "This is" box.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import asyncio
 import inspect
 import itertools
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -39,6 +45,11 @@ log = logging.getLogger(__name__)
 
 PHYSICAL_TOOLS = ("follow", "find_person", "go_to", "bring")
 MAX_PHOTOS = 20
+
+# this_is (#62)
+NAME_MAX = 40            # characters in a person's name
+LOOK_MAX_AGE_S = 2.0     # a camera result older than this is stale: the person may have walked off (guess)
+SIMILAR_WIDTH = 0.8      # a 2nd centered person at least this wide (vs the widest) = "who do you mean?" (guess)
 
 
 @dataclass(frozen=True)
@@ -111,6 +122,8 @@ class ToolBox:
         describe: Callable[[bytes], Awaitable[str]] | None = None,
         save_photo: Callable[[bytes], str] | None = None,
         memory: dict[str, str] | None = None,
+        registry: Any = None,
+        perception: Callable[[], Any] | None = None,
         skill_wait_s: float = 120.0,
         follow_check_s: float = 1.0,
     ):
@@ -121,6 +134,8 @@ class ToolBox:
         describe: JPEG -> scene text (default: vision_check.describe_scene).
         save_photo: stores a photo, returns a URL for the app (default: kept in self.photos).
         memory: the world memory dict (shared, in-memory; wiped on restart).
+        registry: the PeopleRegistry (saved looks) find_person uses; this_is saves into it.
+        perception: returns the vision worker's newest Perception (or None); this_is reads it.
         skill_wait_s: how long a physical tool waits for its skill before reporting "still running".
         follow_check_s: follow returns after this long if it hasn't failed straight away.
         """
@@ -130,6 +145,8 @@ class ToolBox:
         self.describe = describe
         self.save_photo = save_photo
         self.memory: dict[str, str] = memory if memory is not None else {}
+        self.registry = registry
+        self.perception = perception
         self.photos: OrderedDict[int, bytes] = OrderedDict()
         self.skill_wait_s = skill_wait_s
         self.follow_check_s = follow_check_s
@@ -180,7 +197,15 @@ class ToolBox:
         if len(text) > max_chars:
             text = text[: max_chars - 3] + "..."
         doing = self.running
-        return f"Known facts: {text}. Doing now: {self._skill_label if doing else 'nothing physical'}."
+        people = ""
+        if self.registry is not None:   # who find_person can find by name (saved with this_is)
+            try:
+                names = list(self.registry.names())
+            except Exception:  # noqa: BLE001 - a broken registry must not break every request
+                names = []
+            people = f" People you know by sight: {', '.join(names[-max_items:]) or 'nobody yet'}."
+        return (f"Known facts: {text}.{people} "
+                f"Doing now: {self._skill_label if doing else 'nothing physical'}.")
 
     async def call(self, name: str, args: dict[str, Any]) -> ToolOutcome:
         """Run one tool. Unknown tools and handler crashes come back as failed outcomes."""
@@ -226,6 +251,15 @@ class ToolBox:
           "running after this call returns, until stopped, replaced by another action, or the person is lost.",
           {"on": {"type": "boolean", "description": "true to start following, false to stop."}},
           self._follow)
+        r("this_is",
+          "Remember what the person standing in front of you looks like, under their name, so "
+          "find_person(name) can find them later. Call it when someone in front of you says who they "
+          "are ('this is Mom', 'I'm Dad'). Saving a name again replaces the old look. It knows people "
+          "by their clothes, not their face, so it lasts until they change clothes. The World memory "
+          "note lists who you know by sight. Returns what was saved, or why not (for example nobody "
+          "or two people in front of you): then ask them to fix it and call it again.",
+          {"name": _str("Their name, as the family calls them (for example 'Mom').")},
+          self._this_is)
         r("find_person",
           "Look around for a person and drive up to them. Give a name if you know it (from memory), "
           "a visual description (clothes, hair), or both; null for 'anyone'.",
@@ -387,6 +421,15 @@ class ToolBox:
         self.memory[key] = value
         return ToolOutcome(True, f"Remembered {key}.")
 
+    async def _this_is(self, a: dict[str, Any]) -> ToolOutcome:
+        return self.this_is(str(a.get("name") or ""))
+
+    def this_is(self, name: str) -> ToolOutcome:
+        """Save the look of the person in front as `name` (see `save_look`)."""
+        if self.registry is None or self.perception is None:
+            return ToolOutcome(False, "this_is is unavailable right now (no camera or no saved-looks store on this robot).")
+        return save_look(name, self.registry, self.perception())
+
     async def _recall(self, a: dict[str, Any]) -> ToolOutcome:
         key = str(a.get("key", "")).strip()
         if key in self.memory:
@@ -416,3 +459,96 @@ class ToolBox:
 def _from_result(name: str, r: SkillResult) -> ToolOutcome:
     text = r.detail or ("done" if r.ok else "failed")
     return ToolOutcome(r.ok, f"{name}: {text}", {"skill": name})
+
+
+# --- this_is (#62): save the look of the person in front ---------------------------------------
+
+
+def clean_name(name: str) -> str:
+    """'  mom. ' -> 'mom': one space between words, no surrounding quotes or punctuation."""
+    return " ".join(str(name).split()).strip(" .,!?;:\"'")
+
+
+def person_in_front(perception: Any, config: Any = None) -> tuple[Any, str]:
+    """Who "the person in front" is, as (person, how) or (None, why not).
+
+    The locked follow target if there is one (`how` = "locked target"); else the widest person
+    near the center by the lock's own engage rules (|cx - 0.5| <= engage_max_offset, width at
+    least engage_min_w), unless a second centered person is nearly as wide (ambiguous).
+    `why not` is "nobody", "too far" or "ambiguous"."""
+    from app.vision.tracking import LockConfig
+    from app.vision.types import TargetStatus
+
+    target = getattr(perception, "target", None)
+    if target is not None and target.status is TargetStatus.LOCKED and target.person is not None:
+        return target.person, "locked target"
+    cfg = config or LockConfig()
+    centered = sorted((p for p in perception.people
+                       if p.score >= cfg.min_det_score and abs(p.box.cx - 0.5) <= cfg.engage_max_offset),
+                      key=lambda p: -p.box.w)
+    if not centered:
+        return None, "nobody"
+    best = centered[0]
+    if best.box.w < cfg.engage_min_w:
+        return None, "too far"
+    if len(centered) > 1 and centered[1].box.w >= SIMILAR_WIDTH * best.box.w:
+        return None, "ambiguous"
+    return best, "in front"
+
+
+def save_look(name: str, registry: Any, perception: Any, *, max_age_s: float = LOOK_MAX_AGE_S,
+              clock: Callable[[], float] = time.monotonic) -> ToolOutcome:
+    """Histogram the person in front (`person_in_front`) and `registry.save(name, parts)`.
+
+    `perception` is the vision worker's newest Perception (or None). Never raises for the
+    expected failures: each comes back as ToolOutcome(False, text to relay)."""
+    name = clean_name(name)
+    if not name:
+        return ToolOutcome(False, "this_is needs the person's name.")
+    if len(name) > NAME_MAX:
+        return ToolOutcome(False, f"That name is too long (at most {NAME_MAX} characters).")
+    if registry is None:
+        return ToolOutcome(False, "this_is is unavailable right now (no saved-looks store on this robot).")
+    if perception is None:
+        return ToolOutcome(False, "I can't see right now: the camera has no picture yet.")
+    published = getattr(perception, "published_at", None)
+    age = clock() - published if isinstance(published, (int, float)) else 0.0
+    if age > max_age_s:
+        return ToolOutcome(False, f"I can't see right now: the camera's last picture is {age:.0f} s old.")
+    person, how = person_in_front(perception)
+    if person is None:
+        why = {
+            "nobody": "Nobody is standing in front of me. Ask them to stand in front of me, facing me, then try again.",
+            "too far": ("The person in front of me is too far away to see their clothes. Ask them to come "
+                        "closer (one or two steps away), then try again."),
+            "ambiguous": (f"Two people are standing in front of me, so I don't know which one is {name}. "
+                          f"Ask {name} to stand in front of me alone, then try again."),
+        }[how]
+        return ToolOutcome(False, why, {"reason": how})
+
+    from app.vision.tracking import body_part_histograms
+
+    parts = body_part_histograms(perception.frame.image, person, perception.people)   # masks whoever stands in front
+    occluded = ToolOutcome(False, f"I can't see enough of {name}'s clothes (something is in the way). Ask them to "
+                                  f"stand in front of me with nothing in between, then try again.", {"reason": "occluded"})
+    if parts is None:
+        return occluded
+    replaced = name in registry
+    note = ""
+    try:
+        registry.save(name, parts)
+    except ValueError:
+        return occluded
+    except OSError as e:   # saved in memory; only the file failed (registry.save updates memory first)
+        log.warning("this_is: couldn't write the saved looks: %s", e)
+        note = " (Only until a restart: the file couldn't be written.)"
+    seen = " and ".join(part for part, ok in (("shirt", parts.torso is not None), ("trousers", parts.legs is not None)) if ok)
+    b = person.box
+    log.info("this_is: saved %s (%s, %s)", name, how, seen)
+    return ToolOutcome(
+        True,
+        f"{'Updated' if replaced else 'Saved'} what {name} looks like ({seen}). find_person can find {name} now, "
+        f"until they change clothes.{note}",
+        {"name": name, "replaced": replaced, "from": how, "torso": parts.torso is not None,
+         "legs": parts.legs is not None, "box": [round(v, 3) for v in (b.x1, b.y1, b.x2, b.y2)]},
+    )
