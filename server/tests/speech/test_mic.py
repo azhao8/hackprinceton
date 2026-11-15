@@ -294,6 +294,67 @@ def test_tap_to_talk_listens_for_one_utterance():
     assert not hub.listening()
 
 
+def test_second_tap_stops_listening_and_drops_the_half_heard_turn():
+    clock = Clock()
+    inbox: asyncio.Queue = asyncio.Queue()
+    hub = MicHub(None, inbox, "Miguel", tap_window_s=8.0, clock=clock)
+    hub._control('{"type": "listen"}')                       # tap: listening
+    hub.on_stt_event("start", "")
+    hub.on_stt_event("update", "what's the")
+    hub._control('{"type": "listen_off"}')                   # tapped again mid-sentence
+    assert not hub.listening()
+    hub.on_stt_event("update", "what's the weather Miguel")   # even the name doesn't bring the ring back
+    assert not hub.listening()
+    hub.on_stt_event("end", "what's the weather Miguel")
+    asyncio.run(hub.on_heard(Utterance(source="senior", text="what's the weather Miguel")))
+    assert inbox.empty() and hub.ignored == 1
+    # the next turn is judged normally again
+    hub.on_stt_event("start", "")
+    hub.on_stt_event("end", "Miguel, come here")
+    asyncio.run(hub.on_heard(Utterance(source="senior", text="Miguel, come here")))
+    assert inbox.get_nowait().text == "come here"
+
+
+def test_tap_off_after_the_turn_ended_but_before_its_transcript_arrived():
+    inbox: asyncio.Queue = asyncio.Queue()
+    hub = MicHub(None, inbox, "Miguel", clock=Clock())
+    hub._control('{"type": "listen"}')
+    hub.on_stt_event("start", "")
+    hub.on_stt_event("end", "turn on the lights")             # ended; the final text is on its way
+    hub._control('{"type": "listen_off"}')
+    asyncio.run(hub.on_heard(Utterance(source="senior", text="turn on the lights")))
+    assert inbox.empty()
+
+
+def test_tap_off_closes_every_window_and_the_wait_for_a_reply():
+    clock = Clock()
+    hub = MicHub(None, asyncio.Queue(), "Miguel", answer_window_s=4.0, clock=clock)
+    hub._control('{"type": "voice", "busy": true, "text": "Want some water?"}')
+    hub._control('{"type": "voice", "busy": false}')
+    hub.set_awaiting(True)
+    assert hub.listening()
+    hub._control('{"type": "listen_off"}')
+    assert not hub.listening() and hub.filter("yes please") is None
+    assert hub.filter("Miguel, yes please") == ("yes please", {"addressed": True, "via": "wake"})
+
+
+def test_tap_off_is_pushed_to_the_phone():
+    stt = FakeSTT()
+    handler = make_mic_handler(stt, asyncio.Queue(), wake_word="Miguel", env={})
+
+    async def scenario(http, server):
+        async with http.ws_connect(server.make_url("/mic?rate=16000")) as ws:
+            await ws.send_str('{"type": "listen"}')
+            on = await ws.receive_json(timeout=2)
+            await ws.send_str('{"type": "listen_off"}')
+            off = await ws.receive_json(timeout=2)
+            return on, off
+
+    on, off = serve(handler, scenario)
+    assert on == {"type": "listen", "on": True, "why": "tap"}
+    assert off == {"type": "listen", "on": False, "why": None}
+
+
 def test_wake_word_in_the_partial_transcript_turns_listening_on_while_they_talk():
     hub = MicHub(None, asyncio.Queue(), "Miguel", clock=Clock())
     hub.on_stt_event("start", "")
