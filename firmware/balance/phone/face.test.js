@@ -223,3 +223,34 @@ test('create(): setters clamp and normalize; start/stop drive requestAnimationFr
     delete globalThis.requestAnimationFrame; delete globalThis.cancelAnimationFrame; delete globalThis.window;
   }
 });
+
+test('listening ring fades in fast, out slower, and draws a glowing circle inside the canvas', () => {
+  let s = Face.initialState(), tOn = null;
+  s = run(s, 0.4, { ring: true }, seeded(1), (st) => { if (tOn === null && st.ring >= 0.9) tOn = st.t; });
+  assert.ok(tOn !== null && tOn <= 0.15, 'on ' + tOn);
+  assert.equal(s.ring, 1);
+  const t0 = s.t;
+  let tOff = null;
+  s = run(s, 1.0, { ring: false }, seeded(1), (st) => { if (tOff === null && st.ring <= 0.1) tOff = st.t - t0; });
+  assert.ok(tOff !== null && tOff > tOn && tOff <= 0.5, 'off ' + tOff);
+  assert.equal(s.ring, 0);
+
+  const on = run(Face.initialState(), 0.5, { ring: true }, seeded(1));
+  for (const [W, H] of [[390, 422], [1440, 800]]) {
+    const { ctx, calls } = fakeCtx();
+    Face.draw(ctx, W, H, on);
+    assert.ok(calls.some((c) => c[0] === '=shadowBlur' && c[1][0] > 0), 'glow');
+    const arc = calls.find((c) => c[0] === 'arc' && c[1][4] === 2 * Math.PI && c[1][2] > 0.4 * Math.min(W, H));
+    assert.ok(arc, 'ring arc');
+    const [x, y, r] = arc[1];
+    assert.ok(x - r >= 0 && x + r <= W && y - r >= 0 && y + r <= H, 'inside ' + [x, y, r, W, H]);
+  }
+  const { ctx, calls } = fakeCtx();
+  Face.draw(ctx, 390, 422, Face.initialState());
+  assert.ok(!calls.some((c) => c[0] === '=shadowBlur'), 'no ring when not listening');
+
+  const canvas = { width: 0, height: 0, clientWidth: 390, clientHeight: 422, getContext: () => fakeCtx().ctx };
+  const face = Face.create(canvas);
+  face.setListening(true); assert.equal(face.snapshot().ringOn, true);
+  face.setListening(0); assert.equal(face.snapshot().ringOn, false);
+});

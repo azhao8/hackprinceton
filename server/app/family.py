@@ -102,9 +102,10 @@ class FamilyHub:
             return "with_mom", f"On a call with {self.check_in.get('by', 'you')}"
         if self.alert is not None and self.alert.get("status") == "active":
             return "with_mom", f"Staying beside {her}"
+        # the same source of truth as the phone's ring and /ws status.listening (MicHub.listening)
         hub = getattr(getattr(self.state, "mic", None), "hub", None)
         try:
-            listening = hub is not None and hub.in_window()
+            listening = hub is not None and bool((getattr(hub, "listening", None) or hub.in_window)())
         except Exception:  # noqa: BLE001
             listening = False
         if listening or self.check_in.get("phase") == "asking":

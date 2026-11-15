@@ -10,12 +10,20 @@ Model settings (from the claude-api skill, Nov 2026):
 - Server-side refusal fallbacks are on by default: beta `server-side-fallback-2026-07-01` with
   `fallbacks="default"` on `client.beta.messages.create`. Switch them off with the env var
   `MIGUEL_LLM_FALLBACKS=0` or `fallbacks=False` on `Agent` / the vision helpers.
+- The agent streams (`client.beta.messages.stream`), so Miguel can speak his first sentence while
+  Claude is still writing the rest (`stream_message`).
+- Effort per task without breaking the prompt cache: the top-level effort stays at EFFORT_CHAT
+  and each task says its effort in an empty `role: "system"` message right after its user message
+  (beta `mid-conversation-output-config-2026-07-01`). Changing the top-level effort between
+  requests would invalidate the cached conversation. `MIGUEL_EFFORT_PER_MESSAGE=0` goes back to
+  the top-level effort.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 
 import anthropic
@@ -26,6 +34,20 @@ FALLBACKS_DEFAULT = os.environ.get("MIGUEL_LLM_FALLBACKS", "1").strip().lower() 
 
 EFFORT_CHAT = os.environ.get("MIGUEL_EFFORT_CHAT", "low")      # small talk, one-line answers
 EFFORT_TASK = os.environ.get("MIGUEL_EFFORT_TASK", "medium")   # anything that may need several tool calls
+EFFORT_BETA = "mid-conversation-output-config-2026-07-01"      # per-message effort (keeps the cache)
+EFFORT_PER_MESSAGE = os.environ.get("MIGUEL_EFFORT_PER_MESSAGE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, "").strip() or default))
+    except ValueError:
+        return default
+
+
+# Warm the prompt cache when the agent starts, and refresh it after this many idle seconds (the
+# cache lives 5 minutes; a refresh bills a cache read, ~$0.001). 0 turns it off.
+KEEPALIVE_S = _env_seconds("MIGUEL_LLM_KEEPALIVE_S", 240.0)
 
 # Said at once when a task-like request arrives, before Claude answers (a voice robot must not sit silent).
 ACK_SPOKEN = "On it!"
@@ -57,12 +79,45 @@ def get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
+def _request(fallbacks: bool | None, params: dict[str, Any]) -> dict[str, Any]:
+    """The call's keyword arguments: refusal fallbacks unless switched off, betas merged."""
+    kw = dict(params)
+    betas = list(kw.pop("betas", None) or [])
+    if FALLBACKS_DEFAULT if fallbacks is None else fallbacks:
+        betas.insert(0, FALLBACK_BETA)
+        kw["fallbacks"] = "default"
+    if betas:
+        kw["betas"] = betas
+    return kw
+
+
 async def create_message(client: Any, *, fallbacks: bool | None = None, **params: Any) -> Any:
     """One Messages API call on the beta endpoint, with refusal fallbacks unless switched off."""
-    use = FALLBACKS_DEFAULT if fallbacks is None else fallbacks
-    if use:
-        return await client.beta.messages.create(betas=[FALLBACK_BETA], fallbacks="default", **params)
-    return await client.beta.messages.create(**params)
+    return await client.beta.messages.create(**_request(fallbacks, params))
+
+
+StreamEvent = Callable[[str, Any], None]   # ("text", delta) | ("block_start", block type) | ("block_stop", None)
+
+
+async def stream_message(client: Any, *, fallbacks: bool | None = None, on_event: StreamEvent | None = None,
+                         **params: Any) -> Any:
+    """Like create_message, but streamed: `on_event` hears text as Claude writes it. Returns the
+    final message (same shape as create). A client without `stream` (test fakes) gets one create."""
+    kw = _request(fallbacks, params)
+    api = client.beta.messages
+    stream = getattr(api, "stream", None)
+    if stream is None or on_event is None:
+        return await api.create(**kw)
+    async with stream(**kw) as s:
+        async for ev in s:
+            kind = getattr(ev, "type", None)
+            if kind == "text":
+                on_event("text", ev.text)
+            elif kind == "content_block_start":
+                on_event("block_start", getattr(ev.content_block, "type", None))
+            elif kind == "content_block_stop":
+                on_event("block_stop", None)
+        return await s.get_final_message()
 
 
 SYSTEM_PROMPT = """\
@@ -73,9 +128,11 @@ never condescending.
 
 # Who is talking
 Every message starts with who sent it:
-- "[senior via mic]": the senior, speaking to you in the room.
+- "[senior via mic]": the senior, speaking to you in the room (they said your name).
 - "[guardian via app]" (or another channel): a family member, not in the room.
 - "[operator via control page]": the team running you from a laptop.
+A mic message they said without your name is marked "right after your question" (it came \
+within a few seconds of a question you asked) or "tapped your face" (they tapped you to talk).
 A message marked "while you were working" arrived during a task you are still doing.
 After the message there may be a "World memory" note: what you currently know and what you \
 are doing. Trust it over older conversation.
@@ -85,8 +142,15 @@ are doing. Trust it over older conversation.
 sentences (under 15 words each), no lists, no emojis, no markdown.
 - Message guardians with reply_to_guardian(). Keep it brief and concrete, like a text message.
 - For simple chat or a quick answer, just answer in plain text without tools: your text is \
-said aloud to the senior or operator, or sent to the guardian, whoever spoke. When you did \
-use say() or reply_to_guardian(), end with at most a few words of plain text as a log note.
+said aloud to the senior or operator, or sent to the guardian, whoever spoke. It is spoken \
+sentence by sentence as you write it, so put the answer in your first short sentence. When \
+you did use say() or reply_to_guardian(), end with at most a few words of plain text as a log \
+note.
+- When you ask the senior something, make the question your last sentence: they can answer \
+without saying your name for a few seconds after a question.
+- Sometimes speech nearby reaches you that was not meant for you: people talking to each \
+other, the TV, half a sentence. If a mic message clearly was not for you, call stay_silent \
+and write no text, so nothing is said. If it could be an answer to what you just asked, answer.
 
 # How you act
 - You never drive the wheels directly. You call skills (follow, find_person, go_to, bring, \

@@ -23,6 +23,7 @@ EventKind = Literal[
     "error",      # something went wrong (shown on the control page, short text)
     "check_in",   # the senior answered a check-in request: data = {"answer": "yes"|"no"|"no_answer"}
     "place",      # a place was learned or changed: data = {"name": str, "marker": int|None}
+    "listen",     # waiting for the senior's spoken answer (wait_for_reply): data = {"on": bool, "seconds"?: int}
 ]
 
 

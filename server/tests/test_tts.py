@@ -322,6 +322,62 @@ def test_from_env_bad_speed_is_ignored(caplog):
     assert "CARTESIA_SPEED" in caplog.text
 
 
+# --- streaming -------------------------------------------------------------------
+
+
+class ChunkedCartesia(FakeCartesia):
+    """Like the real /tts/bytes: a chunked body written while the audio is made."""
+
+    def __init__(self, chunks=(b"ID3", b"-one", b"-two"), gap=0.05):
+        super().__init__()
+        self.chunks, self.gap = chunks, gap
+        self.last_written: float | None = None
+
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        self.requests.append({"json": await request.json()})
+        resp = web.StreamResponse(headers={"Content-Type": "audio/mpeg"})
+        await resp.prepare(request)
+        for chunk in self.chunks:
+            await resp.write(chunk)
+            await asyncio.sleep(self.gap)
+        self.last_written = asyncio.get_running_loop().time()
+        await resp.write_eof()
+        return resp
+
+
+def test_stream_yields_audio_before_the_line_is_finished_and_shares_the_request():
+    fake = ChunkedCartesia()
+
+    async def scenario(tts):
+        got, first_at = [], None
+        whole = asyncio.ensure_future(tts.synth("Hello there."))   # e.g. the server's prefetch
+        await asyncio.sleep(0)
+        async for chunk in tts.stream("Hello there."):
+            if first_at is None:
+                first_at = asyncio.get_running_loop().time()
+            got.append(chunk)
+        cached = [c async for c in tts.stream("Hello there.")]
+        return got, first_at, await whole, cached, tts.cached("Hello there.")
+
+    got, first_at, whole, cached, in_cache = run(fake, scenario)
+    assert b"".join(got) == whole == b"ID3-one-two"
+    assert first_at < fake.last_written                    # played from the first chunk on
+    assert len(fake.requests) == 1                         # the stream and the synth shared one request
+    assert cached == [b"ID3-one-two"] and in_cache == b"ID3-one-two"
+
+
+def test_stream_raises_before_any_audio_on_failure():
+    fake = FakeCartesia(status=500, body="down", content_type="text/plain")
+
+    async def scenario(tts):
+        with pytest.raises(TTSError):
+            async for _ in tts.stream("Hi"):
+                pass
+        return tts.cached("Hi")
+
+    assert run(fake, scenario) is None
+
+
 # --- prewarm and close -----------------------------------------------------------
 
 

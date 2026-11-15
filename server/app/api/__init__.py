@@ -17,7 +17,16 @@ The phone page keeps the endpoints it already used with phone_server.py, so it w
 - `GET /say?after=N`: lines for the phone to speak. `POST /say {text}` adds one (localhost only).
 - `GET /tts?text=...`: the line as Cartesia speech (audio/mpeg). 400 if the text is empty or over
   300 characters, 503 if CARTESIA_API_KEY isn't set, 502 if Cartesia fails; the page then falls
-  back to Safari's built-in voice.
+  back to Safari's built-in voice. A line not in the cache is streamed (chunked) as Cartesia makes
+  it; every new say line starts its synthesis at once (prefetch), before the phone asks.
+  `/tel` and the `/ws` status say `tts_stream` (env MIGUEL_TTS_STREAM, default off): whether the
+  page should play /tts straight from the URL (starts on the first chunk) instead of downloading
+  the whole file first.
+
+NEW (voice turn-taking, Sat Nov 14): `/tel` and the `/ws` status carry `listening` (bool): Miguel is
+listening for a command (the face's ring), from the mic hub (app.speech.mic.MicHub.listening). Say
+lines are also pushed to the phone over `/mic` the moment they are queued. One log line per spoken
+turn gives the stage times (app/speech/timing.py).
 - `POST /log`: what the page reports (camera chosen, errors), printed here.
 
 WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the robot's `tel` about
@@ -73,6 +82,7 @@ import hmac
 import inspect
 import json
 import logging
+import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,6 +93,7 @@ from aiohttp import WSMsgType, web
 
 from app.arbiter import Arbiter, Source
 from app.link import TRIM_STEP_DEG, RobotLink
+from app.speech.timing import TurnTimer
 
 log = logging.getLogger("app.api")
 
@@ -155,6 +166,11 @@ AGENT_LINES = ["On it!", "Okay, stopping."]   # the agent's instant acknowledgme
 STOCK_LINES = CONTROL_PRESETS + PHONE_LINES + AGENT_LINES
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return default if not raw else raw not in ("0", "false", "no", "off")
+
+
 @dataclass
 class ApiState:
     arbiter: Arbiter
@@ -187,6 +203,44 @@ class ApiState:
     agent_events: list[dict] = field(default_factory=list)
     agent_photos: OrderedDict = field(default_factory=OrderedDict)   # photo id -> JPEG bytes
     _tray: asyncio.Event | None = field(default=None, repr=False)    # set by "Tray loaded"
+    # NEW (voice latency) the phone plays /tts straight from the URL (MIGUEL_TTS_STREAM), the
+    # per-turn timing log, and the prefetches in flight
+    tts_stream: bool = field(default_factory=lambda: _env_flag("MIGUEL_TTS_STREAM"))
+    timer: TurnTimer = field(default_factory=TurnTimer)
+    _prefetches: set = field(default_factory=set, repr=False)
+
+    # --- NEW (voice turn-taking) the mic hub: listening state, say lines pushed to the phone ---
+
+    @property
+    def hub(self) -> Any:
+        return getattr(self.mic, "hub", None)
+
+    def listening(self) -> bool:
+        """Miguel is listening for a command (the face's ring): the mic hub's state."""
+        hub = self.hub
+        try:
+            return bool(hub is not None and hub.listening())
+        except Exception:  # noqa: BLE001 - a broken hub must not break /tel
+            return False
+
+    def _prefetch(self, text: str) -> None:
+        """Start making the line's audio now, so it is ready (or under way) when the phone asks."""
+        if self.tts is None or not self.settings.get("voice", True) or not hasattr(self.tts, "synth"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def fetch() -> None:
+            try:
+                await self.tts.synth(text)
+            except Exception as e:  # noqa: BLE001 - the phone's own request reports failures
+                log.info("tts prefetch failed for %r: %s", text[:40], e)
+
+        task = loop.create_task(fetch())
+        self._prefetches.add(task)
+        task.add_done_callback(self._prefetches.discard)
 
     # --- NEW (#54) the agent's events and photos ---
 
@@ -213,6 +267,11 @@ class ApiState:
         d["data"] = dict(d.get("data") or {})
         if not isinstance(d.get("id"), int) or d["id"] <= self.last_agent_event:
             d["id"] = self.last_agent_event + 1   # ids must keep increasing: clients poll "after id"
+        timing = d["data"].pop("timing", None)    # server-side only (monotonic times)
+        if d.get("kind") == "say" and isinstance(timing, dict):
+            self.timer.start(timing, str(d.get("text") or ""))
+        if d.get("kind") == "listen" and hasattr(self.hub, "set_awaiting"):   # the agent waits for an answer
+            self.hub.set_awaiting(bool(d["data"].get("on")))
         if d.get("kind") == "reply":
             text = str(d.get("text") or "").strip()
             if self.tts is not None and 0 < len(text) <= TTS_MAX_CHARS:
@@ -249,7 +308,7 @@ class ApiState:
         hub = getattr(self.mic, "hub", None)
         try:
             if source == "operator" and hub is not None:
-                hub.push_to_talk(text, source="operator")   # push-to-talk: also opens the mic's answer window
+                hub.push_to_talk(text, source="operator")   # push-to-talk (typed on the control page)
             else:
                 self.agent_inbox.put_nowait(Utterance(source, text, meta={"channel": channel}))  # type: ignore[arg-type]
         except asyncio.QueueFull:
@@ -266,9 +325,16 @@ class ApiState:
     def add_say(self, text: str) -> None:
         text = text.strip()[:300]
         if text:
-            self.say.append({"id": (self.say[-1]["id"] + 1) if self.say else 1, "text": text})
+            sid = (self.say[-1]["id"] + 1) if self.say else 1
+            self.say.append({"id": sid, "text": text})
             del self.say[:-50]
             log.info("say: %s", text)
+            self.timer.said(sid, text)
+            self._prefetch(text)
+            hub = self.hub
+            if hasattr(hub, "push_say"):
+                hub.note_line(text)          # which line he said last (the answer window's fallback)
+                hub.push_say(sid, text)      # to the phone now, not at its next /say poll
 
     @property
     def server_vision(self) -> bool:
@@ -443,7 +509,8 @@ class ApiState:
         return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
                 "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
-                "tts": self.tts is not None, "trim_shift": self.trim_shift}
+                "tts": self.tts is not None, "tts_stream": self.tts is not None and self.tts_stream,
+                "trim_shift": self.trim_shift, "listening": self.listening()}
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -548,13 +615,41 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             return web.json_response({"error": f"text must be 1 to {TTS_MAX_CHARS} characters"}, status=400)
         if state.tts is None:
             return web.json_response({"error": "tts not configured"}, status=503)
+        state.timer.mark("tts_request", text)
+        headers = {"Content-Type": getattr(state.tts, "MEDIA_TYPE", "audio/mpeg"), "Cache-Control": "no-store"}
+        cached = state.tts.cached(text) if hasattr(state.tts, "cached") else None
+        if cached is None and hasattr(state.tts, "stream"):
+            return await tts_streamed(request, text, headers)
         try:
-            audio = await state.tts.synth(text)
+            audio = cached if cached is not None else await state.tts.synth(text)
         except Exception as e:   # TTSError (network, key, quota): the page falls back to Safari's voice
             log.warning("tts failed for %r: %s", text[:60], e)
             return web.json_response({"error": "tts failed"}, status=502)
-        return web.Response(body=audio, headers={"Content-Type": getattr(state.tts, "MEDIA_TYPE", "audio/mpeg"),
-                                                 "Cache-Control": "no-store"})
+        state.timer.mark("tts_first_byte", text)
+        return web.Response(body=audio, headers=headers)
+
+    async def tts_streamed(request: web.Request, text: str, headers: dict) -> web.StreamResponse:
+        """Pass Cartesia's chunks on as they arrive. Errors before the first chunk are still a 502."""
+        chunks = state.tts.stream(text)
+        try:
+            first = await chunks.__anext__()
+        except Exception as e:   # TTSError or no audio at all
+            log.warning("tts failed for %r: %s", text[:60], e)
+            await chunks.aclose()
+            return web.json_response({"error": "tts failed"}, status=502)
+        state.timer.mark("tts_first_byte", text)
+        resp = web.StreamResponse(headers=headers)
+        try:
+            await resp.prepare(request)
+            await resp.write(first)
+            async for chunk in chunks:
+                await resp.write(chunk)
+            await resp.write_eof()
+        except ConnectionResetError:
+            pass   # the page went away (or skipped the line): the shared fetch still fills the cache
+        finally:
+            await chunks.aclose()
+        return resp
 
     @routes.post("/frame")
     async def frame(request: web.Request) -> web.Response:
@@ -775,6 +870,11 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         app.add_routes(state.family.routes())   # /family/ws, /family/media (app/family.py)
     if state.mic is not None:   # NEW (#54): the phone's microphone stream, for the agent's hearing
         app.router.add_get("/mic", state.mic)
+    if hasattr(state.hub, "on_voice"):   # NEW (voice latency): the phone reports when a line starts playing
+        def on_voice(busy: bool, text: str | None, sid: int | None) -> None:
+            if busy and (sid is not None or text):
+                state.timer.playback(sid, text)
+        state.hub.on_voice = on_voice
     return app
 
 

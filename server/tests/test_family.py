@@ -205,3 +205,20 @@ def test_control_page_memory_page(tmp_path):
     assert forgotten == ["Mom"]
     view = state.control_message({"t": "memory_set", "what": "fact", "action": "delete", "key": "evening pills"})
     assert view["facts"] == []
+
+
+def test_listening_mode_follows_the_mic_hubs_listening_state(tmp_path):
+    import asyncio as aio
+
+    from app.speech.mic import MicHub
+
+    h, st = hub(tmp_path)
+    st.follow = False
+    mic = MicHub(None, aio.Queue(), "Miguel")
+    st.mic = types.SimpleNamespace(hub=mic)
+    assert h.snapshot_state()["mode"] == "idle"
+    mic.set_awaiting(True)                       # the agent waits for her answer
+    assert h.snapshot_state()["mode"] == "listening"
+    mic.set_awaiting(False)
+    mic.open_once("tap")                         # she tapped his face
+    assert h.snapshot_state()["mode"] == "listening"
