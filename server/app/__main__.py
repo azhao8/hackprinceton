@@ -174,6 +174,7 @@ class App:
         self.note = ""
         self.last: Command = Command(0.0, 0.0, "none")
         self.background: list[asyncio.Task] = []   # e.g. the voice agent: cancelled first on shutdown
+        self.hooks: list[Callable[[], Any]] = []   # run every tick (#79: the API's drift watch and auto-start)
         self._quit = False
         self._closed = False
 
@@ -284,6 +285,11 @@ class App:
         """One step: decide and send, tell vision how the robot is turning, draw, read a key."""
         cmd = self.sender.step()
         self.last = cmd
+        for hook in self.hooks:
+            try:
+                hook()
+            except Exception:
+                log.exception("tick hook failed")   # never let a watcher stop the drive loop
         if self.vision is not None:
             self.vision.set_turn_rate(self._turn_rate(cmd))
             try:
@@ -563,6 +569,7 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
     """The API's view of the server. With vision, Follow on the control page runs the server's follow skill
     and the control page shows the server's view; with the phone as the camera, /frame feeds vision."""
     state = api.ApiState(app.arbiter, link, skills=app.skills, tts=tts)
+    app.hooks.append(state.watch)   # #79: drift watch and auto-start, on every new telemetry message
     if vision is None:
         return state
     state.phone_frames = getattr(vision, "_source", None) if args_source_is_phone(vision) else None
@@ -585,6 +592,16 @@ def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
                                                    d_min_m=0.7 * d_target))
         factory.config = base  # type: ignore[attr-defined]
         app._follow_factory = factory
+
+        def live(settings: dict) -> None:
+            # #79 "follow slower": a running follow takes new speed and closeness at once (the
+            # controller reads its config every step), not only at the next start.
+            skill = app.follow
+            if app.skills.running == "follow" and isinstance(skill, FollowSkill):
+                new = factory().config
+                skill.config = new
+                skill.controller.config = new
+        state.on_settings = live
     state.follow_start = lambda: None if app.skills.running == "follow" else app.toggle_follow()
     state.follow_stop = lambda: app.toggle_follow() if app.skills.running == "follow" else None
     state.follow_running = lambda: app.skills.running == "follow"
@@ -738,15 +755,29 @@ def make_this_is(registry: Any, vision: Any) -> Callable[[str], Any] | None:
 
 def make_skill_factories(follow_factory: Callable[[], Any] | None, *, say: Callable[[str], Any] | None = None,
                          wait_loaded: Callable[[], Any] | None = None, registry: Any = None,
-                         memory: Any = None, on_step: Callable[[str, str], None] | None = None
-                         ) -> dict[str, Callable[..., Any]]:
+                         memory: Any = None, on_step: Callable[[str, str], None] | None = None,
+                         settings: Callable[[], dict] | None = None) -> dict[str, Callable[..., Any]]:
     """Skills the agent may start, by tool name (app/brain/tools.py: each factory takes the tool's
     arguments as keywords). Only with a camera (`follow_factory` is None without vision): every
     physical skill needs to see. bring also needs `say` and `wait_loaded` (the Tray loaded button).
     `registry` (make_registry) is the saved looks find_person and bring match against.
     `memory` (app.memory.Memory): places by marker for go_to and bring (which station holds the item).
-    `on_step(stage, text)`: bring's progress, for the family app (app/family.py)."""
+    `on_step(stage, text)`: bring's progress, for the family app (app/family.py).
+    `settings()`: the control page's settings; move (#79, no camera needed) drives at its drive speed
+    and turn rate unless the person said a speed."""
     factories: dict[str, Callable[..., Any]] = {}
+    if settings is not None:
+        try:
+            from app.skills.move import Move
+
+            def move(direction: str, seconds: Any = None, meters: Any = None, degrees: Any = None,
+                     speed: Any = None, **_: Any) -> Any:
+                return Move(direction, seconds=seconds, meters=meters, degrees=degrees, speed=speed,
+                            drive_speed=lambda: float(settings()["drive_speed"]),
+                            turn_rate=lambda: float(settings()["turn_rate"]))
+            factories["move"] = move
+        except Exception as e:
+            log.warning("agent: move unavailable (%s)", e)
     if follow_factory is None:
         return factories
     factories["follow"] = lambda **_: follow_factory()
@@ -826,18 +857,21 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
         family = getattr(state, "family", None)
         factories = make_skill_factories(follow_factory, say=state.add_say, wait_loaded=state.wait_loaded,
                                          registry=registry, memory=memory,
-                                         on_step=family.on_bring_step if family is not None else None)
+                                         on_step=family.on_bring_step if family is not None else None,
+                                         settings=lambda: state.settings)
         toolbox = ToolBox(app.skills, factories, save_photo=state.save_photo,
                           snapshot=make_snapshot(app.vision) if app.vision is not None else None,
                           registry=registry,
                           perception=app.vision.latest if app.vision is not None else None,
                           wait_tray=state.wait_loaded,
-                          memory=memory.facts if memory is not None else None, places=memory)
+                          memory=memory.facts if memory is not None else None, places=memory,
+                          set_settings=state.set_settings, settings=lambda: dict(state.settings))
         agent = Agent(toolbox, events_cb=lambda ev: on_agent_event(state, ev))
     except Exception as e:
         log.warning("agent: off (%s)", e)
         return None
     state.agent_inbox = agent.inbox
+    state.agent = agent   # #79: the control page's New conversation / Clear log
     state.agent_working = lambda: agent.working   # the family app knows when he has stopped working
     log.info("agent: on (skills: %s)", ", ".join(factories) or "none, no camera")
     return agent

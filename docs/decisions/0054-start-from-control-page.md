@@ -1,7 +1,7 @@
 # 0054: Start balancing from the control page, on this laptop only
 
 - Date: 2026-11-14
-- Status: accepted
+- Status: changed by 0059 (Start waits until upright; the phone can start too)
 - Source: Alex, Sat afternoon (all controls on the control page, 0053); issue #42
 - Agreed by: Alex
 

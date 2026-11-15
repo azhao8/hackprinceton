@@ -41,7 +41,11 @@ Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) liv
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
 reads them from `/tel` (decision 0053: the phone is the robot's eye, every control is on the laptop).
 
-The API never sends `g`: starting to balance stays a person's keypress at the robot.
+Start (#79, decision 0059): the API sends `g` only after a person pressed Start (control page or the
+robot's phone) and the robot is then held upright and steady (app/robot_watch.py). Skills, the agent
+and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start|park|recalibrate}`
+(the hotspot only), `/ws` `cancel_start`, `reset_chat`, `clear_log`, `reset_memory`, and status fields
+`drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent` (contract/web/README.md).
 
 NEW (#54, the voice agent and the guardian channel; additive, for Alex's review as W-6 owner).
 Messages in contract/web/README.md ("Agent"). "Agent auth" below = this laptop directly, or
@@ -83,6 +87,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,6 +98,7 @@ from aiohttp import WSMsgType, web
 
 from app.arbiter import Arbiter, Source
 from app.link import TRIM_STEP_DEG, RobotLink
+from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch
 from app.speech.timing import TurnTimer
 
 log = logging.getLogger("app.api")
@@ -110,24 +116,32 @@ TRIM_MAX_STEPS = 60           # one request moves the balance angle at most 15 d
 # Wide on purpose (Alex: "in case"): the robot clamps speed to 3.2 m/s itself (VMAX, the step generator's ceiling).
 # person "d" 0.7: the phone streams portrait frames from the 0.5x lens, so a person's box is wide
 # early; 0.45 (John's landscape value) made the server's follow stop far away (robot test, Sat 5:35 pm).
-FOLLOW_MODES = {"person": {"dmin": 0.1, "dmax": 1.0, "d": 0.7, "s": 0.25},
+# Sun 3 am (#79, Alex): person follow defaults 0.8 m/s and closeness 0.8.
+FOLLOW_MODES = {"person": {"dmin": 0.1, "dmax": 1.0, "d": 0.8, "s": 0.8},
                 "yellow": {"dmin": 0.1, "dmax": 1.0, "d": 0.35, "s": 0.4}}
 SPEED_MIN, SPEED_MAX = 0.05, 3.2
+# The control page's drive sliders (#79): kept here so a page reload keeps them and the agent's move
+# skill uses the same numbers. A server restart goes back to these defaults.
+DRIVE_SPEED_DEFAULT, DRIVE_SPEED_MIN = 1.1, 0.1
+TURN_RATE_DEFAULT, TURN_RATE_MIN, TURN_RATE_MAX = 1.0, 0.5, 1.5
+KEPT_ON_MODE_CHANGE = ("voice", "camera", "mirror", "drive_speed", "turn_rate")
 
 
 def default_settings(mode: str = "person") -> dict:
     m = FOLLOW_MODES[mode]
-    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": "back", "mirror": False}
+    return {"mode": mode, "speed": m["s"], "distance": m["d"], "voice": True, "camera": "back", "mirror": False,
+            "drive_speed": DRIVE_SPEED_DEFAULT, "turn_rate": TURN_RATE_DEFAULT}
 
 
 def clean_settings(old: dict, new: dict) -> dict:
     """Merge a partial update into the settings, keeping every value in range."""
     out = dict(old)
     if new.get("mode") in FOLLOW_MODES and new["mode"] != old["mode"]:
-        keep = {k: old[k] for k in ("voice", "camera", "mirror") if k in old}
+        keep = {k: old[k] for k in KEPT_ON_MODE_CHANGE if k in old}
         out = default_settings(new["mode"]) | keep   # a new mode starts from its follow defaults
     m = FOLLOW_MODES[out["mode"]]
-    for key, lo, hi in (("speed", SPEED_MIN, SPEED_MAX), ("distance", m["dmin"], m["dmax"])):
+    for key, lo, hi in (("speed", SPEED_MIN, SPEED_MAX), ("distance", m["dmin"], m["dmax"]),
+                        ("drive_speed", DRIVE_SPEED_MIN, SPEED_MAX), ("turn_rate", TURN_RATE_MIN, TURN_RATE_MAX)):
         if key in new:
             try:
                 x = float(new[key])
@@ -152,7 +166,9 @@ THIS_IS_NAME_MAX = 40     # NEW (#62) a person's name for /control/this-is (same
 FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real-IP")
 # /ws messages that move or change the robot: this laptop only (#69 review #1). STOP (estop on) isn't here.
 CONTROL_ONLY = {"estop", "joystick", "follow", "say", "settings", "key", "recalibrate", "trim", "arm",
-                "tray_loaded", "test_fall", "this_is", "memory_get", "memory_set"}
+                "tray_loaded", "test_fall", "this_is", "memory_get", "memory_set",
+                "cancel_start", "reset_chat", "clear_log", "reset_memory"}   # #79
+PHONE_ACTIONS = ("start", "cancel_start", "park", "recalibrate")   # POST /phone/action (#79)
 
 # The control page's preset buttons.
 CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
@@ -166,7 +182,13 @@ PHONE_LINES = [
 ]
 # Made ahead in the background at startup, so these play without waiting for Cartesia.
 AGENT_LINES = ["On it!", "Okay, stopping."]   # the agent's instant acknowledgment and stop line (app/brain)
-STOCK_LINES = CONTROL_PRESETS + PHONE_LINES + AGENT_LINES
+# What the server says about the tilt sensor and starting (#79, app/robot_watch.py).
+DRIFT_LINE = "My tilt sensor is drifting, so I won't balance. Lay me down flat and still, and recalibrate me."
+START_LINES = [DRIFT_LINE]
+STOCK_LINES = CONTROL_PRESETS + PHONE_LINES + AGENT_LINES + START_LINES
+PHONE_SEEN_S = 3.0      # the phone page polls /tel 1-8 times a second: quiet this long = not connected
+CALIBRATING_S = 3.0     # the firmware measures for 2 s after c
+DRIFT_SAY_EVERY_S = 15  # say the drift line at most this often
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -212,6 +234,21 @@ class ApiState:
     tts_stream: bool = field(default_factory=lambda: _env_flag("MIGUEL_TTS_STREAM"))
     timer: TurnTimer = field(default_factory=TurnTimer)
     _prefetches: set = field(default_factory=set, repr=False)
+    # NEW (#79) the robot watchers, the phone and the resets
+    agent: Any = None                          # app.brain.agent.Agent, for the chat resets
+    drift: DriftWatch = field(default_factory=DriftWatch)
+    autostart: AutoStart | None = None         # made in __post_init__ (it needs self.arm)
+    on_settings: Any = None                    # (settings) -> None: e.g. a running follow takes them live
+    phone_seen: float | None = None            # monotonic time of the phone page's last /tel or /frame
+    log_epoch: int = 0                         # bumped by Clear log: /ws clients drop their agent log
+    _calibrating_until: float = 0.0
+    _cleared_after: int = 0                    # the last event id before Clear log: ids keep increasing
+    _drift_said: float = -1e9
+    _last_tel: Any = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.autostart is None:
+            self.autostart = AutoStart(self._send_g, lambda: FIRMWARE_TRIM + self.trim_shift)
 
     # --- NEW (voice turn-taking) the mic hub: listening state, say lines pushed to the phone ---
 
@@ -250,7 +287,7 @@ class ApiState:
 
     @property
     def last_agent_event(self) -> int:
-        return self.agent_events[-1]["id"] if self.agent_events else 0
+        return self.agent_events[-1]["id"] if self.agent_events else self._cleared_after
 
     def agent_events_after(self, after: int) -> list[dict]:
         return [e for e in self.agent_events if e["id"] > after]
@@ -327,11 +364,17 @@ class ApiState:
         log.info("agent: %s says %r (%s)", source, text[:80], channel)
         return 200, ""
 
-    def set_settings(self, new: dict) -> None:
+    def set_settings(self, new: dict) -> dict:
         self.settings = clean_settings(self.settings, new)
         if self.phone_frames is not None:
             self.phone_frames.mirror = bool(self.settings.get("mirror"))
-        log.info("follow settings: %s", self.settings)
+        if self.on_settings is not None:
+            try:
+                self.on_settings(self.settings)
+            except Exception:  # noqa: BLE001 - a bad hook must not lose the settings
+                log.exception("applying the settings failed")
+        log.info("settings: %s", self.settings)
+        return dict(self.settings)
 
     def add_say(self, text: str) -> None:
         text = text.strip()[:300]
@@ -371,6 +414,7 @@ class ApiState:
     def estop(self, on: bool) -> None:
         self.arbiter.estop(on)
         if on:
+            self.autostart.cancel()   # STOP also ends a wait to start
             self.follow = False
             self.arbiter.clear(Source.SKILL)
             if self.skills is not None:
@@ -390,6 +434,7 @@ class ApiState:
         if letter not in KEY_LETTERS:
             return False
         if letter in "xP5":
+            self.autostart.cancel()
             self.stop_motion()
         try:
             self.link.send_letter(letter)
@@ -464,11 +509,15 @@ class ApiState:
         if tel.get("state") in ("balance", "drive"):
             log.warning("recalibrate refused: the robot is balancing")
             return False
+        self.autostart.cancel()
         try:
             self.link.send_letter("c")
         except Exception as e:  # noqa: BLE001
             log.warning("recalibrate failed: %s", e)
             return False
+        now = time.monotonic()
+        self.drift.reset(now)
+        self._calibrating_until = now + CALIBRATING_S
         log.info("recalibrating the tilt sensor (robot must be still for 2 s)")
         return True
 
@@ -493,14 +542,99 @@ class ApiState:
         return True
 
     def arm(self) -> bool:
-        """Start balancing (g): only from this laptop, on a person's press (decision 0054)."""
+        """Start (#79, replaces decision 0054's immediate g): a person pressed Start on the control page
+        or the phone. The server waits until the robot is held upright and steady, then sends g
+        (app/robot_watch.py). Refused while the tilt sensor drifts: Miguel says why."""
+        return self.request_start()[0]
+
+    def request_start(self) -> tuple[bool, str]:
+        if getattr(self.link, "arm", None) is None:
+            return False, "This robot link can't start balancing"
+        if (self.link.telemetry or {}).get("state") in ("balance", "drive"):
+            return True, "Already balancing"
+        if self.drift.on:
+            self._say_drift(force=True)
+            return False, "Tilt sensor drifting: recalibrate first"
+        self.autostart.start(time.monotonic())
+        log.info("start: waiting until the robot is held upright and steady")
+        return True, self.autostart.note
+
+    def cancel_start(self) -> bool:
+        was = self.autostart.waiting
+        self.autostart.cancel()
+        if was:
+            log.info("start cancelled")
+        return was
+
+    def _send_g(self) -> None:
+        """Auto-start's arm: nothing may keep driving, then g."""
         arm = getattr(self.link, "arm", None)
         if arm is None:
-            return False
+            return
         self.stop_motion()
-        arm()
-        log.info("start balancing (g) sent from the control page")
+        try:
+            arm()
+        except Exception as e:  # noqa: BLE001
+            log.warning("start balancing (g) failed: %s", e)
+            return
+        log.info("start balancing (g) sent: the robot was held upright and steady")
+
+    def _say_drift(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if force or now - self._drift_said >= DRIFT_SAY_EVERY_S:
+            self._drift_said = now
+            self.add_say(DRIFT_LINE)
+
+    def watch(self, now: float | None = None) -> None:
+        """Every server tick (app.App): feed new telemetry to the drift watch and auto-start."""
+        tel = self.link.telemetry
+        if tel is None or tel is self._last_tel:
+            return
+        self._last_tel = tel
+        now = time.monotonic() if now is None else now
+        if self.drift.feed(tel, now):
+            log.warning("tilt sensor drifting (%.1f deg/s while still)", self.drift.rate or 0.0)
+            self._say_drift()
+            if self.autostart.waiting:
+                self.autostart.cancel("Tilt sensor drifting: recalibrate first")
+        event = self.autostart.feed(tel, now)
+        if event == "timeout":
+            log.info("start: nobody held it upright in time")
+        elif event == "started":
+            log.info("start: balancing")
+
+    # --- NEW (#79) the resets ---
+
+    def reset_chat(self) -> bool:
+        """New conversation: stop the task and forget the conversation (memory stays)."""
+        if self.agent is None:
+            return False
+        self.agent.reset_conversation()
         return True
+
+    def clear_log(self) -> None:
+        """Empty the agent's log for every page (ids keep increasing)."""
+        if self.agent_events:
+            self._cleared_after = self.agent_events[-1]["id"]
+        self.agent_events.clear()
+        if self.agent is not None and hasattr(self.agent, "clear_events"):
+            self.agent.clear_events()
+        self.log_epoch += 1
+        log.info("agent log cleared")
+
+    def reset_memory(self) -> dict:
+        """Erase what Miguel saved: facts, places (back to the demo sign cards), today's timeline and the
+        people he knows by sight. Also starts a new conversation, so he can't repeat it from the chat."""
+        if self.memory is not None and hasattr(self.memory, "reset"):
+            self.memory.reset()
+        if self.registry is not None:
+            for name in list(self.registry.names()):
+                self.registry.forget(name)
+        if self.family is not None and hasattr(self.family, "timeline_cleared"):
+            self.family.timeline_cleared()
+        self.reset_chat()
+        log.info("memory erased (places back to the demo signs)")
+        return self.memory_view()
 
     def phone_follow_active(self) -> bool:
         if self.server_vision:
@@ -517,11 +651,18 @@ class ApiState:
             camera = {"frames": self.phone_frames.received, "age_s": None if age is None else round(age, 2)}
         vision = {"mode": "server" if self.server_vision else "phone",
                   "status": self.vision_status() if self.vision_status else None, "camera": camera}
+        now = time.monotonic()
         return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
                 "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
                 "tts": self.tts is not None, "tts_stream": self.tts is not None and self.tts_stream,
-                "trim_shift": self.trim_shift, "listening": self.listening()}
+                "trim_shift": self.trim_shift, "listening": self.listening(),
+                # NEW (#79)
+                "drift": self.drift.on, "drift_rate": self.drift.rate if self.drift.on else None,
+                "autostart": self.autostart.view(), "calibrating": now < self._calibrating_until,
+                "phone": self.phone_seen is not None and now - self.phone_seen < PHONE_SEEN_S,
+                "family": len(getattr(self.family, "clients", None) or ()),
+                "agent": self.agent is not None}
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -615,7 +756,28 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
 
     @routes.get("/tel")
     async def tel(request: web.Request) -> web.Response:
+        state.phone_seen = time.monotonic()   # only the phone page polls /tel (the control page uses /ws)
         return web.json_response(state.status(), headers={"Cache-Control": "no-store"})
+
+    @routes.post("/phone/action")   # NEW (#79): the robot's phone, on the hotspot (never through a tunnel)
+    async def phone_action(request: web.Request) -> web.Response:
+        if not _lan(request):
+            raise web.HTTPForbidden()
+        action = (await _json(request)).get("action")
+        if action not in PHONE_ACTIONS:
+            return web.json_response({"ok": False, "note": "Unknown action"}, status=400)
+        log.info("phone: %s", action)
+        if action == "start":
+            ok, note = state.request_start()
+        elif action == "cancel_start":
+            ok, note = state.cancel_start(), "Start cancelled"
+        elif action == "park":
+            ok = state.key("P")
+            note = "Parking" if ok else "Couldn't reach the robot"
+        else:
+            ok = state.recalibrate()
+            note = "Recalibrating: keep me still" if ok else "Can't recalibrate while balancing"
+        return web.json_response({"ok": ok, "note": note})
 
     @routes.get("/say")
     async def say_poll(request: web.Request) -> web.Response:
@@ -823,11 +985,16 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         # NEW (#54): who an agent_message on this socket comes from (None: ignored).
         agent_from = "operator" if _direct_local(request) else "guardian" if _guardian(request, state) else None
         seen = state.last_agent_event   # agent events from now on; GET /agent/events has the history
+        epoch = state.log_epoch         # NEW (#79) Clear log: tell this page to drop its agent log
 
         async def push() -> None:
-            nonlocal seen
+            nonlocal seen, epoch
             n = 0
             while not sock.closed:
+                if epoch != state.log_epoch:
+                    epoch = state.log_epoch
+                    seen = state.last_agent_event
+                    await sock.send_json({"t": "agent_clear"})
                 # NEW (#54): agent events (transcripts, family messages) only to this laptop's pages or a
                 # guardian with the token (#71); anyone else on the network gets telemetry and status only.
                 for ev in state.agent_events_after(seen) if agent_from is not None else ():
@@ -887,6 +1054,14 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                         state.arm()
                     else:
                         log.warning("start balancing refused: not from this laptop (%s)", request.remote)
+                elif t == "cancel_start":    # NEW (#79); CONTROL_ONLY above keeps these to this laptop
+                    state.cancel_start()
+                elif t == "reset_chat":
+                    state.reset_chat()
+                elif t == "clear_log":
+                    state.clear_log()
+                elif t == "reset_memory":
+                    await sock.send_json(state.reset_memory())
                 elif t == "agent_message":   # NEW (#54)
                     if agent_from is None:
                         log.warning("agent_message refused: not this laptop and no guardian token (%s)", request.remote)

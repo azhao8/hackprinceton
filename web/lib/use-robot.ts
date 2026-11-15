@@ -106,6 +106,7 @@ export function useRobot() {
           else if (msg?.t === "status") status = msg;
           else if (msg?.t === "agent") agent = [...agent.slice(-39), msg];
           else if (msg?.t === "memory") memory = msg;
+          else if (msg?.t === "agent_clear") agent = [];
         };
         socket.onclose = () => {
           connection = "closed";

@@ -12,6 +12,8 @@ Model settings (from the claude-api skill, Nov 2026):
   `MIGUEL_LLM_FALLBACKS=0` or `fallbacks=False` on `Agent` / the vision helpers.
 - The agent streams (`client.beta.messages.stream`), so Miguel can speak his first sentence while
   Claude is still writing the rest (`stream_message`).
+- `MIGUEL_LLM=local` swaps Claude for a local model through Ollama (`get_client`, local_llm.py, #81):
+  the same requests, converted; the Anthropic-only settings below are ignored there.
 - Effort per task without breaking the prompt cache: the top-level effort stays at EFFORT_CHAT
   and each task says its effort in an empty `role: "system"` message right after its user message
   (beta `mid-conversation-output-config-2026-07-01`). Changing the top-level effort between
@@ -69,14 +71,17 @@ def effort_for(text: str, source: str) -> str:
     return EFFORT_CHAT
 
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: Any = None
 
 
-def get_client() -> anthropic.AsyncAnthropic:
-    """The shared async client, created on first use (reads ANTHROPIC_API_KEY from the env)."""
+def get_client() -> Any:
+    """The shared async client, created on first use: an AsyncAnthropic (reads ANTHROPIC_API_KEY
+    from the env), or with MIGUEL_LLM=local an Ollama-backed stand-in (app/brain/local_llm.py, #81)."""
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
+        from app.brain.local_llm import LocalClient, backend
+
+        _client = LocalClient() if backend() == "local" else anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
     return _client
 
 
@@ -137,6 +142,12 @@ within a few seconds of a question you asked) or "tapped your face" (they tapped
 A message marked "while you were working" arrived during a task you are still doing.
 After the message there may be a "World memory" note: what you currently know and what you \
 are doing. Trust it over older conversation.
+- The mic gives you words, not who said them. Don't assume the speaker is whoever you talked \
+with before. A "People in view now" note says who the camera sees, matched by the clothes you \
+saved with this_is (not faces: a change of clothes or a look-alike fools it). If exactly one \
+known person is in view and near, they are probably the speaker. If nobody known is in view, or \
+several people are, don't use a name; before anything personal (medication, messages, their \
+name, their memories), ask "Who am I talking to?" first.
 
 # How you talk
 - Everything you say with say() is read aloud by the phone. Use short, simple spoken \
@@ -155,7 +166,11 @@ and write no text, so nothing is said. If it could be an answer to what you just
 
 # How you act
 - You never drive the wheels directly. You call skills (follow, find_person, go_to, bring, \
-stop) and they report success or failure.
+move, stop) and they report success or failure.
+- move() is for simple moves: "go forward", "back up a bit", "turn left 90 degrees". Leave \
+speed null unless the person asked for a specific speed; the robot clamps it to safe limits.
+- "Follow slower", "faster", "come closer", "don't follow so close": call \
+set_follow_settings with the word. It changes following right away, even mid-follow.
 - Before you move, say what you are about to do (for example "I'm going to the kitchen \
 now."). People trust a robot that announces itself.
 - For a request with more than one step, call set_plan(steps) first with short steps, then \
