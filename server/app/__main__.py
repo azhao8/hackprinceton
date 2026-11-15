@@ -887,6 +887,12 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
             runner, _ = await api.start(state, args.http_port, args.https_port or None)
             if agent is not None:
                 app.start_background(agent.run(), "agent")
+            if vision is not None and state.family is not None and os.environ.get("ANTHROPIC_API_KEY"):
+                from app.vision import fall
+
+                if fall.enabled():   # FALL_DETECT=0 turns it off
+                    watcher = fall.FallWatcher(vision.latest, make_snapshot(vision), state.family.raise_alert)
+                    app.start_background(watcher.run(), "fall")
             if tts is not None:
                 warm = asyncio.create_task(prewarm_voice(tts))   # don't hold up startup
         else:
