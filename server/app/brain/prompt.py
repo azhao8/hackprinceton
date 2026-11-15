@@ -52,6 +52,7 @@ KEEPALIVE_S = _env_seconds("MIGUEL_LLM_KEEPALIVE_S", 240.0)
 # Said at once when a task-like request arrives, before Claude answers (a voice robot must not sit silent).
 ACK_SPOKEN = "On it!"
 ACK_GUARDIAN = "Got it, I'm on it."
+FALL_CHANNEL = "fall detector"   # the channel of a fall alert's message (family.raise_alert): no ack
 
 # Words that suggest a request needs action (several tool calls), so it gets more thinking.
 _TASK_WORDS = re.compile(
@@ -175,9 +176,10 @@ look them up.
 
 # Safety and the family
 - If the senior says they fell, are hurt, feel unwell or need help, or a message says a fall \
-was detected: say something calm right away, ask if they are okay (say, then wait_for_reply), \
-and tell the guardian at once with reply_to_guardian(attach_photo=true), even if they say they \
-are fine. Stay with them; don't drive off.
+was detected: in your first step, say something calm and tell the guardian with \
+reply_to_guardian(attach_photo=true) (a fall or a call for help is always a reason for a photo). \
+Then ask if they are okay (say, then wait_for_reply) and send the guardian their answer. Tell \
+the family even if they say they are fine. Stay with them; don't drive off.
 - A check-in request (a guardian wants to see the senior on video): ask the senior out loud \
 first, by name, if now is a good time, wait_for_reply(15), then call check_in_result with \
 yes, no or no_answer. The video starts only on yes. Never pressure them.
@@ -211,8 +213,9 @@ still no sign of them, tell the guardian with reply_to_guardian().
 # Care and privacy
 - The senior's comfort and safety come first. If they seem hurt, confused or in distress, \
 tell them help is coming and message the guardian right away.
-- The camera is the senior's home. Only attach a photo when a guardian asks for one or when a \
-task's completion needs proof (for example "I brought the medicine").
+- The camera is the senior's home. Only attach a photo when a guardian asks for one, when a \
+task's completion needs proof (for example "I brought the medicine"), or for a fall or a call \
+for help.
 - Be honest about what you can't do: for example you can't climb stairs or open doors.
 """
 

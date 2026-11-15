@@ -202,7 +202,7 @@ class ApiState:
     this_is: Any = None
     agent_events: list[dict] = field(default_factory=list)
     agent_photos: OrderedDict = field(default_factory=OrderedDict)   # photo id -> JPEG bytes
-    _tray: asyncio.Event | None = field(default=None, repr=False)    # set by "Tray loaded"
+    _tray_waiters: set = field(default_factory=set, repr=False)   # one Event per wait_loaded() call (#71)
     # NEW (voice latency) the phone plays /tts straight from the URL (MIGUEL_TTS_STREAM), the
     # per-turn timing log, and the prefetches in flight
     tts_stream: bool = field(default_factory=lambda: _env_flag("MIGUEL_TTS_STREAM"))
@@ -283,16 +283,23 @@ class ApiState:
     # --- NEW (#54) the bring skill's "tray loaded" confirmation ---
 
     async def wait_loaded(self) -> bool:
-        """The bring skill's wait_loaded: returns True once someone presses Tray loaded (after this call)."""
-        self._tray = asyncio.Event()
-        await self._tray.wait()
+        """The bring skill's wait_loaded: returns True once someone presses Tray loaded (after this call).
+        Each call has its own event (#71), so a second waiter (bring and wait_for_tray) can't strand the first."""
+        ev = asyncio.Event()
+        self._tray_waiters.add(ev)
+        try:
+            await ev.wait()
+        finally:
+            self._tray_waiters.discard(ev)
         return True
 
     def mark_loaded(self) -> bool:
-        """Tray loaded (control page). False if nothing was waiting for it."""
-        if self._tray is None or self._tray.is_set():
+        """Tray loaded (control page): wakes every waiter. False if nothing was waiting for it."""
+        waiting = [ev for ev in self._tray_waiters if not ev.is_set()]
+        if not waiting:
             return False
-        self._tray.set()
+        for ev in waiting:
+            ev.set()
         log.info("tray loaded")
         return True
 
@@ -794,7 +801,9 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
             nonlocal seen
             n = 0
             while not sock.closed:
-                for ev in state.agent_events_after(seen):   # NEW (#54)
+                # NEW (#54): agent events (transcripts, family messages) only to this laptop's pages or a
+                # guardian with the token (#71); anyone else on the network gets telemetry and status only.
+                for ev in state.agent_events_after(seen) if agent_from is not None else ():
                     await sock.send_json({"t": "agent", **ev})
                     seen = ev["id"]
                 if state.link.telemetry:

@@ -1,9 +1,13 @@
 """Possible-fall detection (Alex's redesign, Sat night): fast and free on the laptop, then Claude checks.
 
 Stage 1 (every frame, FallDetector): a person whose body is near horizontal (the shoulders-to-hips
-line more than 55 deg from vertical, in pixels) or whose box is much wider than tall, staying like
-that for HOLD_S. Stage 2 (FallWatcher): one camera frame goes to Claude ("is someone on the floor or
-in distress?"); only a yes raises the family app's alert, and the agent then asks her if she's okay.
+line more than 55 deg from vertical, in pixels; without those keypoints, a box much wider than tall
+that isn't cut off by a frame edge), staying like that for HOLD_S. Pose often drops a lying person for
+a frame, so only a gap of RESET_S restarts the hold. Stage 2 (FallWatcher): one camera frame goes to
+Claude ("is someone on the floor or in distress?"); only a yes raises the family app's alert, and the
+agent then asks her if she's okay. After a no, it may ask again in RECHECK_S if she's still down.
+After an alert: nothing for COOLDOWN_S, and nothing until someone is seen upright for REARM_S, so one
+fall gives one alert.
 
 Known limit: the camera sits low and tilts up, so a person lying on the floor may be partly out of
 view. The control page's "Test fall alert" button runs the same path for the demo.
@@ -22,9 +26,13 @@ from typing import Any
 log = logging.getLogger("app.vision.fall")
 
 TILT_DEG = 55.0         # torso this far from vertical counts as lying
-WIDE = 1.3              # box width / height above this counts as lying
+WIDE = 1.3              # without torso keypoints: box width / height above this counts as lying
+EDGE = 0.02             # a box this close to a frame edge is cut off, so its shape says nothing
 HOLD_S = 2.5            # it has to stay like that this long
-COOLDOWN_S = 120.0      # one alert per two minutes at most
+RESET_S = 0.75          # only a not-lying (or nobody) gap this long restarts the hold
+RECHECK_S = 25.0        # after a suspicion that wasn't raised (Claude said no), ask again this soon at most
+COOLDOWN_S = 120.0      # after a raised alert, no new one for two minutes
+REARM_S = 2.0           # ...and none until someone has been seen upright (nobody lying) this long
 CONFIRM_Q = ("Is a person lying on the floor, fallen, or in distress in this picture? Start your answer "
              "with yes or no, then say in one short sentence what you see.")
 
@@ -48,36 +56,64 @@ def lying(person: Any, width: int, height: int) -> bool:
     if tilt is not None:
         return tilt > TILT_DEG
     b = person.box
+    if min(b.x1, b.y1) <= EDGE or max(b.x2, b.y2) >= 1 - EDGE:
+        return False    # cut off by the frame (say, head and shoulders at the bottom): wide means nothing
     w, h = (b.x2 - b.x1) * width, (b.y2 - b.y1) * height
     return h > 0 and w / h > WIDE
 
 
 class FallDetector:
-    """Stage 1. update() each new perception; returns a short description when a fall is suspected."""
+    """Stage 1. update() each new perception; returns a short description when a fall is suspected.
+
+    A suspicion blocks the next one for RECHECK_S. Call confirmed() once the alert is raised: then
+    nothing for COOLDOWN_S, and nothing until someone has been seen upright for REARM_S.
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
         self.clock = clock
-        self._since: float | None = None
-        self._last_alert = -math.inf
+        self._since: float | None = None        # when someone started lying (the hold)
+        self._clear_since: float | None = None  # when the current not-lying / nobody gap started
+        self._up_since: float | None = None     # when the current upright streak started
+        self._last_up = -math.inf               # last frame with people and nobody lying
+        self._next_ok = -math.inf               # no suspicion before this
+        self._armed = True                      # False after an alert, until she's seen up again
 
     def update(self, perception: Any) -> str | None:
         now = self.clock()
         people = list(getattr(getattr(perception, "detections", None), "people", []) or [])
         frame = getattr(perception, "frame", None)
-        if not people or frame is None:
-            self._since = None
-            return None
-        w, h = frame.width, frame.height
-        down = [p for p in people if lying(p, w, h)]
+        down = up = False
+        if people and frame is not None:
+            down = any(lying(p, frame.width, frame.height) for p in people)
+            up = not down
+        # Re-arm: someone upright and nobody lying for REARM_S (short dropouts don't break the streak).
+        if up:
+            if self._up_since is None or now - self._last_up >= RESET_S:
+                self._up_since = now
+            self._last_up = now
+            if now - self._up_since >= REARM_S:
+                self._armed = True
+        elif down:
+            self._up_since = None
+        # The hold: survives gaps shorter than RESET_S.
         if not down:
-            self._since = None
+            if self._clear_since is None:
+                self._clear_since = now
+            if now - self._clear_since >= RESET_S:
+                self._since = None
             return None
+        self._clear_since = None
         if self._since is None:
             self._since = now
-        if now - self._since < HOLD_S or now - self._last_alert < COOLDOWN_S:
+        if now - self._since < HOLD_S or now < self._next_ok or not self._armed:
             return None
-        self._last_alert, self._since = now, None
+        self._since, self._next_ok = None, now + RECHECK_S
         return "Someone looks like they are lying down and hasn't gotten up."
+
+    def confirmed(self) -> None:
+        """The alert went out: cool down, and wait for her to get up before suspecting again."""
+        self._next_ok = max(self._next_ok, self.clock() + COOLDOWN_S)
+        self._armed, self._up_since = False, None
 
 
 class FallWatcher:
@@ -115,6 +151,7 @@ class FallWatcher:
             saw = answer.strip()[3:].lstrip(" ,.:-") or suspect
         log.warning("fall: possible fall, raising the alert: %s", saw)
         self.raise_alert(saw)
+        self.detector.confirmed()   # only now does the long cooldown start
         return True
 
     async def _confirm(self, jpeg: bytes) -> str:

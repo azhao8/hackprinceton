@@ -95,6 +95,11 @@ class Bring:
             await self._say(f"Here is your {item}!")
             self._step("delivered", "delivered")
             return SkillResult(True, f"brought the {item} to {self.who} ({r.detail})")
+        except asyncio.CancelledError:
+            # stop, e-stop or another skill (#71): report it, or the family app's delivery stays mid-way
+            if self.step != "delivered":
+                self._step("stopped before delivering", "failed")
+            raise
         finally:
             ctx.stop()
 

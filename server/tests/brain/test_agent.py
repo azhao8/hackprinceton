@@ -405,3 +405,51 @@ def test_task_requests_are_acknowledged_at_once_before_claude_answers():
         return evs
 
     assert asyncio.run(senior()) == [("say", ACK_SPOKEN, "senior")]
+
+
+def test_a_task_that_fails_before_any_action_still_reports_its_end():
+    """#71: a refusal (or API error) before the first tool still emits a terminal task event, so the
+    family layer can end a waiting delivery instead of leaving it at "sent" forever."""
+    async def scenario():
+        agent, client, arb, runner = make([msg(stop="refusal", details=SimpleNamespace(category="cyber"))])
+        await agent.handle(Utterance("guardian", "Please bring Mom her pills"))
+        await until(lambda: any(e.kind == "task" for e in agent.events))
+        return [e.data for e in agent.events if e.kind == "task"]
+
+    (data,) = asyncio.run(scenario())
+    assert data["status"] == "failed" and data["started"] is False and data["summary"] == "declined"
+
+
+def test_a_successful_chat_without_actions_emits_no_task_event():
+    async def scenario():
+        agent, client, arb, runner = make([msg(text("Hi there!"), stop="end_turn")])
+        await agent.handle(Utterance("senior", "hello"))
+        await until(lambda: any(e.kind == "say" for e in agent.events))
+        await asyncio.sleep(0.02)
+        return kinds(agent)
+
+    assert "task" not in asyncio.run(scenario())
+
+
+def test_fall_alerts_get_no_cheerful_ack():
+    """#71: "On it!" is wrong for a fall; the agent speaks calmly once Claude answers."""
+    from app.brain.prompt import FALL_CHANNEL
+
+    class SlowClient:
+        class beta:
+            class messages:
+                @staticmethod
+                async def create(**kw):
+                    await asyncio.sleep(3600)
+
+    async def scenario():
+        agent = Agent(ToolBox(), client=SlowClient())
+        await agent.handle(Utterance("operator", "[fall alert] The camera thinks Mom may have fallen: someone is "
+                                     "lying on the floor. Tell the family now with a photo, then ask if she is okay.",
+                                     meta={"channel": FALL_CHANNEL}))
+        await asyncio.sleep(0.05)
+        evs = [e for e in agent.events if e.data.get("ack")]
+        agent.stop("test over")
+        return evs
+
+    assert asyncio.run(scenario()) == []

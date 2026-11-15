@@ -20,6 +20,7 @@ People's saved looks stay in server/people.json (PeopleRegistry, #62) for now.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -28,6 +29,23 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "miguel.db"   # server/miguel.db
+
+# Leading words dropped before matching a place ("the kitchen", "my pills").
+_LEADING = frozenset({"the", "a", "an", "my", "your", "our", "his", "her", "their"})
+
+
+def _name(s: str) -> str:
+    """How a place name or alias is stored: lowercase, single spaces."""
+    return " ".join(str(s).split()).lower()
+
+
+def _words(s: str) -> tuple[str, ...]:
+    """The words of a place name or what someone said, for matching: lowercase, no punctuation
+    ("Mom's" -> "moms", "pill-station" -> "pill station"), without a leading "the" / "my" / ..."""
+    words = re.sub(r"[\W_]+", " ", str(s).lower().replace("'", "").replace("’", "")).split()
+    while words and words[0] in _LEADING:
+        words.pop(0)
+    return tuple(words)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -74,36 +92,62 @@ class Memory:
 
     def set_place(self, name: str, *, marker: int | None = None, aliases: list[str] | None = None,
                   description: str = "") -> dict[str, Any]:
-        name = name.strip().lower()
+        """Add a place, or update one: a new marker replaces the old one, but no marker (None) keeps
+        it; aliases are added to the ones it has; an empty description keeps the old one. To drop
+        a marker or an alias, delete the place and add it again."""
+        name = _name(name)
         if not name:
             raise ValueError("a place needs a name")
-        if marker is not None:   # one marker marks one place
-            self._q("UPDATE places SET marker = NULL WHERE marker = ? AND name != ?", (marker, name))
-        clean = sorted({a.strip().lower() for a in (aliases or []) if a.strip() and a.strip().lower() != name})
-        self._q("INSERT INTO places (name, marker, aliases, description, updated_at) VALUES (?, ?, ?, ?, ?) "
+        with self._lock, self._db:   # one transaction: read the old row, merge, write
+            old = self._db.execute("SELECT marker, aliases, description FROM places WHERE name = ?",
+                                   (name,)).fetchone()
+            if marker is None and old is not None:
+                marker = old["marker"]
+            merged = {*(json.loads(old["aliases"]) if old is not None else []), *map(_name, aliases or [])}
+            clean = sorted(a for a in merged if a and a != name)
+            desc = description.strip() or (old["description"] if old is not None else "")
+            if marker is not None:   # one marker marks one place
+                self._db.execute("UPDATE places SET marker = NULL WHERE marker = ? AND name != ?", (marker, name))
+            self._db.execute(
+                "INSERT INTO places (name, marker, aliases, description, updated_at) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET marker = excluded.marker, aliases = excluded.aliases, "
                 "description = excluded.description, updated_at = excluded.updated_at",
-                (name, marker, json.dumps(clean), description.strip(), time.time()))
-        return {"name": name, "marker": marker, "aliases": clean, "description": description.strip()}
+                (name, marker, json.dumps(clean), desc, time.time()))
+        return {"name": name, "marker": marker, "aliases": clean, "description": desc}
 
     def delete_place(self, name: str) -> bool:
-        return bool(self._q("DELETE FROM places WHERE name = ? RETURNING name", (name.strip().lower(),)))
+        return bool(self._q("DELETE FROM places WHERE name = ? RETURNING name", (_name(name),)))
 
-    def find_place(self, said: str, *, with_marker: bool = False) -> dict[str, Any] | None:
-        """A place by name or alias, forgiving: 'the medication station', 'Pills' and 'meds' all work.
-        with_marker: only places that have a marker card (what go_to and bring can steer to)."""
-        s = said.strip().lower()
-        for prefix in ("the ", "my ", "your "):
-            if s.startswith(prefix):
-                s = s[len(prefix):]
-        places = [p for p in self.places() if p["marker"] is not None or not with_marker]
-        for p in places:
-            if s == p["name"] or s in p["aliases"]:
+    def find_place(self, said: str, *, with_marker: bool = False, exact: bool = False) -> dict[str, Any] | None:
+        """A place by name or alias, forgiving about case, punctuation and a leading 'the' / 'my'.
+
+        In order: the exact name or alias ('Pills', 'the meds'); else a name or alias that holds all
+        of the words said ('water' -> 'water station'); else one that ends what was said, the way
+        the last word of 'evening pills' or "Mom's bedroom" names the thing ('pills', 'bedroom').
+        Whole words only, so 'outdoor shoes' isn't 'door' and 'door key' isn't 'door' (a key, not
+        a door). Two different places matching equally well, or nothing said, is None.
+        with_marker: only places that have a marker card (what go_to and bring can steer to).
+        exact: only the exact name or alias."""
+        said_words = _words(said)
+        if not said_words:
+            return None
+        names = [(p, _words(n)) for p in self.places() if p["marker"] is not None or not with_marker
+                 for n in (p["name"], *p["aliases"])]
+        names = [(p, w) for p, w in names if w]
+        for p, w in names:
+            if w == said_words:
                 return p
-        for p in places:   # "medication station" contains "station"; "water" in "water station"
-            words = [p["name"], *p["aliases"]]
-            if any(w and (w in s or s in w) for w in words):
-                return p
+        if exact:
+            return None
+        said_set = set(said_words)
+        n = len(said_words)
+        holds = [(len(w) - n, p) for p, w in names if said_set <= set(w)]   # fewer extra words is closer
+        ends = [(n - len(w), p) for p, w in names if len(w) < n and said_words[-len(w):] == w]
+        for found in (holds, ends):
+            if found:
+                best = min(d for d, _ in found)
+                picks = {p["name"]: p for d, p in found if d == best}
+                return next(iter(picks.values())) if len(picks) == 1 else None
         return None
 
     def marker_for(self, said: str) -> int | None:
