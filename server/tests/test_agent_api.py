@@ -239,13 +239,26 @@ def test_remote_websocket_agent_message_needs_the_token(remote):
 
 class FakeHub:
     def __init__(self):
-        self.ptt, self.spoke = [], 0
+        self.ptt, self.spoke, self.lines, self.pushed, self.awaiting = [], 0, [], [], []
+        self.on_voice = None
 
     def push_to_talk(self, text, source="operator"):
         self.ptt.append((text, source))
 
     def note_miguel_spoke(self):
         self.spoke += 1
+
+    def note_line(self, text):
+        self.lines.append(text)
+
+    def push_say(self, sid, text):
+        self.pushed.append((sid, text))
+
+    def set_awaiting(self, on):
+        self.awaiting.append(on)
+
+    def listening(self):
+        return bool(self.awaiting and self.awaiting[-1])
 
 
 def test_operator_messages_go_through_the_mics_push_to_talk():
@@ -269,6 +282,14 @@ def test_say_events_open_the_mics_answer_window():
     server.on_agent_event(s, AgentEvent(1, "say", "Do you want water?"))
     server.on_agent_event(s, AgentEvent(2, "reply", "ok"))
     assert mic.hub.spoke == 1 and s.say[-1]["text"] == "Do you want water?"
+    # the line goes to the phone at once, and the hub knows what he said last
+    assert mic.hub.pushed == [(1, "Do you want water?")] and mic.hub.lines == ["Do you want water?"]
+    # the agent waiting for a spoken answer: the mic listens without the wake word
+    assert s.status()["listening"] is False
+    server.on_agent_event(s, AgentEvent(3, "listen", "waiting", data={"on": True, "seconds": 10}))
+    assert mic.hub.awaiting == [True] and s.status()["listening"] is True
+    server.on_agent_event(s, AgentEvent(4, "listen", "done", data={"on": False}))
+    assert mic.hub.awaiting == [True, False] and s.status()["listening"] is False
 
 
 def test_mic_is_mounted_only_when_given():

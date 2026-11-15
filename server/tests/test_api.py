@@ -148,6 +148,101 @@ def test_tts_failure_is_502():
     with_client(t, FakeTTS(TTSError("cartesia said 401")))
 
 
+class FakeStreamTTS(FakeTTS):
+    """Like CartesiaTTS: a cache, and stream() that yields chunks as they come."""
+
+    def __init__(self, fail: Exception | None = None):
+        super().__init__(fail)
+        self.cache: dict[str, bytes] = {}
+        self.streamed: list[str] = []
+
+    def cached(self, text):
+        return self.cache.get(text)
+
+    async def stream(self, text):
+        self.streamed.append(text)
+        if self.fail:
+            raise self.fail
+        for chunk in (b"ID3", b" chunk1", b" chunk2"):
+            await asyncio.sleep(0)
+            yield chunk
+
+
+def test_tts_streams_lines_not_in_the_cache_and_serves_cached_ones_whole():
+    from app.speech.tts import TTSError
+
+    tts = FakeStreamTTS()
+
+    async def t(c, s):
+        r = await c.get("/tts", params={"text": "Hello there."})
+        assert r.status == 200 and r.headers["Content-Type"] == "audio/mpeg"
+        assert await r.read() == b"ID3 chunk1 chunk2" and tts.streamed == ["Hello there."]
+        tts.cache["Hi."] = b"ID3 whole"
+        r = await c.get("/tts", params={"text": "Hi."})
+        assert await r.read() == b"ID3 whole" and r.headers["Content-Length"] == "9"
+        assert tts.streamed == ["Hello there."] and tts.asked == []
+        tts.fail = TTSError("401")
+        assert (await c.get("/tts", params={"text": "Nope."})).status == 502   # before any audio: still a 502
+    with_client(t, tts)
+
+
+def test_say_lines_are_prefetched_and_tel_says_listening_and_tts_stream():
+    tts = FakeTTS()
+
+    async def t(c, s):
+        s.add_say("On my way to the kitchen.")
+        await asyncio.sleep(0.01)
+        assert tts.asked == ["On my way to the kitchen."]     # the audio is being made before the phone asks
+        s.set_settings({"voice": False})
+        s.add_say("Quiet line.")
+        await asyncio.sleep(0.01)
+        assert tts.asked == ["On my way to the kitchen."]     # voice off: no prefetch
+        d = await (await c.get("/tel")).json()
+        assert d["listening"] is False and d["tts_stream"] is False
+        s.tts_stream = True
+        assert (await (await c.get("/tel")).json())["tts_stream"] is True
+    with_client(t, tts)
+
+
+def test_one_timing_line_per_turn_from_end_of_speech_to_playback(caplog):
+    import logging
+
+    from app.speech.mic import make_mic_handler
+
+    caplog.set_level(logging.INFO, logger="app.speech.timing")
+    tts = FakeStreamTTS()
+    mic = make_mic_handler(None, asyncio.Queue(), "Miguel")
+
+    async def go():
+        state = ApiState(Arbiter(), FakeLink(), tts=tts, mic=mic)
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        try:
+            import time
+
+            now = time.monotonic()
+            timing = {"t_speech_end": now - 1.0, "t_final": now - 0.6, "heard": now - 0.6,
+                      "llm_start": now - 0.6, "first_text": now - 0.1, "say": now - 0.1}
+            state.publish_agent_event({"id": 1, "kind": "say", "text": "Sure thing!", "to": "senior",
+                                       "data": {"timing": timing}})
+            assert "timing" not in state.agent_events[-1]["data"]          # server-side only
+            state.add_say("Sure thing!")
+            await (await client.get("/tts", params={"text": "Sure thing!"})).read()
+            mic.hub._voice(True, "Sure thing!", state.say[-1]["id"])        # the phone starts playing it
+        finally:
+            await client.close()
+        return state.timer.last
+
+    last = asyncio.run(go())
+    assert last["text"] == "Sure thing!"
+    ms = last["ms"]
+    assert list(ms) == ["transcript", "Claude asked", "first text", "say", "audio asked", "audio first byte",
+                        "playback"]
+    assert 350 <= ms["transcript"] <= 450 and 850 <= ms["first text"] <= 950
+    assert ms["audio asked"] <= ms["audio first byte"] <= ms["playback"]
+    assert caplog.text.count("turn timing (ms after the end of speech)") == 1
+
+
 def test_stock_lines_match_the_pages():
     page = (Path(PHONE_DIR) / "index.html").read_text()
     for line in PHONE_LINES:                     # the phone page's own lines, copied into the api module
