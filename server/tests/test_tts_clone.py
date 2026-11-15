@@ -139,3 +139,45 @@ def test_real_cloned_voice_speaks():
     wav = asyncio.run(_say(tts, "On it!"))
     with wave.open(io.BytesIO(wav)) as w:
         assert w.getframerate() == 24000 and 0.3 < w.getnframes() / 24000 < 4.0
+
+
+class ThreadRecorder:
+    """An engine that notes which thread runs load and each generator step (MLX streams are per thread)."""
+
+    def __init__(self):
+        self.threads = []
+
+    def load(self):
+        import threading
+
+        self.threads.append(threading.get_ident())
+
+    def prepare(self):
+        pass
+
+    def segments(self, text, voice, speed):
+        import threading
+        import time
+
+        for _ in range(4):
+            time.sleep(0.01)
+            self.threads.append(threading.get_ident())
+            yield np.zeros(240, dtype=np.float32)
+
+
+def test_every_model_step_runs_on_one_thread_even_when_the_pool_is_busy():
+    import threading
+
+    eng = ThreadRecorder()
+    tts = KokoroTTS("clone:full", engine=eng, lock=_NoLock())
+
+    async def run():
+        busy = [asyncio.to_thread(__import__("time").sleep, 0.05) for _ in range(8)]   # other work in the pool
+        try:
+            await asyncio.gather(tts.synth("One. Two."), tts.synth("Three."), *busy)
+        finally:
+            await tts.close()
+
+    asyncio.run(run())
+    assert len(eng.threads) >= 9 and len(set(eng.threads)) == 1
+    assert eng.threads[0] != threading.get_ident()   # never the event loop's thread
