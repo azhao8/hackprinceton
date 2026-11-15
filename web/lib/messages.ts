@@ -56,6 +56,8 @@ export interface Status {
   vision: VisionInfo | null;
   /** Degrees the balance angle was shifted from this server (0 after a server restart; lost on a robot reboot). */
   trim_shift: number;
+  /** Miguel is listening for a command (after his name, a question of his, a tap, or wait_for_reply). */
+  listening: boolean;
 }
 
 /** One of the voice agent's events (contract/web/README.md, "Agent"): heard, say, reply, plan, step, task, check_in... */
@@ -168,6 +170,7 @@ function parseStatus(m: Record<string, unknown>): Status | null {
     skill: typeof m.skill === "string" ? m.skill : null,
     vision: parseVision(m.vision),
     trim_shift: num(m.trim_shift) ? m.trim_shift : 0,
+    listening: m.listening === true,
   };
 }
 

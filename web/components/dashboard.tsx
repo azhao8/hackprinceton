@@ -193,7 +193,7 @@ export function Dashboard() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <MiguelCard events={robot.agent} send={send} />
+        <MiguelCard events={robot.agent} listening={status?.listening ?? false} send={send} />
         <MemoryCard memory={robot.memory} send={send} />
       </div>
 
@@ -355,11 +355,14 @@ const AGENT_LABEL: Record<string, string> = {
 };
 
 /** The voice agent: talk to Miguel as the operator, watch what he hears, says and does. */
-function MiguelCard({ events, send }: { events: AgentEvent[]; send: (m: ClientMessage) => boolean }) {
+function MiguelCard({ events, listening, send }: { events: AgentEvent[]; listening: boolean; send: (m: ClientMessage) => boolean }) {
   const [text, setText] = useState("");
   const shown = events.filter((e) => e.kind !== "step").slice(-10).reverse();
   return (
     <Card title="Miguel (voice agent)" hint="Mom talks to him by saying “Miguel”; you can type here">
+      <div className="mb-2">
+        <Badge tone={listening ? "ok" : "muted"}>{listening ? "● Listening" : "Not listening"}</Badge>
+      </div>
       <form className="flex gap-2" onSubmit={(e) => {
         e.preventDefault();
         if (text.trim()) send({ t: "agent_message", text: text.trim() });
