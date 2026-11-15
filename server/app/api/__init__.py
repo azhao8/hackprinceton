@@ -150,6 +150,9 @@ AGENT_EVENTS_KEPT = 200   # for GET /agent/events
 AGENT_PHOTOS_KEPT = 20    # snapshots for reply events, in memory
 THIS_IS_NAME_MAX = 40     # NEW (#62) a person's name for /control/this-is (same cap as the this_is tool)
 FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real-IP")
+# /ws messages that move or change the robot: this laptop only (#69 review #1). STOP (estop on) isn't here.
+CONTROL_ONLY = {"estop", "joystick", "follow", "say", "settings", "key", "recalibrate", "trim", "arm",
+                "tray_loaded", "test_fall", "this_is", "memory_get", "memory_set"}
 
 # The control page's preset buttons.
 CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
@@ -530,13 +533,27 @@ def _num(d: dict, key: str, lim: float) -> float:
 
 
 def _local(request: web.Request) -> bool:
-    return request.remote in LOCAL
+    """This laptop, connecting directly: a tunnel or proxy on this laptop also connects from 127.0.0.1, so
+    any forwarding header means someone else's request (#69 review #1)."""
+    return request.remote in LOCAL and not any(h in request.headers for h in FORWARDED_HEADERS)
+
+
+def _lan(request: web.Request) -> bool:
+    """A device on our network (the hotspot) or this laptop, connecting directly: the robot's phone.
+    Never through a tunnel (#69 review #3)."""
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address((request.remote or "").split("%")[0])
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback) and not any(h in request.headers for h in FORWARDED_HEADERS)
 
 
 # NEW (#54) auth for the agent's routes.
 def _direct_local(request: web.Request) -> bool:
     """This laptop, and not a proxy or tunnel on this laptop passing someone else's request along."""
-    return _local(request) and not any(h in request.headers for h in FORWARDED_HEADERS)
+    return _local(request)   # _local is strict now; kept as a name for the callers that use it
 
 
 def _guardian(request: web.Request, state: ApiState) -> bool:
@@ -589,6 +606,8 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
 
     @routes.post("/auto")
     async def auto(request: web.Request) -> web.Response:
+        if not _lan(request):
+            raise web.HTTPForbidden()
         body = await _json(request)
         if state.phone_follow_active():
             state.arbiter.request(Source.SKILL, _num(body, "v", V_MAX), _num(body, "w", W_MAX))
@@ -662,6 +681,8 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.post("/frame")
     async def frame(request: web.Request) -> web.Response:
         """A JPEG from the phone's camera (server vision). The phone sends one at a time, ~12 a second."""
+        if not _lan(request):
+            raise web.HTTPForbidden()
         if state.phone_frames is None:
             raise web.HTTPNotFound()
         data = await request.read()
@@ -670,7 +691,10 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
 
     @routes.get("/video.mjpg")
     async def video(request: web.Request) -> web.StreamResponse:
-        """The server's view (the phone's frame with the server's boxes) as an MJPEG stream, for an <img>."""
+        """The server's view (the phone's frame with the server's boxes) as an MJPEG stream, for an <img>.
+        This laptop only: the family sees her only through a check-in she agreed to (/family/ws)."""
+        if not _local(request):
+            raise web.HTTPForbidden()
         if state.view_jpeg is None:
             raise web.HTTPNotFound()
         resp = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame",
@@ -698,6 +722,8 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
 
     @routes.post("/log")
     async def phone_log(request: web.Request) -> web.Response:
+        if not _lan(request):
+            raise web.HTTPForbidden()
         log.info("phone: %s", (await request.text())[:300])
         return web.json_response({})
 
@@ -830,8 +856,12 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                 if not isinstance(m, dict):
                     continue
                 t = m.get("t")
-                if t == "estop":
-                    state.estop(bool(m.get("on")))
+                if t == "estop" and bool(m.get("on")):
+                    state.estop(True)                # stopping is always allowed
+                elif t in CONTROL_ONLY and not local:
+                    log.warning("%s refused: not from this laptop (%s)", t, request.remote)
+                elif t == "estop":
+                    state.estop(False)
                 elif t == "joystick":
                     state.arbiter.request(Source.JOYSTICK, _num(m, "v", V_MAX), _num(m, "w", W_MAX))
                 elif t == "follow":
@@ -879,7 +909,12 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     if state.family is not None:
         app.add_routes(state.family.routes())   # /family/ws, /family/media (app/family.py)
     if state.mic is not None:   # NEW (#54): the phone's microphone stream, for the agent's hearing
-        app.router.add_get("/mic", state.mic)
+        async def mic(request: web.Request) -> web.StreamResponse:
+            if not _lan(request):        # the robot's phone on the hotspot, never through a tunnel
+                raise web.HTTPForbidden()
+            return await state.mic(request)
+
+        app.router.add_get("/mic", mic)
     if hasattr(state.hub, "on_voice"):   # NEW (voice latency): the phone reports when a line starts playing
         def on_voice(busy: bool, text: str | None, sid: int | None) -> None:
             if busy and (sid is not None or text):

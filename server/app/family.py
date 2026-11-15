@@ -60,6 +60,16 @@ def iso(t: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if t is None else t).astimezone().isoformat(timespec="seconds")
 
 
+_YES = re.compile(r"\b(yes|yeah|yep|yup|sure|ok|okay|alright|all right|go ahead|of course|absolutely|"
+                  r"please|sounds good|why not|let's|that's fine|fine)\b", re.IGNORECASE)
+_NO = re.compile(r"\b(no|nope|not|don't|do not|later|busy|stop|wait)\b", re.IGNORECASE)
+
+
+def said_yes(text: str) -> bool:
+    """Her words sound like agreeing (and not like refusing): the code's half of check-in consent."""
+    return bool(text and _YES.search(text) and not _NO.search(text))
+
+
 def wire_copy(d: dict[str, Any], drop: tuple[str, ...] = ()) -> dict[str, Any]:
     """A copy for the wire: no None values (the app's parser rejects null for optional fields, and one
     bad field drops the whole message) and fresh lists, so later in-place changes to the hub's own
@@ -273,9 +283,15 @@ class FamilyHub:
                 self._did("Told the family")
         elif kind == "check_in":
             self._check_in_answer(str(data.get("answer", text)))
-        elif kind == "say" and self.alert is not None and self.alert.get("status") == "active":
-            self._did(f"Said: {text}"[:120])
+        elif kind == "say":
+            if self.alert is not None and self.alert.get("status") == "active":
+                self._did(f"Said: {text}"[:120])
+            if self.check_in.get("phase") == "asking" and "asked_at" not in self.check_in:
+                self.check_in["asked_at"] = time.monotonic()   # he asked her: her answer must come after
         elif kind == "heard" and ev.get("data", {}).get("source", "senior") == "senior":
+            asked = self.check_in.get("asked_at")
+            if self.check_in.get("phase") == "asking" and asked is not None and said_yes(text):
+                self.check_in["heard_yes"] = True              # #5: a spoken yes from her, after the question
             if self.alert is not None and self.alert.get("status") == "active" and text:
                 self.alert["heard"] = text[:200]
             if self.check_in.get("phase") == "live" and text:
@@ -445,15 +461,23 @@ class FamilyHub:
             return
         if self.check_in.get("phase") != "asking":
             return
+        if answer == "yes" and not self.check_in.get("heard_yes"):
+            # #69 review #5: consent in code, not only the LLM's judgment. No spoken yes from her after
+            # the question (background talk, or someone telling the agent to say yes): declined.
+            log.warning("family: check-in 'yes' refused: no spoken yes from her after the question")
+            self._decline("She didn't say yes.")
+            return
         if answer == "yes":
             self.check_in.update(phase="live", started_at=iso(), t0=time.time())
             settings = getattr(self.state, "settings", None) or {}
             self._camera_before = settings.get("camera")
             self._follow_before = self._following()
+            busy = getattr(getattr(self.state, "skills", None), "running", None)
             try:
                 if hasattr(self.state, "set_follow"):
                     self.state.set_follow(False)
-                self.state.set_settings({"camera": "front"})   # look at her while they talk
+                if busy in (None, "follow"):   # not mid-delivery: switching cameras would turn him around
+                    self.state.set_settings({"camera": "front"})   # look at her while they talk
             except Exception:  # noqa: BLE001
                 log.exception("family: switching to the front camera failed")
             self._call_task = asyncio.get_running_loop().create_task(self._relay(self.check_in["id"]))

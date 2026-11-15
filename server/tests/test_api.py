@@ -546,3 +546,34 @@ def test_recalibrate_only_when_not_balancing():
     assert not state.recalibrate() and link.sent == []
     link.telemetry = {"t": "tel", "state": "idle"}
     assert state.recalibrate() and link.sent == ["c"]
+
+
+def test_a_tunnel_on_this_laptop_is_not_this_laptop():
+    """#69 review #1/#3: a proxy on the laptop connects from 127.0.0.1 but adds forwarding headers."""
+    async def go():
+        link = TrimLink()
+        link.telemetry = {"t": "tel", "state": "idle"}
+        arb = Arbiter()
+        state = ApiState(arb, link, view_jpeg=lambda: b"\xff\xd8x")
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+        tunnel = {"CF-Connecting-IP": "203.0.113.9"}
+        assert (await client.get("/video.mjpg", headers=tunnel)).status == 403
+        assert (await client.post("/frame", data=b"x", headers=tunnel)).status == 403
+        assert (await client.post("/auto", json={"v": 0.3}, headers=tunnel)).status == 403
+        assert (await client.post("/control/stop", headers=tunnel)).status == 403
+        ws = await client.ws_connect("/ws", headers=tunnel)
+        for m in ({"t": "arm"}, {"t": "joystick", "v": 0.5, "w": 0}, {"t": "key", "letter": "F"},
+                  {"t": "settings", "speed": 3.0}, {"t": "trim", "steps": -4}, {"t": "estop", "on": False}):
+            await ws.send_json(m)
+        await ws.send_json({"t": "estop", "on": True})      # stopping is always allowed
+        await asyncio.sleep(0.1)
+        assert link.sent == [] and state.settings["speed"] != 3.0 and arb.estopped
+        await ws.close()
+        ws = await client.ws_connect("/ws")                  # this laptop, directly
+        await ws.send_json({"t": "estop", "on": False})
+        await asyncio.sleep(0.1)
+        assert not arb.estopped
+        await ws.close()
+        await client.close()
+    asyncio.run(go())

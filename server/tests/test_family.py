@@ -50,6 +50,13 @@ def hub(tmp_path, **kw) -> tuple[FamilyHub, FakeState]:
     return FamilyHub(st, Memory(tmp_path / "m.db"), snapshot=lambda: b"\xff\xd8jpeg", token="secret", **kw), st
 
 
+def she_says_yes(h: FamilyHub, words: str = "Yes, sure!") -> None:
+    """Miguel asks, Mom answers out loud, then the agent records yes (the consent check needs all three)."""
+    h.on_agent_event({"kind": "say", "text": "Sarah would like to check in. Is now a good time?", "data": {}})
+    h.on_agent_event({"kind": "heard", "text": words, "data": {"source": "senior"}})
+    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+
+
 async def connect(h: FamilyHub, token: str = "secret", viewer: str = "m1"):
     app = web.Application()
     app.add_routes(h.routes())
@@ -74,7 +81,7 @@ async def nothing(ws, t: str, seconds: float = 0.6) -> bool:
 async def go_live(h: FamilyHub, ws) -> None:
     await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
     await until(ws, "ack")
-    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+    she_says_yes(h)
     await until(ws, "frame")
 
 
@@ -147,7 +154,7 @@ def test_check_in_sends_video_only_after_she_says_yes(tmp_path):
         assert h.check_in["phase"] == "asking"
         await ws.send_json({"t": "rtc", "call": "x", "sdp": {"type": "offer", "sdp": ""}})
         assert (await until(ws, "error"))["code"] == "no_consent"
-        h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+        she_says_yes(h)
         frame = await until(ws, "frame")
         assert frame["call"] == h.check_in["id"] and st.settings["camera"] == "front" and st.follow is False
         await ws.send_json({"t": "check_in", "ref": "e", "action": "end"})
@@ -480,7 +487,7 @@ def test_a_camera_error_doesnt_stop_the_calls_video(tmp_path):
         client, ws = await connect(h)
         await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
         await until(ws, "ack")
-        h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+        she_says_yes(h)
         assert (await until(ws, "frame"))["jpeg"]
         await client.close()
     asyncio.run(go())
@@ -506,3 +513,35 @@ def test_alert_did_keeps_the_latest_lines(tmp_path):
         h._did(f"Said: line {i}")
     h._did("Said: line 19")
     assert h.alert["did"] == [f"Said: line {i}" for i in range(12, 20)]
+
+
+def test_a_check_in_mid_delivery_keeps_the_camera(tmp_path):
+    """#69 review #4: switching to the front camera mid-bring would turn his forward around."""
+    h, st = hub(tmp_path)
+    st.skills.running = "bring"
+
+    async def go():
+        h.check_in = {"phase": "asking", "id": "c1", "by": "Sarah"}
+        she_says_yes(h)
+        h._end_call("test")
+    asyncio.run(go())
+    assert st.settings["camera"] == "back"
+
+
+
+def test_a_yes_needs_her_spoken_yes(tmp_path):
+    """#69 review #5: the agent's yes alone doesn't start the video."""
+    from app.family import said_yes
+
+    h, _ = hub(tmp_path)
+    h.check_in = {"phase": "asking", "id": "c1", "by": "Sarah"}
+    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})   # nobody said anything
+    assert h.check_in["phase"] == "declined"
+    h.check_in = {"phase": "asking", "id": "c2", "by": "Sarah"}
+    h.on_agent_event({"kind": "heard", "text": "yes", "data": {"source": "senior"}})    # before the question
+    h.on_agent_event({"kind": "say", "text": "Is now a good time?", "data": {}})
+    h.on_agent_event({"kind": "heard", "text": "Not now, I'm busy.", "data": {"source": "senior"}})
+    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})
+    assert h.check_in["phase"] == "declined"
+    assert said_yes("Yeah, go ahead") and said_yes("okay sure") and not said_yes("no, not now")
+    assert not said_yes("wait") and not said_yes("")
