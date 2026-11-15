@@ -91,3 +91,21 @@ def test_drive_loop_moves_the_armed_mock_and_estop_stops_it():
         mock.cancel()
 
     asyncio.run(scenario())
+
+
+def test_trim_goes_in_one_packet():
+    link = UdpLink("127.0.0.1", 9)
+    sent = []
+    link._send = sent.append
+    link.send_trim(-3)
+    link.send_trim(2)
+    link.send_trim(0)
+    assert sent == [b"yyy", b"tt"]
+
+
+def test_mock_robot_shifts_its_trim():
+    from mock.robot import TRIM, MockRobot
+    robot = MockRobot()
+    for c in "yyyyt":
+        robot.handle_char(c, 0.0)
+    assert robot.trim == pytest.approx(TRIM - 0.75)

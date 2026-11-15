@@ -28,7 +28,8 @@ log = logging.getLogger("app.link")
 
 PORT = 4210
 FRESH_S = 0.5            # telemetry or ack older than this means the link is down
-ALLOWED_LETTERS = set("xP5LRFB")   # never "g": a person arms the robot
+ALLOWED_LETTERS = set("xP5LRFBty")   # never "g": a person arms the robot. t/y: trim +/- 0.25 deg
+TRIM_STEP_DEG = 0.25
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,12 @@ class UdpLink:
         if letter not in ALLOWED_LETTERS:
             raise ValueError(f"the server may not send {letter!r} (allowed: {''.join(sorted(ALLOWED_LETTERS))})")
         self._send(letter.encode())
+
+    def send_trim(self, steps: int) -> None:
+        """Shift the balance angle (trim) by steps x 0.25 deg: t raises it, y lowers it. One packet, so
+        a lost packet loses all of them (the control page shows what was sent) rather than some."""
+        if steps:
+            self._send(('t' if steps > 0 else 'y').encode() * abs(steps))
 
     def arm(self) -> None:
         """Send g (start balancing). Only for a person's explicit press on this laptop's control page,

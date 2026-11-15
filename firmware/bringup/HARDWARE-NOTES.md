@@ -103,6 +103,13 @@ How it got there: wrong trim (-1.25 → +0.5) made it park 30–40 cm short; smo
 - Hands-off balancing with trim +3.5° averaged **+5.66°** (range +5.2..+6.1) while holding position, which is the real balance point. Trim is now **+5.6°**, the default in balance.ino.
 - Lesson: after any change on the mast, balance hands-off and average the pitch while it holds still. That's quicker and more accurate than the locked-wheel test.
 
+## Kickstand removed (Nov 14, ~9 PM): new balance point −3.65°
+- With +5.6° it refused to start (g needs the tilt within 6° of the trim) and lost balance ~11 s after starting.
+- Fingertip test, motors off, read over Wi-Fi: holds at −3.25, −2.89, −3.86 (mean −3.2).
+- Balancing hands-off, the held tilt stayed near −3.8° while the trim was moved anywhere from about −3° to −10°. Moving the trim up 0.25° at a time, the held tilt followed it (−3.9 → −3.1) without the robot moving: the tires let it rest over about ±1°, so the held tilt only pins the balance point to about −3.5 ± 0.5°.
+- Trim is now **−3.65°**, the default in balance.ino (uploaded and confirmed with `p`).
+- Park and the 30-minute auto-park still lean onto the kickstand: they tip it over now. Hold it and cut the motors instead.
+
 ## Camera follow (Nov 14, morning)
 - Video: the robot's iPhone as a **Continuity Camera** ("John's iPhone Camera"): no hotspot or network needed, but the phone must be on John's Apple ID, nearby, with Wi-Fi and Bluetooth on. Programs need an Info.plist with `NSCameraUseContinuityCameraDeviceType` to see it (built into `follow/`). Frames are 1920x1080, upright; the rear camera faces the battery side (robot front).
 - `balance/follow/follow` (Swift, `./build.sh`): Apple Vision upper-body person detection, or `--yellow` for a bright yellow object (hue 45–70°, saturation ≥ 0.5; 0 false pixels in this room). Posts speed and turn to drive.py's `/auto`; drive.py passes them on only while **Follow is ON (F)**; held keys override; X stops. Flags: `--dry`, `--turn-only`, `--distance`, `--camera-back`, `--rotate`.

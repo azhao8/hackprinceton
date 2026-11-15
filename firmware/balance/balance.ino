@@ -76,7 +76,7 @@ const float I_LIM = 1.0f;      // m/s^2, about 2.3 deg of lean (was 1.5: wound u
 const float VT_ACC = 0.5f;     // m/s^2: drive commands ramp the target speed this fast (was 0.4)
 float FF_CREEP = 0.6f;         // deg toward the target when >3 cm off while holding. 1.75 without the phone; with it, that rocked at 0.45 Hz
 float FF_RR = 0.5f;            // deg of extra lean while moving (rolling resistance). 1.25 without the phone
-float trim = 5.6f;             // deg. Phone tilted up for person-follow: balances hands-off at a mean +5.66 (was -1.25 untilted, +0.5 no phone), Nov 14
+float trim = -3.65f;            // deg. Kickstand removed (Nov 14, 9 pm): fingertip test -3.2, balancing holds -3.1..-3.9 (tires let it rest over ~1 deg), set live over Wi-Fi to -3.65. Was +5.6 with the kickstand and the phone tilted up
 
 // ---------- step generation (DDS in a timer interrupt)
 volatile uint32_t incR = 0, incL = 0;      // phase increment per tick (0 = stopped)

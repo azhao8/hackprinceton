@@ -23,8 +23,10 @@ The phone page keeps the endpoints it already used with phone_server.py, so it w
 WebSocket `/ws` (dashboard; messages in contract/web/): the server sends the robot's `tel` about
 10 times a second; it accepts `{"t":"estop","on":bool}`, `{"t":"joystick","v":..,"w":..}`,
 `{"t":"follow","on":bool}`, `{"t":"say","text":..}`, `{"t":"settings", mode?, speed?, distance?, voice?}`,
-`{"t":"key","letter":"x|P|5|L|R|F|B"}` and `{"t":"arm"}` (start balancing; this laptop only, decision 0054).
-It also sends `{"t":"status", follow, link, estop, settings, vision, face, tts, lag_ms, skill}` about twice a second.
+`{"t":"key","letter":"x|P|5|L|R|F|B"}`, `{"t":"arm"}` (start balancing; this laptop only, decision 0054) and
+`{"t":"trim","steps":n}` (shift the balance angle by n x 0.25 deg; this laptop only; more than one step only
+while the robot isn't balancing). It also sends `{"t":"status", follow, link, estop, settings, vision, face,
+tts, trim_shift, lag_ms, skill}` about twice a second.
 
 Follow settings (mode person/yellow, speed cap, stop distance, voice on/off) live here and are set
 from the control page (`POST /control/settings`, localhost only) or the WebSocket; the phone page
@@ -45,7 +47,7 @@ from typing import Any
 from aiohttp import WSMsgType, web
 
 from app.arbiter import Arbiter, Source
-from app.link import RobotLink
+from app.link import TRIM_STEP_DEG, RobotLink
 
 log = logging.getLogger("app.api")
 
@@ -54,6 +56,7 @@ PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "tra
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 0.6, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
+TRIM_MAX_STEPS = 60           # one request moves the balance angle at most 15 deg
 
 # Follow settings, set on the control page and read by the phone page (decision 0053).
 # Ranges and defaults are John's from the phone page (MODES in index.html).
@@ -124,6 +127,7 @@ class ApiState:
     vision_debug: Any = None    # () -> dict: what vision sees right now (people, box widths, shoulder gaps)
     face: Any = None            # () -> dict: the phone face's gaze target and latest follow event
     follow: bool = False
+    trim_shift: float = 0.0     # deg the balance angle was shifted from this server (lost when the robot reboots)
     say: list[dict] = field(default_factory=list)
     settings: dict = field(default_factory=default_settings)
 
@@ -192,6 +196,26 @@ class ApiState:
         log.info("key %s", letter)
         return True
 
+    def trim(self, steps: Any) -> bool:
+        """Shift the robot's balance angle by steps x 0.25 deg over the link (firmware t / y). While it
+        balances, only one step at a time: a big jump in the target angle makes it lurch."""
+        send_trim = getattr(self.link, "send_trim", None)
+        if send_trim is None or isinstance(steps, bool) or not isinstance(steps, int) or steps == 0:
+            return False
+        steps = max(-TRIM_MAX_STEPS, min(TRIM_MAX_STEPS, steps))
+        tel = self.link.telemetry or {}
+        if tel.get("state") in ("balance", "drive") and abs(steps) > 1:
+            log.warning("trim %+d steps refused: the robot is balancing (one 0.25 deg step at a time)", steps)
+            return False
+        try:
+            send_trim(steps)
+        except Exception as e:
+            log.warning("trim failed: %s", e)
+            return False
+        self.trim_shift = round(self.trim_shift + steps * TRIM_STEP_DEG, 2)
+        log.info("balance angle shifted %+.2f deg (total %+.2f deg from this server)", steps * TRIM_STEP_DEG, self.trim_shift)
+        return True
+
     def arm(self) -> bool:
         """Start balancing (g): only from this laptop, on a person's press (decision 0054)."""
         arm = getattr(self.link, "arm", None)
@@ -220,7 +244,7 @@ class ApiState:
         return {"tel": self.link.telemetry, "follow": self.following(), "link": self.link.health().ok,
                 "vision": vision, "face": self.face() if self.server_vision and self.face is not None else None,
                 "estop": self.arbiter.estopped, "settings": self.settings,
-                "tts": self.tts is not None}
+                "tts": self.tts is not None, "trim_shift": self.trim_shift}
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -427,6 +451,11 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
                     state.set_settings(m)
                 elif t == "key":
                     state.key(str(m.get("letter", "")))
+                elif t == "trim":
+                    if local:
+                        state.trim(m.get("steps"))
+                    else:
+                        log.warning("trim refused: not from this laptop (%s)", request.remote)
                 elif t == "arm":
                     if local:
                         state.arm()

@@ -91,7 +91,7 @@ export class FakeRobot {
     // Degrees, like the real robot (contract v1).
     return {
       t: "tel",
-      pitch: round(5.6 + this.pitch + noise, 2),
+      pitch: round(-3.65 + this.pitch + noise, 2),
       rate: round(rate, 1),
       vl: round(this.vl, 3),
       vr: round(this.vr, 3),

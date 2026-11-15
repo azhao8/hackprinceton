@@ -20,7 +20,7 @@ describe("FakeRobot", () => {
     const robot = new FakeRobot(7);
     const seen = Array.from({ length: 15 / DT }, () => robot.step(DT));
     expect(seen.some((t) => t.state === "drive")).toBe(true);
-    const offTrim = seen.map((t) => Math.abs(t.pitch - 5.6));   // degrees around the trim, like the robot
+    const offTrim = seen.map((t) => Math.abs(t.pitch + 3.65));   // degrees around the trim, like the robot
     expect(Math.max(...offTrim)).toBeGreaterThan(0.1);
     expect(Math.max(...offTrim)).toBeLessThan(5);
   });
