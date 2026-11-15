@@ -37,6 +37,14 @@ Voice latency (Sat Nov 14):
   and is left out of the history.
 - The first `say` of a task carries `data.timing` (monotonic stage times: speech end, transcript,
   Claude's first text, the say) for the server's per-turn timing log.
+- Every spoken line loses its emojis and markdown first (spoken.py), and a `say` call that only
+  repeats what this response's streamed text already said is not said twice.
+
+Local model (#81, `MIGUEL_LLM=local`, local_llm.py): the same loop on a model served by Ollama,
+through a client that converts the requests. Differences: no prompt-cache breakpoints, effort or
+fallbacks (ignored); the warm-up at start sends two 1-token requests with the real system prompt and
+tools, then keeps the model loaded; the history is append-only (Ollama's cache reuses the prefix)
+and is cut by half, at once, only when a call's context passes LOCAL_TRIM_AT of num_ctx.
 """
 
 from __future__ import annotations
@@ -70,7 +78,9 @@ from app.brain.prompt import (
     get_client,
     stream_message,
 )
-from app.brain.tools import ToolBox
+from app.brain.local_llm import NUM_CTX, backend, is_local
+from app.brain.spoken import clean_spoken
+from app.brain.tools import ToolBox, ToolOutcome
 from app.brain.types import AgentEvent, EventKind, Source, Utterance
 
 log = logging.getLogger(__name__)
@@ -101,6 +111,16 @@ def _label(u: Utterance, working: bool = False) -> str:
     channel = u.meta.get("channel") or DEFAULT_CHANNEL.get(u.source, "?")
     notes = [n for n in (_VIA_NOTES.get(u.meta.get("via")), "while you were working" if working else None) if n]
     return f"[{u.source} via {channel}{''.join(', ' + n for n in notes)}] {u.text}"
+
+
+LOCAL_TRIM_AT = 0.75   # local model: cut the history once a call's context passes this share of num_ctx
+
+# The warm-up's user turns (local model): two different ones, so Ollama learns where the shared prefix ends.
+_WARM_UPS = ("[senior via mic] Miguel, what time is it?", "[guardian via app] How is Mom doing today?")
+
+
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9']+", text.lower()))
 
 
 _ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "vs", "etc", "jr", "sr", "e.g", "i.e", "approx"}
@@ -217,6 +237,7 @@ class _TaskState:
     steps: dict[int, str] = field(default_factory=dict)   # index -> "running" | "done" | "failed"
     marks: dict[str, float] = field(default_factory=dict) # timing: speech_end, final, llm_start, first_text
     timed: bool = False                                   # the first say already carried the timing
+    streamed: list[str] = field(default_factory=list)     # lines of this round's text already said
 
 
 class Agent:
@@ -279,6 +300,7 @@ class Agent:
         self._interject = asyncio.Event()
         self._reply_waiter: asyncio.Future[Utterance | None] | None = None
         self._stop_note: str | None = None
+        self._ctx_tokens = 0   # local model: the last call's prompt + output tokens (for trimming)
         self._generation = 0   # bumped by reset_conversation: older tasks don't write history back
         tools.bind(self)
 
@@ -289,6 +311,11 @@ class Agent:
         if self._client is None:
             self._client = get_client()
         return self._client
+
+    @property
+    def local(self) -> bool:
+        """True when the brain runs on the local model (MIGUEL_LLM=local, or a local client given)."""
+        return is_local(self._client) if self._client is not None else backend() == "local"
 
     @property
     def events(self) -> list[AgentEvent]:
@@ -320,7 +347,7 @@ class Agent:
 
     async def run(self) -> None:
         """Consume the inbox forever (and keep the prompt cache warm, see keepalive_s)."""
-        if self.keepalive_s > 0 and self._warm_task is None:
+        if (self.keepalive_s > 0 or self.local) and self._warm_task is None:   # local: always warm up once
             self._warm_task = asyncio.create_task(self._keep_warm(), name="agent-cache-warm")
         while True:
             u = await self.inbox.get()
@@ -388,6 +415,7 @@ class Agent:
         self._stop_note = None
         forgot = len(self._history)
         self._history.clear()
+        self._ctx_tokens = 0
         log.info("agent: conversation reset (forgot %d exchanges, dropped %d queued messages)",
                  forgot, dropped)
 
@@ -405,6 +433,12 @@ class Agent:
     def emit(self, kind: EventKind, text: str = "", *, to: Source | None = None,
              data: dict[str, Any] | None = None) -> AgentEvent:
         data = dict(data or {})
+        if kind == "say":   # nothing the voice would read out as symbols
+            spoken = clean_spoken(text)
+            if not spoken:
+                log.info("agent: nothing left to say in %r after removing emojis and markdown", text[:80])
+                return AgentEvent(0, kind, "", to, data)   # not published
+            text = spoken
         st = self._state
         if kind == "say" and st is not None and not st.timed and not data.get("ack"):
             st.timed = True   # the task's first real line: carries the stage times for the timing log
@@ -485,6 +519,7 @@ class Agent:
         status, summary, keep = "done", "", True
         try:
             for rounds in range(self.max_rounds):
+                st.streamed = []
                 speech = _Sentences(lambda line: self._speak_streamed(st, line))
                 resp = await self._call(ex, effort, st, speech)
                 stop_reason = resp.stop_reason
@@ -531,7 +566,8 @@ class Agent:
         except anthropic.APIError as e:
             status, summary = "failed", f"LLM call failed: {type(e).__name__}"
             log.warning("agent: %s", e)
-            self.emit("error", f"Claude API error: {type(e).__name__}: {getattr(e, 'message', e)}")
+            self.emit("error", f"{'Local model' if self.local else 'Claude API'} error: "
+                               f"{type(e).__name__}: {getattr(e, 'message', e)}")
             self._tell(st, "Sorry, my brain isn't connected right now.")
             self._close_dangling(ex, "Not run: the API call failed.")
         except Exception as e:  # noqa: BLE001
@@ -552,6 +588,7 @@ class Agent:
         Not when Claude already used say() in this task: then its text is only a log note."""
         if st.requester != "guardian" and not st.said:
             self.emit("say", line, to="senior", data={"streamed": True})
+            st.streamed.append(line)
 
     def _params(self, effort: str) -> dict[str, Any]:
         """What every call shares, byte for byte: model, tools, system prompt (cached), effort."""
@@ -571,9 +608,12 @@ class Agent:
 
     async def prewarm(self) -> bool:
         """Write or refresh the cached prefix (tools, system prompt, the conversation so far) with a
-        max_tokens=0 request: nothing is generated, it bills a cache write or read. True if it ran."""
+        max_tokens=0 request: nothing is generated, it bills a cache write or read. True if it ran.
+        Local model: the first time, two warm-up requests (see _WARM_UPS); later, keep it loaded."""
         if self.busy:
             return False
+        if self.local:
+            return await self._prewarm_local()
         history = [m for exchange in self._history for m in exchange]
         self._last_call = time.monotonic()
         try:
@@ -591,8 +631,30 @@ class Agent:
         self._log_usage(resp, self._last_call, None, "cache warm-up")
         return True
 
+    async def _prewarm_local(self) -> bool:
+        client = self.client
+        self._last_call = time.monotonic()
+        try:
+            if getattr(client, "warmed", True):
+                await client.keep_loaded()
+                return True
+            memory = f"World memory: {self.tools.memory_summary()}"
+            # the same system prompt and tools as every task; user turns shaped like a real request's
+            times = await client.warm_up([{"type": "text", "text": SYSTEM_PROMPT}], self.tools.definitions(),
+                                         [f"{u}\n\n{memory}" for u in _WARM_UPS])
+        except Exception as e:  # noqa: BLE001 - warming is an optimization; never break the brain for it
+            log.info("llm warm-up (local) failed: %s: %s", type(e).__name__, getattr(e, "message", e))
+            return False
+        finally:
+            self._last_call = time.monotonic()
+        log.info("llm warm-up (local %s): %s", getattr(client, "model", "?"),
+                 " + ".join(f"{1000 * t:.0f} ms" for t in times))
+        return True
+
     async def _keep_warm(self) -> None:
         await self.prewarm()
+        if self.keepalive_s <= 0:   # local model with keep-alive off: the one warm-up only
+            return
         while True:
             await asyncio.sleep(min(5.0, self.keepalive_s))
             if not self.busy and time.monotonic() - self._last_call >= self.keepalive_s:
@@ -638,6 +700,19 @@ class Agent:
              ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")}
         self.last_usage = u
         first = st.marks.get("first_text") if st is not None else None
+        if getattr(usage, "local", False):   # Ollama: the whole prompt is "in"; its read time shows the cache
+            self._ctx_tokens = u["input_tokens"] + u["output_tokens"]
+            eval_ms = getattr(usage, "eval_ms", 0) or 0
+            load_ms = getattr(usage, "load_ms", 0) or 0
+            log.info("%s: %d ms%s; tokens: %d in (read in %d ms%s), %d out (%s); stop %s; local %s",
+                     what, 1000 * (time.monotonic() - t0),
+                     f" (first text at {1000 * (first - t0):.0f} ms)" if first is not None and first >= t0 else "",
+                     u["input_tokens"], getattr(usage, "prompt_ms", 0) or 0,
+                     f", load {load_ms:.0f} ms" if load_ms > 50 else "",
+                     u["output_tokens"],
+                     f"{1000 * u['output_tokens'] / eval_ms:.0f} tok/s" if eval_ms > 0 else "-",
+                     getattr(resp, "stop_reason", "?"), getattr(resp, "model", "?"))
+            return
         log.info("%s: %d ms%s; tokens: %d new + %d cache read + %d cache write in, %d out; stop %s",
                  what, 1000 * (time.monotonic() - t0),
                  f" (first text at {1000 * (first - t0):.0f} ms)" if first is not None and first >= t0 else "",
@@ -654,7 +729,12 @@ class Agent:
             self._step_running(st, step, name)
         else:
             step = None
-        out = await self.tools.call(name, args)
+        said = _words(str(args.get("text", ""))) if name == "say" else ""
+        if said and st.streamed and said in _words(" ".join(st.streamed)):
+            # the response's text already said it (qwen often writes the line and also calls say)
+            out = ToolOutcome(True, "Said it out loud.", {"text": args.get("text"), "repeat": True})
+        else:
+            out = await self.tools.call(name, args)
         if name == "set_plan" and out.ok:
             st.plan, st.steps = list(out.data.get("steps", [])), {}
         elif name == "say" and out.ok:
@@ -739,7 +819,15 @@ class Agent:
                 exchange.append({"role": "user", "content": [{"type": "text", "text": self._stop_note}]})
             self._history.append(exchange)
         self._stop_note = None
-        if len(self._history) > self.history_exchanges:   # trim in a chunk: the cached prefix moves rarely
+        if self.local:
+            # Ollama re-reads everything after the first change, so keep the history append-only and
+            # cut it only near the context limit, by half at once.
+            if self._ctx_tokens > LOCAL_TRIM_AT * NUM_CTX and len(self._history) > 1:
+                cut = len(self._history) // 2
+                del self._history[:cut]
+                log.info("agent: context at %d of %d tokens; dropped the oldest %d tasks", self._ctx_tokens, NUM_CTX, cut)
+                self._ctx_tokens = 0
+        elif len(self._history) > self.history_exchanges:   # trim in a chunk: the cached prefix moves rarely
             del self._history[: len(self._history) - (self.history_exchanges - self.history_trim)]
         if self._state is st:
             self._state = None

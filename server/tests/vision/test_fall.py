@@ -54,7 +54,7 @@ def test_watcher_raises_only_when_claude_agrees():
         def update(self, p):
             return "lying down"
 
-    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, confirm=confirm, detector=Always())
+    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=confirm, detector=Always())
     assert asyncio.run(w.check_once()) is False and raised == []
     assert asyncio.run(w.check_once()) is True and raised == ["a woman is lying on the floor"]
 
@@ -69,7 +69,7 @@ def test_watcher_raises_when_claude_is_unreachable():
         def update(self, p):
             return "lying down"
 
-    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, confirm=broken, detector=Always())
+    w = FallWatcher(lambda: perception(person(False)), lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=broken, detector=Always())
     assert asyncio.run(w.check_once()) is True and raised == ["lying down"]
 
 
@@ -113,7 +113,7 @@ def test_cooldown_starts_only_after_a_confirmed_alert():
         return next(answers)
 
     current = [None]
-    w = FallWatcher(lambda: current[0], lambda: b"jpeg", raised.append, confirm=confirm, detector=d)
+    w = FallWatcher(lambda: current[0], lambda: b"jpeg", raised.append, clip_gap_s=0, confirm=confirm, detector=d)
 
     def step(p, dt=0.2):
         t[0] += dt
@@ -181,3 +181,31 @@ def test_one_fall_gives_one_alert_until_she_gets_up():
     assert hold_down(d, t, HOLD_S + 0.4) is None
     stand_up(d, t, REARM_S + 0.5)                        # really up: re-armed
     assert hold_down(d, t, HOLD_S + 0.4) is not None     # a new fall alerts again
+
+
+# --- #81: the confirmation looks at a short clip ---------------------------------------------------
+
+def test_confirmation_looks_at_a_short_clip():
+    raised, seen = [], []
+    frames = iter([b"f1", b"f2", b"f2", b"f3"])
+
+    async def confirm(clip):
+        seen.append(clip)
+        return "yes, she is lying on the floor"
+
+    class Always(FallDetector):
+        def update(self, p):
+            return "lying down"
+
+    w = FallWatcher(lambda: perception(person(False)), lambda: next(frames), raised.append, clip_gap_s=0,
+                    clip_frames=4, confirm=confirm, detector=Always())
+    assert asyncio.run(w.check_once()) is True
+    assert seen == [[b"f1", b"f2", b"f3"]]          # oldest first; an unchanged frame is skipped
+    assert raised == ["she is lying on the floor"]
+
+
+def test_default_clip_is_three_frames_a_third_of_a_second_apart():
+    from app.vision.fall import CLIP_FRAMES, CLIP_GAP_S
+
+    w = FallWatcher(lambda: None, lambda: None, lambda s: None)
+    assert (w.clip_frames, w.clip_gap_s) == (CLIP_FRAMES, CLIP_GAP_S) == (3, 0.3)

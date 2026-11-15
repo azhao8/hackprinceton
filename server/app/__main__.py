@@ -665,7 +665,23 @@ class ViewEncoder:
 
 
 def make_tts() -> Any:
-    """Cartesia text-to-speech for the phone's voice, or None: the phone then uses Safari's built-in voice."""
+    """The phone's voice: Cartesia (default), or Kokoro on this Mac with MIGUEL_TTS=local (#81).
+    The local voice falls back to Cartesia when its model is missing; None means Safari's built-in voice."""
+    choice = (os.environ.get("MIGUEL_TTS") or "cartesia").strip().lower()
+    if choice == "local":
+        try:
+            from app.speech.tts_local import KokoroTTS
+
+            local = KokoroTTS.from_env()   # None, with a log line saying why, if the model is missing
+        except Exception as e:   # broken install: run without it
+            log.warning("voice: local voice unavailable (%s)", e)
+            local = None
+        if local is not None:
+            log.info("voice: local (Kokoro, voice %s); loading in the background", local.voice)
+            return local
+        log.warning("voice: MIGUEL_TTS=local but the local voice is unavailable; trying Cartesia")
+    elif choice != "cartesia":
+        log.warning("voice: MIGUEL_TTS=%r is not 'local' or 'cartesia'; using Cartesia", choice)
     try:
         from app.speech.tts import CartesiaTTS
 
@@ -827,12 +843,19 @@ def make_memory() -> Any:
     return Memory(**({"path": path} if path else {}), seed_places=places.places(), seed_aliases=places.ALIASES)
 
 
+def brain_available() -> bool:
+    """Claude has a key, or the brain runs on the local model (MIGUEL_LLM=local, #81), which needs none."""
+    from app.brain.local_llm import backend
+
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) or backend() == "local"
+
+
 def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, registry: Any = None,
                memory: Any = None) -> Any:
     """The brain's Agent wired to this server, or None (no ANTHROPIC_API_KEY, or the brain is broken).
     `registry`: the one PeopleRegistry, for find_person, bring and the this_is tool."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        log.info("agent: off (ANTHROPIC_API_KEY not set)")
+    if not brain_available():
+        log.info("agent: off (ANTHROPIC_API_KEY not set, and MIGUEL_LLM isn't local)")
         return None
     try:
         from app.brain.agent import Agent
@@ -863,12 +886,29 @@ def make_agent(app: App, state: Any, follow_factory: Callable[[], Any] | None, r
 
 def make_hearing(state: Any, wake_word: str | None) -> Any:
     """The phone's /mic, through speech-to-text into the agent's inbox; returns the STT (to close) or None.
-    Without CARTESIA_API_KEY /mic is still mounted and drops the audio, so the phone page works the same."""
+    MIGUEL_STT picks it: cartesia (default) or local (Parakeet + Silero on this Mac, app/speech/stt_local.py;
+    if its packages or model are missing it says so and uses Cartesia when there is a key).
+    Without any STT /mic is still mounted and drops the audio, so the phone page works the same."""
     try:
         from app.speech.mic import make_mic_handler
         from app.speech.stt import CartesiaSTT
 
-        stt = CartesiaSTT.from_env()
+        choice = (os.environ.get("MIGUEL_STT") or "cartesia").strip().lower()
+        if choice not in ("cartesia", "local"):
+            log.warning("hearing: MIGUEL_STT=%r is not cartesia or local: using cartesia", choice)
+            choice = "cartesia"
+        stt: Any = None
+        if choice == "local":
+            from app.speech.stt_local import LocalSTT
+
+            stt = LocalSTT.from_env(fallback=CartesiaSTT.from_env)   # Cartesia only if loading fails later
+            if stt is None:
+                log.warning("hearing: local speech-to-text unavailable (see above); trying Cartesia")
+                choice = "cartesia"
+            else:
+                stt.start_loading()          # load and warm up in the background
+        if stt is None:
+            stt = CartesiaSTT.from_env()
         state.mic = make_mic_handler(stt, state.agent_inbox, wake_word=wake_word)
     except Exception as e:
         log.warning("hearing: off (%s)", e)
@@ -876,7 +916,7 @@ def make_hearing(state: Any, wake_word: str | None) -> Any:
     if stt is None:
         log.info("hearing: off (CARTESIA_API_KEY not set); /mic drops the phone's audio")
     else:
-        log.info("hearing: on, /mic (wake word: %s)", wake_word or "none")
+        log.info("hearing: on (%s), /mic (wake word: %s)", choice, wake_word or "none")
     return stt
 
 
@@ -939,7 +979,7 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
             runner, _ = await api.start(state, args.http_port, args.https_port or None)
             if agent is not None:
                 app.start_background(agent.run(), "agent")
-            if vision is not None and state.family is not None and os.environ.get("ANTHROPIC_API_KEY"):
+            if vision is not None and state.family is not None and brain_available():
                 from app.vision import fall
 
                 if fall.enabled():   # FALL_DETECT=0 turns it off

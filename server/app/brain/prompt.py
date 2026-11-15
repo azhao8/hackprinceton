@@ -12,6 +12,8 @@ Model settings (from the claude-api skill, Nov 2026):
   `MIGUEL_LLM_FALLBACKS=0` or `fallbacks=False` on `Agent` / the vision helpers.
 - The agent streams (`client.beta.messages.stream`), so Miguel can speak his first sentence while
   Claude is still writing the rest (`stream_message`).
+- `MIGUEL_LLM=local` swaps Claude for a local model through Ollama (`get_client`, local_llm.py, #81):
+  the same requests, converted; the Anthropic-only settings below are ignored there.
 - Effort per task without breaking the prompt cache: the top-level effort stays at EFFORT_CHAT
   and each task says its effort in an empty `role: "system"` message right after its user message
   (beta `mid-conversation-output-config-2026-07-01`). Changing the top-level effort between
@@ -69,14 +71,17 @@ def effort_for(text: str, source: str) -> str:
     return EFFORT_CHAT
 
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: Any = None
 
 
-def get_client() -> anthropic.AsyncAnthropic:
-    """The shared async client, created on first use (reads ANTHROPIC_API_KEY from the env)."""
+def get_client() -> Any:
+    """The shared async client, created on first use: an AsyncAnthropic (reads ANTHROPIC_API_KEY
+    from the env), or with MIGUEL_LLM=local an Ollama-backed stand-in (app/brain/local_llm.py, #81)."""
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
+        from app.brain.local_llm import LocalClient, backend
+
+        _client = LocalClient() if backend() == "local" else anthropic.AsyncAnthropic(timeout=45.0, max_retries=2)
     return _client
 
 

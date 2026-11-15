@@ -3,8 +3,9 @@
 Stage 1 (every frame, FallDetector): a person whose body is near horizontal (the shoulders-to-hips
 line more than 55 deg from vertical, in pixels; without those keypoints, a box much wider than tall
 that isn't cut off by a frame edge), staying like that for HOLD_S. Pose often drops a lying person for
-a frame, so only a gap of RESET_S restarts the hold. Stage 2 (FallWatcher): one camera frame goes to
-Claude ("is someone on the floor or in distress?"); only a yes raises the family app's alert, and the
+a frame, so only a gap of RESET_S restarts the hold. Stage 2 (FallWatcher): a short clip (CLIP_FRAMES
+camera frames CLIP_GAP_S apart) goes to the LLM, Claude or the local model ("is someone on the floor or
+in distress?"; several frames tell lying still from bending down); only a yes raises the family app's alert, and the
 agent then asks her if she's okay. After a no, it may ask again in RECHECK_S if she's still down.
 After an alert: nothing for COOLDOWN_S, and nothing until someone is seen upright for REARM_S, so one
 fall gives one alert.
@@ -33,6 +34,8 @@ RESET_S = 0.75          # only a not-lying (or nobody) gap this long restarts th
 RECHECK_S = 25.0        # after a suspicion that wasn't raised (Claude said no), ask again this soon at most
 COOLDOWN_S = 120.0      # after a raised alert, no new one for two minutes
 REARM_S = 2.0           # ...and none until someone has been seen upright (nobody lying) this long
+CLIP_FRAMES = 3         # the confirmation looks at this many frames...
+CLIP_GAP_S = 0.3        # ...this far apart
 CONFIRM_Q = ("Is a person lying on the floor, fallen, or in distress in this picture? Start your answer "
              "with yes or no, then say in one short sentence what you see.")
 
@@ -121,9 +124,11 @@ class FallWatcher:
 
     def __init__(self, latest: Callable[[], Any], snapshot: Callable[[], bytes | None],
                  raise_alert: Callable[[str], Any],
-                 confirm: Callable[[bytes], Awaitable[str]] | None = None, detector: FallDetector | None = None,
-                 period_s: float = 0.2):
+                 confirm: Callable[[list[bytes]], Awaitable[str]] | None = None, detector: FallDetector | None = None,
+                 period_s: float = 0.2, clip_frames: int = CLIP_FRAMES, clip_gap_s: float = CLIP_GAP_S):
+        """confirm: frames (oldest first) -> an answer starting with yes or no (default: describe_scene)."""
         self.latest, self.snapshot, self.raise_alert = latest, snapshot, raise_alert
+        self.clip_frames, self.clip_gap_s = clip_frames, clip_gap_s
         self.confirm = confirm
         self.detector = detector or FallDetector()
         self.period_s = period_s
@@ -137,11 +142,11 @@ class FallWatcher:
         suspect = self.detector.update(p)
         if suspect is None:
             return False
-        jpeg = self.snapshot()
+        frames = await self._clip()
         saw = suspect
-        if jpeg is not None:
+        if frames:
             try:
-                answer = await self._confirm(jpeg)
+                answer = await self._confirm(frames)
             except Exception as e:  # noqa: BLE001 - no network / no key: better a false alarm than a missed fall
                 log.warning("fall: couldn't double-check with Claude (%s); raising the alert anyway", e)
                 answer = "yes " + suspect
@@ -154,15 +159,26 @@ class FallWatcher:
         self.detector.confirmed()   # only now does the long cooldown start
         return True
 
-    async def _confirm(self, jpeg: bytes) -> str:
+    async def _clip(self) -> list[bytes]:
+        """CLIP_FRAMES frames CLIP_GAP_S apart, oldest first (an unchanged frame is skipped)."""
+        frames: list[bytes] = []
+        for i in range(max(1, self.clip_frames)):
+            if i:
+                await asyncio.sleep(self.clip_gap_s)
+            jpeg = self.snapshot()
+            if jpeg is not None and (not frames or jpeg != frames[-1]):
+                frames.append(jpeg)
+        return frames
+
+    async def _confirm(self, frames: list[bytes]) -> str:
         if self.confirm is not None:
-            return await self.confirm(jpeg)
+            return await self.confirm(frames)
         from app.brain.vision_check import describe_scene
 
-        return await describe_scene(jpeg, question=CONFIRM_Q)
+        return await describe_scene(frames, question=CONFIRM_Q)
 
     async def run(self) -> None:
-        log.info("fall detection on (pose on every frame, Claude confirms)")
+        log.info("fall detection on (pose on every frame, the LLM confirms on a short clip)")
         while True:
             try:
                 await self.check_once()
