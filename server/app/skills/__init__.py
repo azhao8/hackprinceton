@@ -100,6 +100,7 @@ class SkillRunner:
     def __init__(self, ctx: SkillContext):
         self._ctx = ctx
         self._task: asyncio.Task[SkillResult] | None = None
+        self._skill: Skill | None = None
 
     @property
     def running(self) -> str | None:
@@ -110,8 +111,14 @@ class SkillRunner:
         """The current (or last) skill's task, to await its result."""
         return self._task
 
+    @property
+    def current(self) -> Skill | None:
+        """The running skill object, however it was started (key, button or agent), or None."""
+        return self._skill if self.running else None
+
     def start(self, skill: Skill) -> asyncio.Task[SkillResult]:
         self.cancel()
+        self._skill = skill
         self._task = asyncio.create_task(self._run(skill), name=skill.name)
         return self._task
 
