@@ -173,6 +173,7 @@ export function Dashboard() {
             follow={status?.follow ?? false}
             skill={status?.skill ?? null}
             settings={status?.settings ?? null}
+            serverVision={status?.vision?.mode === "server"}
             send={send}
             onToggle={toggleFollow}
           />
@@ -180,6 +181,8 @@ export function Dashboard() {
 
         <EStopPanel active={status?.estop ?? false} sendFailed={false} onChange={(on) => send({ t: "estop", on })} />
       </div>
+
+      <CameraCard status={status} />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
         <section aria-label="Telemetry" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -208,8 +211,8 @@ export function Dashboard() {
   );
 }
 
-function FollowCard({ follow, skill, settings, send, onToggle }: {
-  follow: boolean; skill: string | null; settings: FollowSettings | null;
+function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
+  follow: boolean; skill: string | null; settings: FollowSettings | null; serverVision: boolean;
   send: (m: ClientMessage) => boolean; onToggle: () => void;
 }) {
   const [draft, setDraft] = useState<FollowSettings | null>(null);
@@ -222,7 +225,7 @@ function FollowCard({ follow, skill, settings, send, onToggle }: {
   };
   const range = shown ? RANGES[shown.mode] : [0.25, 0.65];
   return (
-    <Card title="Follow" hint="The phone tracks; the server decides">
+    <Card title="Follow" hint={serverVision ? "The server sees and follows · settings apply when Follow starts" : "The phone tracks"}>
       <div className="flex items-center justify-between gap-3">
         <span className={`text-sm font-semibold ${follow ? "text-ok" : "text-muted"}`}>
           {follow ? "Following" : skill ? `Server skill: ${skill}` : "Off"}
@@ -235,7 +238,7 @@ function FollowCard({ follow, skill, settings, send, onToggle }: {
             <select value={shown.mode} onChange={(e) => set({ mode: e.target.value as FollowSettings["mode"] })}
               className="flex-1 rounded-md border border-line bg-background px-2 py-1.5 text-sm">
               <option value="person">Follow a person</option>
-              <option value="yellow">Follow something yellow</option>
+              {!serverVision && <option value="yellow">Follow something yellow</option>}
             </select>
             <button type="button" onClick={() => set({ voice: !shown.voice })}
               className="rounded-md border border-line bg-background px-3 py-1.5 text-sm">
@@ -249,6 +252,40 @@ function FollowCard({ follow, skill, settings, send, onToggle }: {
         </div>
       ) : (
         <p className="mt-3 text-sm text-muted">Waiting for the server…</p>
+      )}
+    </Card>
+  );
+}
+
+/** The server's view: the phone's camera with the server's boxes, target and command drawn on it. */
+function CameraCard({ status }: { status: import("@/lib/messages").Status | null }) {
+  const vision = status?.vision ?? null;
+  const httpBase = SERVER_WS_URL.replace(/^ws(s?):/, "http$1:").replace(/\/ws$/, "");
+  const age = vision?.camera?.age_s ?? null;
+  const live = age !== null && age < 2;
+  return (
+    <Card title="What Miguel sees" hint="The phone's camera, with the server's tracking drawn on it">
+      {vision?.mode === "server" ? (
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- MJPEG stream, not an optimizable image */}
+          <img src={`${httpBase}/video.mjpg`} alt="Live view from the robot's phone"
+            className="max-h-[60vh] w-full rounded-lg bg-black object-contain" />
+          <div className="flex flex-col gap-2 text-sm">
+            <Badge tone={live ? "ok" : "danger"}>
+              Camera {live ? `live · ${vision.camera?.frames ?? 0} frames` : age === null ? "no frames yet" : `stalled ${age.toFixed(0)} s`}
+            </Badge>
+            <p className="text-muted">Vision: {vision.status ?? "—"}</p>
+            {!live && (
+              <p className="text-muted">
+                Open the phone page on the robot&apos;s iPhone and tap Start. It streams the camera here.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">
+          {vision ? "The phone is tracking on its own (no video sent to the server)." : "Waiting for the server…"}
+        </p>
       )}
     </Card>
   );

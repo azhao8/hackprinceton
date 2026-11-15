@@ -311,3 +311,46 @@ def test_websocket_keys_arm_and_status():
         await ws.close()
         await client.close()
     asyncio.run(go())
+
+
+def test_phone_frames_feed_vision_and_follow_runs_on_the_server():
+    import cv2
+    import numpy as np
+
+    from app.vision.phone_source import PhoneFrameSource
+
+    async def go():
+        src = PhoneFrameSource()
+        running = {"follow": False}
+        state = ApiState(Arbiter(), FakeLink(), phone_frames=src,
+                         follow_start=lambda: running.update(follow=True),
+                         follow_stop=lambda: running.update(follow=False),
+                         follow_running=lambda: running["follow"],
+                         view_jpeg=lambda: b"\xff\xd8fakejpeg", vision_status=lambda: "running")
+        client = TestClient(TestServer(create_app(state)))
+        await client.start_server()
+
+        ok, jpg = cv2.imencode(".jpg", np.zeros((64, 36, 3), dtype=np.uint8))
+        assert (await client.post("/frame", data=jpg.tobytes())).status == 204
+        assert (await client.post("/frame", data=b"not an image")).status == 400
+        frame = src.read_next(timeout=1)
+        assert frame is not None and frame.image.shape == (64, 36, 3)
+
+        st = await (await client.get("/tel")).json()
+        assert st["vision"]["mode"] == "server" and st["vision"]["camera"]["frames"] == 1
+
+        await client.post("/control/follow-on")
+        assert running["follow"] and (await (await client.get("/tel")).json())["follow"] is True
+        await client.post("/auto", json={"v": 0.3, "w": 0})            # the phone no longer drives
+        assert state.arbiter.decide().source == "none"
+        await client.post("/control/stop")                             # STOP ends the follow skill (skills=None here: flag cleared)
+        await client.post("/control/follow-off")
+        assert not running["follow"]
+
+        resp = await client.get("/video.mjpg")
+        chunk = await resp.content.read(64)
+        assert resp.headers["Content-Type"].startswith("multipart/x-mixed-replace") and b"--frame" in chunk
+        resp.close()
+        await client.close()
+
+    asyncio.run(go())

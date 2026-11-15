@@ -39,6 +39,7 @@ import asyncio
 import logging
 import os
 import signal
+import threading
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -386,7 +387,9 @@ def build_parser() -> argparse.ArgumentParser:
                                    "$ROBOT_HOST or balancebot.local for real)")
     ap.add_argument("--port", default=None, help="serial port for --link serial (default: auto-detect)")
     ap.add_argument("--test-drive", action="store_true", help="drive forward, then turn, through the arbiter")
-    ap.add_argument("--source", default="0", help="camera index (0, 1, ...) or a video file path")
+    ap.add_argument("--source", default="phone",
+                    help="phone: the robot's phone page streams its camera to the server (default); "
+                         "or a camera index (0, 1, ...) or a video file path")
     ap.add_argument("--no-vision", action="store_true", help="run without camera and detector")
     ap.add_argument("--rotate", choices=["left", "right", "180"], help="if people show up sideways")
     ap.add_argument("--turn-only", action="store_true", help="follow only turns toward the person, never drives")
@@ -447,7 +450,76 @@ def make_vision(args: argparse.Namespace) -> Any:
     from app.vision.worker import VisionWorker
 
     detector = YoloPoseDetector()  # loads the weights now, so a missing file fails before anything starts
-    return VisionWorker(open_source(args.source, rotate=args.rotate), detector, TargetLock())
+    if args.source == "phone":
+        # Alex's design: the robot's phone streams its camera to the server (POST /frame), the server sees.
+        from app.vision.phone_source import PhoneFrameSource
+
+        source = PhoneFrameSource()
+    else:
+        source = open_source(args.source, rotate=args.rotate)
+    return VisionWorker(source, detector, TargetLock())
+
+
+def api_state(app: App, link: RobotLink, vision: Any, tts: Any) -> api.ApiState:
+    """The API's view of the server. With vision, Follow on the control page runs the server's follow skill
+    and the control page shows the server's view; with the phone as the camera, /frame feeds vision."""
+    state = api.ApiState(app.arbiter, link, skills=app.skills, tts=tts)
+    if vision is None:
+        return state
+    state.phone_frames = getattr(vision, "_source", None) if args_source_is_phone(vision) else None
+    base = getattr(app._follow_factory, "config", None)
+    if base is not None:
+        import dataclasses
+
+        from app.skills.follow import FollowSkill
+
+        def factory() -> Any:
+            # The control page's follow settings: speed cap and stop distance ("bigger = stays closer",
+            # the same upper-body width fraction as John's phone page). They apply when Follow starts.
+            return FollowSkill(dataclasses.replace(base, v_max=float(state.settings["speed"]),
+                                                   target_box_w=float(state.settings["distance"])))
+        factory.config = base  # type: ignore[attr-defined]
+        app._follow_factory = factory
+    state.follow_start = lambda: None if app.skills.running == "follow" else app.toggle_follow()
+    state.follow_stop = lambda: app.toggle_follow() if app.skills.running == "follow" else None
+    state.follow_running = lambda: app.skills.running == "follow"
+    state.vision_status = lambda: vision.status
+    state.view_jpeg = ViewEncoder(app).jpeg
+    return state
+
+
+def args_source_is_phone(vision: Any) -> bool:
+    from app.vision.phone_source import PhoneFrameSource
+
+    return isinstance(getattr(vision, "_source", None), PhoneFrameSource)
+
+
+class ViewEncoder:
+    """The server's view for the control page: the latest frame with the overlay (boxes, target, command),
+    as JPEG. Re-encoded only when a new frame has been processed, at most ~10 times a second."""
+
+    def __init__(self, app: App, max_width: int = 640) -> None:
+        self._app = app
+        self._max_width = max_width
+        self._key: Any = None
+        self._jpeg: bytes | None = None
+        self._lock = threading.Lock()
+
+    def jpeg(self) -> bytes | None:
+        import cv2
+
+        from app.vision.debug_view import render
+
+        perception = self._app._perception()
+        key = None if perception is None else perception.frame_index
+        with self._lock:
+            if key is not None and key == self._key and self._jpeg is not None:
+                return self._jpeg
+            img = render(perception, self._app.hud(), max_width=self._max_width)
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                self._key, self._jpeg = key, buf.tobytes()
+            return self._jpeg
 
 
 def make_tts() -> Any:
@@ -502,8 +574,7 @@ async def serve(args: argparse.Namespace, link: RobotLink, *, vision: Any = None
     try:
         if args.api:
             tts = make_tts()
-            runner, _ = await api.start(api.ApiState(app.arbiter, link, skills=app.skills, tts=tts),
-                                        args.http_port, args.https_port or None)
+            runner, _ = await api.start(api_state(app, link, vision, tts), args.http_port, args.https_port or None)
             if tts is not None:
                 warm = asyncio.create_task(prewarm_voice(tts))   # don't hold up startup
         if args.robot == "real":
@@ -554,6 +625,7 @@ def main(argv: list[str] | None = None) -> None:
 
         config = make_follow_config(args)
         follow_factory = lambda: FollowSkill(config)  # noqa: E731
+        follow_factory.config = config  # type: ignore[attr-defined]  # api_state() applies the control page's settings
 
     window = render = None
     if args.window:

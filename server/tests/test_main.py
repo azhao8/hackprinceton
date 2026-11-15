@@ -480,3 +480,22 @@ def test_serve_closes_the_voice_if_the_api_fails_to_start(monkeypatch):
         asyncio.run(server.serve(parse_args([]), FakeUdpLink(dict(TEL)), window=FakeWindow(["q"]),
                                  render=lambda p, h: h))
     assert tts.closed
+
+
+def test_api_state_applies_the_control_pages_follow_settings():
+    from app.vision.follow import FollowConfig
+
+    class FakeVision:
+        status = "running"
+
+        def latest(self):
+            return None
+
+    app = server.App(FakeUdpLink())
+    base = FollowConfig()
+    app._follow_factory = lambda: None
+    app._follow_factory.config = base
+    state = server.api_state(app, app.link, FakeVision(), None)
+    state.set_settings({"speed": 0.2, "distance": 0.5})
+    skill = app._follow_factory()
+    assert skill.config.v_max == 0.2 and skill.config.target_box_w == 0.5

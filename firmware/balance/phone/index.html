@@ -15,7 +15,14 @@
   button, select { font: inherit; padding: 10px 14px; border: 0; border-radius: 10px; background: #333; color: #fff; }
   #go { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 26px; padding: 22px 40px;
         border-radius: 18px; background: #1a7f37; }
-  #settings { display: none; }   /* decision 0053: every control is on the laptop's control page */
+  #settings { display: none; }
+  /* Server vision (Alex's design): the phone shows Miguel's face and streams its camera to the server. */
+  #face { position: absolute; inset: 0; background: #05070a; display: none; align-items: center; justify-content: center; gap: 14vw; }
+  #face.on { display: flex; }
+  .eye { width: 22vw; height: 30vw; background: #e8f4ff; border-radius: 50%; box-shadow: 0 0 40px #4aa3ff88;
+         animation: blink 5s infinite; transform-origin: center; }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+  #face.on ~ #hud { top: auto; bottom: 0; font-size: 11px; opacity: 0.6; background: none; }   /* decision 0053: every control is on the laptop's control page */
   label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 </style>
 </head>
@@ -25,6 +32,7 @@
   <canvas id="ov"></canvas>
   <div id="hud">Tap Start once and allow the camera, then mount the phone.
 Everything else is on the laptop's control page.</div>
+  <div id="face"><div class="eye"></div><div class="eye"></div></div>
   <button id="go">Start</button>
   <div id="settings">
     <button id="stop">Stop sending</button>
@@ -259,7 +267,7 @@ function draw(r, W, H) {
 
 // ~15 times a second: find the target, decide speed and turn, send them, talk
 setInterval(() => {
-  if (!stream || !v.videoWidth) return;
+  if (!stream || !v.videoWidth || serverVision) return;   // server vision: the server tracks, not the phone
   const W = v.videoWidth, H = v.videoHeight, what = modeSel.value, now = performance.now() / 1000;
   g = Track.geom(label, W, H);
   let r;
@@ -289,6 +297,31 @@ setInterval(() => {
   draw(r, W, H);
 }, 66);
 
+// ---------- server vision: stream the camera to the server (POST /frame), show the face ----------
+let serverVision = false, frameInflight = false, framesSent = 0, sentFps = 0, sentT = performance.now();
+const fc = document.createElement('canvas'), fctx = fc.getContext('2d');
+function setServerVision(on) {
+  if (on === serverVision) return;
+  serverVision = on;
+  $('face').classList.toggle('on', on);
+  log({ event: 'vision mode', mode: on ? 'server' : 'phone' });
+}
+setInterval(() => {                                         // ~12 frames a second, one upload at a time
+  if (!serverVision || !stream || !v.videoWidth || frameInflight) return;
+  const W = v.videoWidth, H = v.videoHeight, k = 640 / Math.max(W, H);
+  const fw = Math.round(W * k), fh = Math.round(H * k);
+  if (fc.width !== fw || fc.height !== fh) { fc.width = fw; fc.height = fh; }
+  fctx.drawImage(v, 0, 0, fw, fh);
+  frameInflight = true;
+  fc.toBlob(blob => {
+    if (!blob) { frameInflight = false; return; }
+    fetch('/frame', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob })
+      .then(res => { sendErr = res.ok ? '' : 'the server refused a camera frame (' + res.status + ')'; if (res.ok) framesSent++; })
+      .catch(() => { sendErr = 'Mac not reachable'; })
+      .finally(() => { frameInflight = false; });
+  }, 'image/jpeg', 0.7);
+}, 80);
+
 // lines typed on the Mac (http://localhost:8080/control) are spoken here
 let sayAfter = -1;
 setInterval(async () => {
@@ -302,6 +335,7 @@ setInterval(async () => {
 setInterval(async () => {                                   // robot state, from drive.py through the Mac
   try {
     const d = await (await fetch('/tel')).json(), t = d.tel || {};
+    setServerVision(d.vision && d.vision.mode === 'server');
     applySettings(d.settings);
     if (!d.settings) $('settings').style.display = 'flex';    // bench tool phone_server.py: no control page, show them here
     Voice.server(!!d.tts);                                  // phone_server.py has no tts: Safari's voice
@@ -312,6 +346,12 @@ setInterval(async () => {                                   // robot state, from
 
 setInterval(() => {
   const now = performance.now(); fps = frames * 1000 / (now - fpsT); frames = 0; fpsT = now;
+  sentFps = framesSent * 1000 / (now - sentT); framesSent = 0; sentT = now;
+  if (serverVision) {
+    hud.textContent = [label ? 'Camera → server: ' + sentFps.toFixed(0) + ' fps  (' + label + ')' : 'Tap Start and allow the camera.',
+                       robot, sendErr].filter(Boolean).join('\n');
+    return;
+  }
   const r = last, what = modeSel.value;
   hud.textContent = [
     label ? 'Camera: ' + label + (g.uw ? '  (0.5x)' : '') : 'Tap Start and allow the camera.',

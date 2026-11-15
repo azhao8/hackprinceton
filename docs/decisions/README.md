@@ -60,3 +60,5 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0052](0052-senior-caretaker.md) | Use case: a caretaker robot for seniors at home, directed by their family | Sat afternoon (P-1) |
 | [0053](0053-controls-on-control-page.md) | The phone page is the robot's eye; every control is on the control page | Issue #39 |
 | [0054](0054-start-from-control-page.md) | Start balancing from the control page, on this laptop only | Issue #42 |
+| [0055](0055-vision-on-server.md) | Vision runs on the server; the phone is the robot's eye and face | Issue #46 |
+| [0056](0056-yolo-pose.md) | People are found with YOLO pose; the repo is AGPL-3.0 | T-15 |
