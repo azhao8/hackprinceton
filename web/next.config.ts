@@ -10,6 +10,9 @@ const lanAddresses = Object.values(os.networkInterfaces())
   .map((a) => a.address);
 
 const nextConfig: NextConfig = {
+  // `npm run dev:https` builds into its own folder, so it runs next to `npm run dev` (Next allows one dev server
+  // per build folder). It serves the family app over https, which the check-in call's camera and mic need (#118).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   allowedDevOrigins: lanAddresses,
   cacheComponents: true,
   partialPrefetching: true,

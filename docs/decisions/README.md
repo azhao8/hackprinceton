@@ -65,3 +65,4 @@ New file: next number, `NNNN-short-name.md`, copied from [TEMPLATE.md](TEMPLATE.
 | [0057](0057-sqlite-memory.md) | Memory lives in SQLite and survives restarts (supersedes 0014) | #68 |
 | [0058](0058-family-connection.md) | The family app connects over /family/ws through a thin family layer | #57, #60, #68 |
 | [0059](0059-start-when-upright.md) | Start waits until the robot is upright and steady; the phone can start, park and recalibrate (changes 0054) | #79 |
+| [0060](0060-check-in-video-call.md) | The check-in is a two-way WebRTC video call, ended from either side | T-23, #118 |

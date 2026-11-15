@@ -548,6 +548,64 @@ def test_no_ring_while_his_line_is_on_its_way():
     assert hub.listen_reason() == "reply"
 
 
+# --- the family video call (#118) -------------------------------------------------------------
+
+CALL = {"type": "call", "call": "c7", "on": True, "by": "Sarah"}
+
+
+def test_on_a_family_call_miguel_hears_nothing_and_has_no_ring():
+    inbox: asyncio.Queue = asyncio.Queue()
+    hub = MicHub(None, inbox, "Miguel", clock=Clock())
+    hub.set_awaiting(True)                       # he was waiting for her yes
+    assert hub.listening()
+    hub.set_call(CALL)
+    assert not hub.listening() and hub.status()["call"]
+    hub._control('{"type": "listen"}')           # a tap on the call screen opens nothing
+    hub.set_awaiting(True)
+    assert not hub.listening()
+    hub.on_stt_event("start", "")
+    hub.on_stt_event("update", "Miguel, what's for dinner")
+    assert not hub.listening()                   # not even the wake word lights the ring
+    hub.on_stt_event("end", "Miguel, what's for dinner")
+    asyncio.run(hub.on_heard(Utterance(source="senior", text="Miguel, what's for dinner")))
+    assert inbox.empty()
+    hub.set_call(None)                           # the call ended: hearing comes back
+    hub.on_stt_event("start", "")
+    hub.on_stt_event("end", "Miguel, come here")
+    asyncio.run(hub.on_heard(Utterance(source="senior", text="Miguel, come here")))
+    assert inbox.get_nowait().text == "come here"
+
+
+def test_the_call_reaches_the_phone_before_the_ring_goes_off_and_again_after_a_reconnect():
+    stt = FakeSTT()
+    handler = make_mic_handler(stt, asyncio.Queue(), wake_word="Miguel", env={})
+    hub = handler.hub
+    got: list[dict] = []
+    hub.on_call_message = got.append
+
+    async def scenario(http, server):
+        async with http.ws_connect(server.make_url("/mic?rate=16000")) as ws:
+            await ws.send_str('{"type": "listen"}')
+            assert (await ws.receive_json(timeout=2))["on"] is True
+            hub.set_call(CALL)
+            first, second = await ws.receive_json(timeout=2), await ws.receive_json(timeout=2)
+            await ws.send_str('{"type": "rtc", "call": "c7", "candidate": {"candidate": "x"}}')
+            await ws.send_str('{"type": "hangup", "call": "c7"}')
+            await until(lambda: len(got) == 2)
+        async with http.ws_connect(server.make_url("/mic?rate=16000")) as ws:   # the page reloaded
+            again = await ws.receive_json(timeout=2)
+            hub.set_call(None)
+            off = await ws.receive_json(timeout=2)
+        return first, second, again, off
+
+    first, second, again, off = serve(handler, scenario)
+    assert first == CALL                                   # the call first: the page mutes, so no chime
+    assert second == {"type": "listen", "on": False, "why": None}
+    assert again == CALL
+    assert off == {"type": "call", "call": "c7", "on": False}
+    assert [m["type"] for m in got] == ["rtc", "hangup"]
+
+
 def test_a_line_queued_as_asking_opens_the_answer_window_without_a_question_mark():
     """#120: the introduction ends with 'Just say "Miguel" first.', but it asks what to show."""
     clock = Clock()

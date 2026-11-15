@@ -1,0 +1,9 @@
+{
+  "t": "rtc",
+  "call": "c3",
+  "candidate": {
+    "candidate": "candidate:1 1 udp 2122260223 172.20.10.4 54321 typ host",
+    "sdpMid": "0",
+    "sdpMLineIndex": 0
+  }
+}

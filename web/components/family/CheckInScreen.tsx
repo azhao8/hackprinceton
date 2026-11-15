@@ -10,6 +10,7 @@ import { FaceBadge } from "./miguel/FaceBadge";
 import { MiguelStage } from "./miguel/MiguelStage";
 import { hasLine, speak } from "./miguel/voice";
 import { PageTitle, PlainButton, QuietLink, StickerButton, TopBar } from "./ui";
+import { SelfBubble, StreamVideo, useVideoCall } from "./VideoCall";
 
 function useElapsed(since: number | null) {
   const [now, setNow] = useState(0);
@@ -37,9 +38,16 @@ export function CheckInScreen() {
   const elapsed = useElapsed(c.phase === "live" ? c.startedAt : null);
   // Miguel's camera, as JPEG frames from the server (the no-WebRTC fallback). Null in the demo.
   const frame = useLiveFrame();
-  // The real server relays her camera one way (no WebRTC, no voice clips yet): say so, and never show
-  // the illustrated Margaret as if she were live. The demo keeps the full two-way story.
+  // The real server: a two-way video call with Miguel's phone (#118); the JPEG frames show until its
+  // video plays. Never the illustrated Margaret as if she were live. The demo keeps the illustration.
   const demo = useDemoControls() !== null;
+  const call = useVideoCall(c.phase === "live" && !demo && c.id ? c.id : null);
+  // Which call's video is playing (so a new call starts on "Connecting"), and whether its sound needs a tap.
+  const [playingCall, setPlayingCall] = useState<string | null>(null);
+  const [soundBlocked, setSoundBlocked] = useState<string | null>(null);
+  const callId = c.phase === "live" ? (c.id ?? null) : null;
+  const playing = callId !== null && playingCall === callId && !!call?.remote;
+  const live = !!frame || demo || playing;
   // The check-in request before you tapped "Ask" (undefined: none yet), so only this visit's error shows.
   const [askedFrom, setAskedFrom] = useState<RequestStatus | undefined | null>(null);
   const askRequest = s.requests.checkIn;
@@ -80,33 +88,66 @@ export function CheckInScreen() {
               <span className="fg-label !text-[11px] !text-paper/80">Opening Miguel&rsquo;s camera…</span>
             </div>
           )}
+          {call?.remote && (
+            // Her, live from Miguel's phone, with sound. Hidden until it plays (the frames show until then).
+            <StreamVideo
+              stream={call.remote}
+              label={`${name}, live through Miguel`}
+              className={`absolute inset-0 block h-full w-full bg-ink object-cover ${playing ? "" : "opacity-0"}`}
+              onPlaying={() => setPlayingCall(callId)}
+              onBlocked={() => setSoundBlocked(callId)}
+            />
+          )}
+          {soundBlocked !== null && soundBlocked === callId && (
+            <button
+              type="button"
+              className="absolute inset-x-6 bottom-20 rounded-full bg-[#fffaf1] px-4 py-3 text-[15px] font-semibold text-ink shadow-lg"
+              onClick={(e) => {
+                const v = e.currentTarget.parentElement?.querySelector("video");
+                v?.play().then(() => setSoundBlocked(null), () => {});
+              }}
+            >
+              Tap to hear {mom}
+            </button>
+          )}
           <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-[#fffaf1]/90 px-3 py-1.5">
-            <span className={`h-2 w-2 rounded-full ${frame || demo ? "bg-alarm" : "bg-ink-3"}`} />
-            <span className="fg-label !text-ink">{frame || demo ? "Live · via Miguel" : "Connecting"}</span>
+            <span className={`h-2 w-2 rounded-full ${live ? "bg-alarm" : "bg-ink-3"}`} />
+            <span className="fg-label !text-ink">{live ? "Live · via Miguel" : "Connecting"}</span>
           </div>
+          {call?.local && <SelfBubble stream={call.local} className="absolute bottom-4 left-4" />}
           <div className="absolute bottom-3 right-3 rotate-[3deg]">
             <FaceBadge expression="happy" width={46} />
           </div>
         </div>
-        {(frame || demo) && (
+        {live && (
           <p className="fg-label mt-3 text-center !text-[10px] text-ink-3">
-            Fig. 3 — {name}, {frame ? "through Miguel's camera" : "in her armchair at home"}
+            Fig. 3 — {name}, {frame || playing ? "through Miguel's camera" : "in her armchair at home"}
           </p>
         )}
         <div className="fg-rise-2 mt-6 space-y-3">
           {demo && <HoldToTalk who={mom} tone="sky" />}
-          <PlainButton tone="paper" onClick={() => actions.endCheckIn()}>
-            End check-in
+          <PlainButton tone={demo ? "paper" : "alarm"} onClick={() => actions.endCheckIn()}>
+            {demo ? "End check-in" : "End call"}
           </PlainButton>
         </div>
         <p className="mt-5 text-center text-[13px] leading-relaxed text-ink-2">
-          {demo ? (
-            <>{mom} sees you on Miguel&rsquo;s screen. Nothing is recorded.</>
-          ) : (
+          {demo || call?.media === "on" ? (
             <>
-              You see {mom} through Miguel&rsquo;s camera; she can&rsquo;t see or hear you yet. To tell her something, use
-              Ask Miguel on Home. Nothing is recorded.
+              {mom} sees and hears you on Miguel&rsquo;s screen{demo ? "" : ", and can end the call there too"}. Nothing
+              is recorded.
             </>
+          ) : call?.media === "insecure" ? (
+            <>
+              You can see and hear {mom}, but she can&rsquo;t see or hear you: this page needs its https address for
+              your camera and microphone. Nothing is recorded.
+            </>
+          ) : call?.media === "denied" ? (
+            <>
+              You can see and hear {mom}, but she can&rsquo;t see or hear you: allow the camera and microphone for this
+              page, then call again. Nothing is recorded.
+            </>
+          ) : (
+            <>Allow the camera and microphone so {mom} can see and hear you. Nothing is recorded.</>
           )}
         </p>
       </main>
@@ -175,7 +216,7 @@ export function CheckInScreen() {
       <PageTitle label="Check in" title={<>See {mom}, face to face.</>}>
         {demo
           ? "Miguel asks her first. If she says yes, you’ll see and hear her through his camera, and she’ll see you on his screen."
-          : "Miguel asks her first. If she says yes, you’ll see her through his camera while you’re on this screen."}
+          : "Miguel asks her first. If she says yes, you’ll see and hear each other: you through his screen, her through his camera."}
       </PageTitle>
       <div className="fg-rise-2 -mx-5 mt-2">
         <MiguelStage className="h-[300px]" pose={{ mode: s.mode, concerned: false, carrying: false }} />

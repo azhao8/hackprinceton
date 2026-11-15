@@ -138,7 +138,7 @@ def _whole_line_voice(tts: Any) -> bool:
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js",
-               "/mic.js": "mic.js"}   # mic.js (#54): the phone's mic streamer (hearing)
+               "/mic.js": "mic.js", "/call.js": "call.js"}   # mic.js (#54): hearing; call.js (#118): family video call
 LOCAL = ("127.0.0.1", "::1")
 V_MAX, W_MAX = 3.2, 1.5
 KEY_LETTERS = set("xP5LRFB")   # never g here: start balancing has its own message (arm)
@@ -832,6 +832,7 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
     @routes.get("/track.js")
     @routes.get("/face.js")
     @routes.get("/mic.js")
+    @routes.get("/call.js")
     async def phone_page(request: web.Request) -> web.StreamResponse:
         if not request.secure and request.path == "/":
             return web.Response(text=ca_page or "Miguel.exe server. Open the HTTPS address on the phone.",
