@@ -550,8 +550,15 @@ const Listen = (() => {
 })();
 
 // Tap-to-talk: tapping Miguel (face or suit) stops him talking and listens for one sentence, no "Miguel" needed.
+// Tapping him again while the ring is on stops listening: the ring goes off and whatever he half-heard is dropped.
 function tapToTalk() {
   if (!window.Mic || !Mic.running) return;
+  if (Listen.on && !Voice.busy()) {
+    Mic.send({ type: 'listen_off' });                         // the server closes every window and drops the turn
+    Listen.set(false);                                        // at once; the server confirms
+    log({ event: 'tap: stop listening' });
+    return;
+  }
   if (Voice.busy()) Voice.stopAll();
   if (!Mic.send({ type: 'listen' })) { log({ event: 'tap-to-talk: the mic is not connected' }); return; }
   const t0 = Date.now();

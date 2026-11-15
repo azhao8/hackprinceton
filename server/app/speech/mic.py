@@ -14,6 +14,8 @@ Wire protocol (firmware/balance/phone/mic.js):
   - {"type": "voice", "busy": bool, "text"?: str, "id"?: int} when Miguel starts or stops talking,
     and when the next queued line starts (`text` = the line playing, `id` = its /say id if any).
   - {"type": "listen"}: tap-to-talk (the face was tapped): listen for one utterance, no wake word.
+  - {"type": "listen_off"}: the face was tapped again while the ring is on: stop listening, and drop
+    the turn being heard (it never reaches the agent). Older servers ignore it.
 - Server -> phone text frames are JSON:
   - {"type": "listen", "on": bool, "why": "wake"|"tap"|"question"|"reply"|null}: Miguel is (not)
     listening for a command: the face shows a glowing ring and pings when it turns on.
@@ -25,6 +27,8 @@ Turn-taking (Alex, Sat Nov 14): Miguel only takes speech that is meant for him.
 - The wake word ("Miguel") anywhere in the sentence. It is spotted in Cartesia's running
   (partial) transcript, so the ring and ping start while the person is still talking.
   "Miguel" alone opens listening for one utterance (like a tap) instead of bothering Claude.
+- A second tap while listening closes it (`close_listening`): every open window shuts, the
+  agent's wait for a reply stops taking speech, and the turn in progress is dropped.
 - Without the wake word, only while listening is open:
   - "reply": the agent is waiting for an answer (wait_for_reply, a check-in question);
   - "question": for `answer_window_s` (default 4 s) after Miguel finishes a line that ends
@@ -189,6 +193,19 @@ class MicHub:
         self._once_why = why
         self._sync()
 
+    def close_listening(self) -> None:
+        """Stop listening now (a second tap on the face while the ring is on). Every open window
+        closes, the agent's wait for an answer stops taking speech without the wake word, and the
+        turn being heard (or just ended and still being transcribed) is dropped: it never reaches
+        the agent."""
+        self._question_until = self._once_until = float("-inf")
+        self.awaiting = False
+        for turn in (self._turn, self._ending):
+            if turn is not None:
+                turn["cancelled"] = True
+                turn["wake"] = False
+        self._sync()
+
     def note_line(self, text: str) -> None:
         """A line was queued for the phone (fallback for which line he said last). Until the phone says it
         started playing (or SPEECH_DUE_MAX_S passes), he isn't listening: the ring used to light ~2 s
@@ -242,7 +259,8 @@ class MicHub:
         elif kind in ("update", "eager_end"):
             if self._turn is None:
                 self._turn = {"opened": self.open_reason(), "wake": False}
-            if not self._turn["wake"] and self._wake_re is not None and self._wake_re.search(text):
+            if (not self._turn["wake"] and not self._turn.get("cancelled")
+                    and self._wake_re is not None and self._wake_re.search(text)):
                 self._turn["wake"] = True
                 log.info("mic: heard the wake word while they talk: %r", text[:80])
         elif kind == "end":                  # an empty end (nothing said, or a dropped socket) delivers nothing
@@ -307,6 +325,10 @@ class MicHub:
     async def on_heard(self, u: Utterance) -> None:
         """STT callback: filter a finished turn and put it in the inbox."""
         turn, self._ending = self._ending, None
+        if turn is not None and turn.get("cancelled"):
+            self._reject(u.text, "tapped off while they talked")
+            self._sync()
+            return
         result = self.filter(u.text, opened=turn["opened"] if turn else None)
         self._sync()
         if result is None:
@@ -443,6 +465,9 @@ class MicHub:
         elif kind == "listen":                # tap-to-talk
             log.info("mic: tap-to-talk")
             self.open_once("tap")
+        elif kind == "listen_off":            # tapped again while listening: stop
+            log.info("mic: tapped off: not listening")
+            self.close_listening()
 
 
 def _rate(raw: str | None) -> int | None:
