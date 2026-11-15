@@ -129,6 +129,24 @@ def test_audio_forwarded_in_100ms_chunks_and_turn_end_becomes_utterance():
     assert conn["texts"] == [{"type": "close"}]
 
 
+def test_turn_progress_events_and_timing_meta():
+    fake = FakeCartesia()
+    events: list[tuple[str, str]] = []
+
+    async def scenario(stt):
+        s = await stt.session(on_event=lambda kind, text: events.append((kind, text)))
+        await feed(s, 10)
+        u = await asyncio.wait_for(s.utterances.get(), 3)
+        await s.close()
+        return u
+
+    u = run(fake, scenario)
+    # the partial transcript arrives while they talk; the empty second turn.end still ends a turn
+    assert events == [("start", ""), ("update", "Hey"), ("eager_end", "Hey"), ("resume", "Hey"),
+                      ("end", "Hey Miguel, come here."), ("end", "")]
+    assert u.meta["t_speech_end"] <= u.meta["t_final"] == u.t      # speech ended before the final text
+
+
 def test_close_flushes_and_delivers_the_last_turn_to_the_callback():
     fake = FakeCartesia(mode="turn_on_close")
     got: list[Utterance] = []

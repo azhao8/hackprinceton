@@ -16,6 +16,14 @@ Protocol (docs.cartesia.ai, checked Sat Nov 14; see api-reference/stt/turns/webs
 - Server sends JSON events, all with `type` and `request_id`: connected, turn.start, turn.update,
   turn.eager_end, turn.resume, turn.end (`transcript` = the turn's final text), error
   (`status_code`, `title`, `message`). There is no confidence or word list in these events.
+  `turn.update` and `turn.eager_end` carry the running transcript of the turn so far (cumulative,
+  never revised): the hearing module looks for the wake word in it while the person still talks.
+
+Besides the finished turns, a session can report the turn's progress to `on_event(kind, text)`:
+"start", "update" (the running transcript, when it changed), "eager_end", "resume" and "end".
+Each Utterance's meta has `t_speech_end` (time.monotonic() when the transcript last grew, or the
+eager end: our best guess at when the person stopped talking; Cartesia sends no timestamps) and
+`t_final` (when turn.end arrived), for the per-turn timing log.
 
 Reconnects with backoff when the socket drops (a turn in progress is lost). It only (re)connects
 while audio is arriving, so an idle phone costs no Cartesia session.
@@ -33,6 +41,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 
@@ -49,6 +58,7 @@ MAX_KEYTERMS = 100                  # per connection; 1200 characters in all
 MAX_KEYTERM_CHARS = 1200
 
 UtteranceCallback = Callable[[Utterance], Awaitable[None] | None]
+EventCallback = Callable[[str, str], None]   # (kind, running transcript): start/update/eager_end/resume/end
 
 
 class STTError(Exception):
@@ -110,11 +120,14 @@ class CartesiaSTT:
         on_utterance: UtteranceCallback | None = None,
         *,
         sample_rate: int = 16000,
+        on_event: EventCallback | None = None,
     ) -> SttSession:
-        """Start a live session. It connects when the first audio arrives."""
+        """Start a live session. It connects when the first audio arrives.
+
+        on_event(kind, text), if given, hears the turn's progress (see the module docstring)."""
         if not (SAMPLE_RATE_RANGE[0] <= int(sample_rate) <= SAMPLE_RATE_RANGE[1]):
             raise ValueError(f"sample_rate {sample_rate} is outside {SAMPLE_RATE_RANGE[0]}-{SAMPLE_RATE_RANGE[1]}")
-        s = SttSession(self, int(sample_rate), on_utterance)
+        s = SttSession(self, int(sample_rate), on_utterance, on_event)
         self._sessions.add(s)
         s._start()
         return s
@@ -164,10 +177,14 @@ def _clean_keyterms(terms: Sequence[str]) -> tuple[str, ...]:
 class SttSession:
     """One live speech-to-text stream. Use `send_audio()`, read `utterances` (or the callback), `close()`."""
 
-    def __init__(self, stt: CartesiaSTT, sample_rate: int, on_utterance: UtteranceCallback | None) -> None:
+    def __init__(self, stt: CartesiaSTT, sample_rate: int, on_utterance: UtteranceCallback | None,
+                 on_event: EventCallback | None = None) -> None:
         self._stt = stt
         self.sample_rate = sample_rate
         self._on_utterance = on_utterance
+        self._on_event = on_event
+        self._partial = ""                 # the running transcript of the turn in progress
+        self._t_spoke: float | None = None # when that transcript last grew (or the eager end)
         self.utterances: asyncio.Queue[Utterance] = asyncio.Queue()
         self.chunk_bytes = sample_rate * 2 * stt.chunk_ms // 1000
         self._max_chunks = max(1, stt.max_buffer_ms // stt.chunk_ms)
@@ -316,6 +333,9 @@ class SttSession:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await reader
             self.connected = False
+            if self.in_turn:                 # the socket went away mid-turn: that turn is lost
+                self._partial, self._t_spoke = "", None
+                self._notify("end", "")
             self.in_turn = False
             if not ws.closed:
                 with contextlib.suppress(Exception):
@@ -341,22 +361,49 @@ class SttSession:
         kind = event.get("type")
         if event.get("request_id"):
             self.request_id = str(event["request_id"])
+        now = time.monotonic()
         if kind == "turn.start":
             self.in_turn = True
+            self._partial, self._t_spoke = "", None
+            self._notify("start", "")
+        elif kind in ("turn.update", "turn.eager_end"):
+            self.in_turn = True
+            text = " ".join(str(event.get("transcript") or "").split())
+            if text != self._partial:
+                self._partial, self._t_spoke = text, now
+                if kind == "turn.update":
+                    self._notify("update", text)
+            if kind == "turn.eager_end":
+                self._t_spoke = self._t_spoke or now
+                self._notify("eager_end", text)
+        elif kind == "turn.resume":
+            self._notify("resume", self._partial)
         elif kind == "turn.end":
             self.in_turn = False
             text = " ".join(str(event.get("transcript") or "").split())
+            t_spoke = self._t_spoke if self._t_spoke is not None else now
+            self._partial, self._t_spoke = "", None
+            self._notify("end", text)
             if text:
                 await self._deliver(Utterance(
                     source="senior",
                     text=text,
+                    t=now,
                     # Cartesia's turn events carry no confidence score; None keeps the key present
                     meta={"channel": "mic", "confidence": None, "request_id": self.request_id,
-                          "model": self._stt.model},
+                          "model": self._stt.model, "t_speech_end": t_spoke, "t_final": now},
                 ))
         elif kind == "error":
             log.warning("STT: Cartesia error %s %s: %s", event.get("status_code"), event.get("title"),
                         self._stt._scrub(str(event.get("message"))[:200]))
+
+    def _notify(self, kind: str, text: str) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(kind, text)
+        except Exception as e:  # noqa: BLE001 - a bad callback must not kill the stream
+            log.warning("STT: event callback failed: %s", _describe(e))
 
     async def _deliver(self, u: Utterance) -> None:
         log.info("STT heard: %r", u.text[:120])
