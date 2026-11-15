@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { HISTORY_S, SERVER_WS_URL, useRobot, type Connection } from "@/lib/use-robot";
 import type { ClientMessage, FollowSettings, KeyLetter } from "@/lib/messages";
-import { EStopPanel } from "./estop-panel";
 import { LineChart } from "./line-chart";
 
 const STALE_MS = 1000;
 const DRIVE_HZ = 20;
-const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.25, 0.65], yellow: [0.2, 0.6] };
+const RANGES: Record<FollowSettings["mode"], [number, number]> = { person: [0.1, 1.0], yellow: [0.1, 1.0] };
 const SAY_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"];
+const CUT_CONFIRM = "Cut motor power?\n\nThe robot stops balancing and drops. Use STOP unless that isn't enough.";
 const ARM_CONFIRM =
   "Start balancing (g)?\n\nSomeone must be holding the robot upright, within about 6°, ready to let go once it holds itself.";
 
@@ -35,12 +35,14 @@ export function Dashboard() {
   const arm = () => {
     if (window.confirm(ARM_CONFIRM)) send({ t: "arm" });
   };
-  const stopHold = () => {
+  // STOP: all movement stops (driving, turns, follow) and stays stopped until Resume; it keeps balancing.
+  const stop = () => {
     heldRef.current = new Set();
     setHeld(new Set());
-    send({ t: "joystick", v: 0, w: 0 });
-    key("5");
+    send({ t: "estop", on: true });
   };
+  const resume = () => send({ t: "estop", on: false });
+  const stopped = status?.estop ?? false;
   const toggleFollow = () => send({ t: "follow", on: !(status?.follow ?? false) });
 
   // Keyboard: John's drive.py keys. Held WASD/arrows drive; the rest are one-shot.
@@ -48,7 +50,7 @@ export function Dashboard() {
   useEffect(() => {
     // The key handlers below read these through refs, so they always see the latest values.
     speedRef.current = { vmax, wmax };
-    actions.current = { q: () => key("L"), e: () => key("R"), p: () => key("P"), x: () => key("x"), g: arm, f: toggleFollow, " ": stopHold };
+    actions.current = { q: () => key("L"), e: () => key("R"), p: () => key("P"), x: () => key("x"), g: arm, f: toggleFollow, " ": stop };
   });
   useEffect(() => {
     const typing = (e: KeyboardEvent) => {
@@ -115,59 +117,66 @@ export function Dashboard() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Miguel.exe</h1>
-          <p className="text-sm text-muted">Control page · keys work anywhere on this page</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <ConnectionBadge connection={robot.connection} stale={stale} />
+            <Badge tone={status?.link ? "ok" : "danger"}>
+              Robot {status ? (status.link ? "connected" : "not connected") : "?"}
+              {status?.lag_ms != null && ` · ${Math.round(status.lag_ms)} ms`}
+            </Badge>
+            <Badge tone={tel?.state === "idle" ? "muted" : "ok"}>{stateLabel(tel?.state)}</Badge>
+            {tel?.fault && <Badge tone="danger">Last stop: {tel.fault}</Badge>}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ConnectionBadge connection={robot.connection} stale={stale} />
-          <Badge tone={status?.link ? "ok" : "danger"}>
-            Robot link {status ? (status.link ? "ok" : "down") : "?"}
-            {status?.lag_ms != null && ` · ${Math.round(status.lag_ms)} ms`}
-          </Badge>
-          <Badge tone={tel?.state === "idle" ? "muted" : "ok"}>{tel?.state ?? "no telemetry"}</Badge>
+        <div className="flex items-center gap-2">
+          <Action k="G" tone="ok" onClick={arm}>Start</Action>
+          <Action k="P" onClick={() => key("P")}>Park</Action>
+          {stopped ? (
+            <button type="button" onClick={resume}
+              className="h-14 rounded-xl bg-ok px-8 text-lg font-bold text-white shadow-sm hover:opacity-90">
+              Resume
+            </button>
+          ) : (
+            <button type="button" onClick={stop}
+              className="h-14 rounded-xl bg-danger px-10 text-lg font-bold tracking-wide text-white shadow-sm hover:bg-danger-strong">
+              STOP <kbd className="ml-2 rounded border border-white/40 px-1.5 text-xs font-normal">Space</kbd>
+            </button>
+          )}
         </div>
       </header>
 
+      {stopped && (
+        <p role="status" className="rounded-md border border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
+          Stopped. Driving and follow are blocked; the robot keeps balancing. Press Resume to drive again.
+        </p>
+      )}
       {robot.sendFailed && (
         <p role="alert" className="rounded-md border border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
           Not sent: no connection to the server ({SERVER_WS_URL}). Is <code>python -m app</code> running?
         </p>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_1fr_340px]">
-        <Card title="Drive" hint="Hold W A S D or the arrows · Space stops and holds">
-          <div className="flex flex-wrap items-center gap-6">
-            <div className="grid grid-cols-3 gap-2">
-              <span />
-              <PadKey label="W" on={held.has("U")} onPress={(on) => pressDir("U", on)} />
-              <span />
-              <PadKey label="A" on={held.has("L")} onPress={(on) => pressDir("L", on)} />
-              <PadKey label="S" on={held.has("D")} onPress={(on) => pressDir("D", on)} />
-              <PadKey label="D" on={held.has("R")} onPress={(on) => pressDir("R", on)} />
-            </div>
-            <div className="flex flex-1 flex-col gap-3">
-              <Slider label="Top speed" unit="m/s" min={0.1} max={0.6} step={0.05} value={vmax} onChange={setVmax} />
-              <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={setWmax} />
-            </div>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Action k="Space" onClick={stopHold}>Stop &amp; hold</Action>
-            <Action k="Q" onClick={() => key("L")}>Turn 90° left</Action>
-            <Action k="E" onClick={() => key("R")}>Turn 90° right</Action>
-            <Action onClick={() => key("F")}>50 cm forward</Action>
-            <Action onClick={() => key("B")}>50 cm back</Action>
-          </div>
-        </Card>
-
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <CameraCard status={status} send={send} />
         <div className="flex flex-col gap-4">
-          <Card title="Robot">
-            <div className="grid grid-cols-3 gap-2">
-              <Action k="G" tone="ok" onClick={arm}>Start balancing</Action>
-              <Action k="P" onClick={() => key("P")}>Park</Action>
-              <Action k="X" tone="danger" onClick={() => key("x")}>Motors off</Action>
+          <Card title="Drive" hint="Hold W A S D or the arrows">
+            <div className="flex flex-wrap items-center gap-6">
+              <div className="grid grid-cols-3 gap-2">
+                <span />
+                <PadKey label="W" on={held.has("U")} onPress={(on) => pressDir("U", on)} />
+                <span />
+                <PadKey label="A" on={held.has("L")} onPress={(on) => pressDir("L", on)} />
+                <PadKey label="S" on={held.has("D")} onPress={(on) => pressDir("D", on)} />
+                <PadKey label="D" on={held.has("R")} onPress={(on) => pressDir("R", on)} />
+              </div>
+              <div className="flex flex-1 flex-col gap-3">
+                <Slider label="Top speed" unit="m/s" min={0.1} max={0.6} step={0.05} value={vmax} onChange={setVmax} />
+                <Slider label="Turn rate" unit="rad/s" min={0.5} max={1.5} step={0.25} value={wmax} onChange={setWmax} />
+              </div>
             </div>
-            <p className="mt-3 text-xs text-muted">
-              Start only while someone holds it upright. Park leans it onto the kickstand. Motors off drops it: catch it.
-            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Action k="Q" onClick={() => key("L")}>Turn 90° left</Action>
+              <Action k="E" onClick={() => key("R")}>Turn 90° right</Action>
+            </div>
           </Card>
           <FollowCard
             follow={status?.follow ?? false}
@@ -178,35 +187,39 @@ export function Dashboard() {
             onToggle={toggleFollow}
           />
         </div>
-
-        <EStopPanel active={status?.estop ?? false} sendFailed={false} onChange={(on) => send({ t: "estop", on })} />
       </div>
 
-      <CameraCard status={status} send={send} />
+      <SayCard send={send} />
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
-        <section aria-label="Telemetry" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Pitch" value={fmt(tel?.pitch, 1)} unit="°" />
-          <Stat label="Tilt rate" value={fmt(tel?.rate, 0)} unit="°/s" />
-          <Stat label="Distance" value={fmt(tel?.x, 2)} unit="m" />
-          <Stat label="Heading" value={fmt(tel?.yaw, 0)} unit="°" />
-          <Stat label="Left wheel" value={fmt(tel?.vl, 2)} unit="m/s" />
-          <Stat label="Right wheel" value={fmt(tel?.vr, 2)} unit="m/s" />
-          <Stat label="Battery" value={fmt(tel?.batt, 1)} unit="V" />
-          <Stat label="Fault" value={tel ? (tel.fault ?? "none") : "—"} danger={!!tel?.fault} />
-        </section>
-        <SayCard send={send} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <LineChart title="Pitch" unit="°" samples={robot.history} now={robot.now} windowS={HISTORY_S} minRange={5}
-          series={[{ key: "pitch", label: "pitch", color: "var(--accent)" }]} />
-        <LineChart title="Wheel speed" unit="m/s" samples={robot.history} now={robot.now} windowS={HISTORY_S} minRange={0.5}
-          series={[
-            { key: "vl", label: "left", color: "var(--series-2)" },
-            { key: "vr", label: "right", color: "var(--series-3)" },
-          ]} />
-      </div>
+      <details className="rounded-xl border border-line bg-panel p-4 shadow-sm">
+        <summary className="cursor-pointer font-semibold">Details: telemetry and charts</summary>
+        <div className="mt-4 flex flex-col gap-4">
+          <section aria-label="Telemetry" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="Pitch" value={fmt(tel?.pitch, 1)} unit="°" />
+            <Stat label="Tilt rate" value={fmt(tel?.rate, 0)} unit="°/s" />
+            <Stat label="Distance" value={fmt(tel?.x, 2)} unit="m" />
+            <Stat label="Heading" value={fmt(tel?.yaw, 0)} unit="°" />
+            <Stat label="Left wheel" value={fmt(tel?.vl, 2)} unit="m/s" />
+            <Stat label="Right wheel" value={fmt(tel?.vr, 2)} unit="m/s" />
+            <Stat label="Battery" value={fmt(tel?.batt, 1)} unit="V" />
+            <Stat label="Fault" value={tel ? (tel.fault ?? "none") : "—"} danger={!!tel?.fault} />
+          </section>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <LineChart title="Pitch" unit="°" samples={robot.history} now={robot.now} windowS={HISTORY_S} minRange={5}
+              series={[{ key: "pitch", label: "pitch", color: "var(--accent)" }]} />
+            <LineChart title="Wheel speed" unit="m/s" samples={robot.history} now={robot.now} windowS={HISTORY_S} minRange={0.5}
+              series={[
+                { key: "vl", label: "left", color: "var(--series-2)" },
+                { key: "vr", label: "right", color: "var(--series-3)" },
+              ]} />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
+            <span className="text-sm font-semibold text-danger">Emergency</span>
+            <Action k="X" tone="danger" onClick={() => { if (window.confirm(CUT_CONFIRM)) key("x"); }}>Cut motor power</Action>
+            <span className="text-xs text-muted">The robot drops. Only if STOP isn&apos;t enough; catch it.</span>
+          </div>
+        </div>
+      </details>
     </main>
   );
 }
@@ -245,9 +258,9 @@ function FollowCard({ follow, skill, settings, serverVision, send, onToggle }: {
               Voice {shown.voice ? "on" : "off"}
             </button>
           </div>
-          <Slider label="Follow speed cap" unit="m/s" min={0.1} max={0.45} step={0.05} value={shown.speed}
+          <Slider label="Follow speed cap" unit="m/s" min={0.05} max={0.6} step={0.05} value={shown.speed}
             onChange={(v) => set({ speed: v })} />
-          <Slider label="Stop distance (bigger = closer)" unit="" min={range[0]} max={range[1]} step={0.05}
+          <Slider label="Closeness (bigger = stops closer)" unit="" min={range[0]} max={range[1]} step={0.05}
             value={shown.distance} onChange={(v) => set({ distance: v })} />
         </div>
       ) : (
@@ -398,6 +411,13 @@ function Stat({ label, value, unit, danger }: { label: string; value: string; un
       </div>
     </div>
   );
+}
+
+function stateLabel(state: string | undefined): string {
+  if (state === "balance") return "Balancing";
+  if (state === "drive") return "Moving";
+  if (state === "idle") return "Motors off / parked";
+  return "No robot data";
 }
 
 function fmt(v: number | null | undefined, digits: number): string {

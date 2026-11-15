@@ -261,9 +261,9 @@ def test_control_page_does_not_use_bare_element_ids():
 def test_follow_settings_are_set_on_the_control_page_and_read_by_the_phone():
     async def t(c, s):
         d = await (await c.get("/tel")).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.45, "voice": True, "camera": "back", "mirror": False}
+        assert d["settings"] == {"mode": "person", "speed": 0.25, "distance": 0.7, "voice": True, "camera": "back", "mirror": False}
         d = await (await c.post("/control/settings", json={"speed": 0.15, "distance": 9, "voice": False})).json()
-        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 0.65, "voice": False, "camera": "back", "mirror": False}   # clamped
+        assert d["settings"] == {"mode": "person", "speed": 0.15, "distance": 1.0, "voice": False, "camera": "back", "mirror": False}   # clamped
         d = await (await c.post("/control/settings", json={"mode": "yellow"})).json()
         assert d["settings"] == {"mode": "yellow", "speed": 0.4, "distance": 0.35, "voice": False, "camera": "back", "mirror": False}    # new mode: its defaults
         await c.post("/control/settings", json={"mode": "nonsense", "speed": "fast"})
