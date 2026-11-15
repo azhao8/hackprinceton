@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.brain.prompt import INTRO_LINE
 from app.brain.spoken import clean_spoken
 from app.brain.types import AgentEvent, EventKind, Source, Utterance
 from app.skills import Skill, SkillResult, SkillRunner
@@ -420,6 +421,12 @@ class ToolBox:
           "Use it to greet, to announce what you are about to do before moving, to ask, and to report.",
           {"text": _str("What to say: short, simple spoken sentences.")},
           self._say)
+        r("introduce_yourself",
+          "Introduce yourself out loud with your prepared introduction: who you are, what you do for "
+          "seniors, and a question about what they would like to see. Use it when someone (often a judge "
+          "or a visitor) asks you to introduce yourself, who you are, or what you do. Add nothing of your "
+          "own around it.",
+          {}, self._introduce, stepped=False, strict=False)   # strict=False: leaves the strict slots to others
         r("reply_to_guardian",
           "Send a message to the guardian (family member) in their app. Use it to answer them, report a "
           "finished or failed task, or alert them. attach_photo adds the current camera frame: only when "
@@ -562,6 +569,11 @@ class ToolBox:
             return ToolOutcome(False, "Nothing to say.")
         self._emit("say", text, to="senior")
         return ToolOutcome(True, "Said it out loud.", {"text": text})
+
+    async def _introduce(self, a: dict[str, Any]) -> ToolOutcome:
+        self._emit("say", INTRO_LINE, to="senior")   # the exact line made at startup, so it plays at once
+        return ToolOutcome(True, "Said your introduction. It ends by asking what to show and telling them to "
+                           "say \"Miguel\" first, so say nothing more and end your turn.", {"text": INTRO_LINE})
 
     async def _reply(self, a: dict[str, Any]) -> ToolOutcome:
         text = str(a.get("text", "")).strip()

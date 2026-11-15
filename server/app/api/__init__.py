@@ -225,7 +225,12 @@ PHONE_LINES = [
     "Where did you go?", "Hello? I lost you.", "Where did my yellow thing go?",
 ]
 # Made ahead in the background at startup, so these play without waiting for Cartesia.
-AGENT_LINES = ["On it!", "Okay, stopping."]   # the agent's instant acknowledgment and stop line (app/brain)
+# The agent's instant acknowledgment, its stop line and its introduction (app/brain/prompt.py INTRO_LINE;
+# tests/brain/test_intro.py checks the copy matches).
+AGENT_LINES = ["On it!", "Okay, stopping.",
+               "Hi, I'm Miguel! I help seniors live at home without being alone: I fetch things, check in, "
+               "and alert family after a fall. What should I show you? Following you, fetching something, "
+               "or a fall alert? Just say \"Miguel\" first."]
 # What the server says about the tilt sensor and starting (#79, app/robot_watch.py).
 DRIFT_LINE = "My tilt sensor is drifting, so I won't balance. Lay me down flat and still, and recalibrate me."
 START_LINES = [DRIFT_LINE]

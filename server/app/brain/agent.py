@@ -769,7 +769,7 @@ class Agent:
             out = await self.tools.call(name, args)
         if name == "set_plan" and out.ok:
             st.plan, st.steps = list(out.data.get("steps", [])), {}
-        elif name == "say" and out.ok:
+        elif name in ("say", "introduce_yourself") and out.ok:   # spoke: the final text is a log note
             st.said = True
         elif name == "reply_to_guardian" and out.ok:
             st.replied = True
