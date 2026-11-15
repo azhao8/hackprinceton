@@ -123,7 +123,12 @@ export type FamilyClientMessage =
   | { t: "talk"; ref: string; media: string }
   | { t: "alert"; ref: string; id: string; action: "handled" }
   | { t: "routine"; ref: string; id: string; on: boolean }
-  | { t: "invite"; ref: string; name: string; relation: string };
+  | { t: "invite"; ref: string; name: string; relation: string }
+  /** "Ask Miguel": free text. Answers arrive as `event`s (kind "message", title "Miguel", note = his reply). */
+  | { t: "ask"; ref: string; text: string };
+
+/** Longest "Ask Miguel" question, in characters. */
+export const ASK_MAX = 500;
 
 // ---- validation ----
 // Small hand-written checks (no schema library): enough to drop malformed or unknown
@@ -284,6 +289,8 @@ export function isFamilyClientMessage(v: unknown): v is FamilyClientMessage {
       return str(v.ref) && str(v.id) && typeof v.on === "boolean";
     case "invite":
       return str(v.ref) && str(v.name) && str(v.relation);
+    case "ask":
+      return str(v.ref) && str(v.text) && v.text.trim().length > 0 && v.text.length <= ASK_MAX;
     default:
       return false;
   }

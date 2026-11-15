@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useFamily, useFamilyActions } from "@/lib/family/store";
-import type { DeliveryStage, ItemKind } from "@/lib/family/types";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useDemoControls, useFamily, useFamilyActions } from "@/lib/family/store";
+import type { Delivery, DeliveryStage, ItemKind } from "@/lib/family/types";
 import { Glyph, type GlyphName } from "./Glyph";
 import { MiguelStage } from "./miguel/MiguelStage";
 import { hasLine, speak } from "./miguel/voice";
@@ -18,17 +18,17 @@ interface Choice {
 }
 
 const CHOICES: Choice[] = [
-  { item: "water", glyph: "water", name: "Water", hint: "A fresh glass from the front desk", tone: "#d6e3f4", tilt: -1.2 },
-  { item: "medication", glyph: "medication", name: "Medication", hint: "Her next dose, with the nurse's OK", tone: "#f8dccb", tilt: 1 },
+  { item: "water", glyph: "water", name: "Water", hint: "A fresh glass from his station", tone: "#d6e3f4", tilt: -1.2 },
+  { item: "medication", glyph: "medication", name: "Medication", hint: "Her next dose, from her pill box", tone: "#f8dccb", tilt: 1 },
   { item: "note", glyph: "note", name: "A note", hint: "Miguel reads it to her", tone: "#fbe6ad", tilt: 0.8 },
-  { item: "other", glyph: "parcel", name: "Something else", hint: "Staff put it on his tray", tone: "#ebe1cf", tilt: -0.9 },
+  { item: "other", glyph: "parcel", name: "Something else", hint: "Whatever goes on his tray", tone: "#ebe1cf", tilt: -0.9 },
 ];
 
 const QUICK = ["Love you, Mom", "Drink up!", "Thinking of you", "See you Sunday"];
 
 const STEPS: { stage: DeliveryStage; text: string }[] = [
-  { stage: "sent", text: "Sent to the front desk" },
-  { stage: "loading", text: "Lin puts it on Miguel's tray" },
+  { stage: "sent", text: "Miguel heads to his station" },
+  { stage: "loading", text: "It goes on his tray" },
   { stage: "onTheWay", text: "Miguel brings it to her" },
   { stage: "delivered", text: "She has it" },
 ];
@@ -73,13 +73,50 @@ function useVoiceNote() {
   return { supported, recording, clip, start, stop, clear: () => setClip(null) };
 }
 
+/** When a send didn't go through, or a delivery failed: say so plainly, with the reason. */
+function SendProblem({
+  band,
+  title,
+  detail,
+  mom,
+  onRetry,
+}: {
+  band: string;
+  title: ReactNode;
+  detail?: string;
+  mom: string;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="family-page">
+      <TopBar />
+      <div className="fg-rise -mx-5 mt-2">
+        <MiguelStage className="h-[260px]" pose={{ mode: "withMom", concerned: true, carrying: false }} />
+      </div>
+      <div className="fg-rise mt-4 inline-flex items-center gap-2.5 rounded-full bg-alarm-soft px-3.5 py-2" role="status">
+        <span className="h-2.5 w-2.5 rounded-full bg-alarm" aria-hidden />
+        <span className="fg-label !text-alarm !tracking-[0.14em]">{band}</span>
+      </div>
+      <PageTitle title={title}>{detail && <span className="text-ink">{detail}</span>}</PageTitle>
+      <div className="fg-rise-2 mt-8">
+        <PlainButton onClick={onRetry}>Try again</PlainButton>
+      </div>
+      <div className="mt-8 flex justify-center">
+        <QuietLink href="/family">Back to {mom}&rsquo;s day</QuietLink>
+      </div>
+    </main>
+  );
+}
+
 export function SendScreen() {
   const s = useFamily();
   const actions = useFamilyActions();
+  const demo = useDemoControls();
   const [choice, setChoice] = useState<Choice | null>(null);
   const [what, setWhat] = useState("");
   const [message, setMessage] = useState("");
   const [sentId, setSentId] = useState<string | null>(null);
+  const [seen, setSeen] = useState<Delivery | null>(null);
   const voice = useVoiceNote();
   const mom = s.resident.short;
 
@@ -87,6 +124,7 @@ export function SendScreen() {
   useEffect(
     () => () => {
       setSentId(null);
+      setSeen(null);
       setChoice(null);
       setMessage("");
       setWhat("");
@@ -113,10 +151,34 @@ export function SendScreen() {
     setSentId(label);
   };
 
-  const delivery = s.delivery;
+  // Follow the delivery this send created (its id comes back with the request); keep the last
+  // copy seen, since the source may clear `delivery` once it's done or failed.
+  const request = s.requests.send;
+  const mine = s.delivery && request?.id && s.delivery.id === request.id ? s.delivery : null;
+  if (mine && mine !== seen) setSeen(mine);
+  const delivery = mine ?? (seen && seen.id === request?.id ? seen : null);
+
+  if (sentId && request?.status === "error") {
+    return (
+      <SendProblem band="Not sent" title={<>Miguel can&rsquo;t take this one right now.</>} detail={request.message} mom={mom} onRetry={() => setSentId(null)} />
+    );
+  }
+
+  if (sentId && delivery?.stage === "failed") {
+    return (
+      <SendProblem
+        band="Not delivered"
+        title={<>{sentId} didn&rsquo;t reach {mom}.</>}
+        detail={delivery.detail || "Miguel couldn't finish this delivery."}
+        mom={mom}
+        onRetry={() => setSentId(null)}
+      />
+    );
+  }
 
   if (sentId) {
-    const stageIndex = delivery ? STEPS.findIndex((x) => x.stage === delivery.stage) : STEPS.length - 1;
+    // Until the source says where it is, it's at the first step.
+    const stageIndex = delivery ? STEPS.findIndex((x) => x.stage === delivery.stage) : 0;
     return (
       <main className="family-page">
         <TopBar />
@@ -152,6 +214,13 @@ export function SendScreen() {
             );
           })}
         </ol>
+        {delivery?.stage === "delivered" && delivery.photo && (
+          <figure className="fg-rise mt-7">
+            {/* eslint-disable-next-line @next/next/no-img-element -- a photo from Miguel's server, not a page asset */}
+            <img src={delivery.photo} alt={`${mom} with the ${delivery.label.toLowerCase()}`} className="w-full rounded-[22px] border-[1.5px] border-ink object-cover" />
+            <figcaption className="fg-label mt-2 text-center !text-[10px] text-ink-3">Taken by Miguel as he handed it over</figcaption>
+          </figure>
+        )}
         <div className="mt-10 flex justify-center">
           <QuietLink href="/family">Back to {mom}&rsquo;s day</QuietLink>
         </div>
@@ -226,7 +295,8 @@ export function SendScreen() {
             </div>
           </div>
 
-          {voice.supported && (
+          {/* Voice notes need an upload to the server first (POST /family/media), not wired up yet: demo only. */}
+          {voice.supported && demo && (
             <div>
               {voice.clip ? (
                 <div className="flex items-center gap-3 rounded-2xl border-[1.5px] border-sand bg-[#fffaf1] px-4 py-3">
@@ -259,7 +329,7 @@ export function SendScreen() {
           )}
 
           <p className="text-[14px] leading-relaxed text-ink-2">
-            Lin at the front desk loads it onto Miguel&rsquo;s tray, and he brings it to {mom} in the lounge. Usually about five minutes.
+            Miguel picks it up from his station, finds {mom} wherever she is at home, and hands it to her. Usually about five minutes.
           </p>
 
           <PlainButton onClick={send} disabled={!canSend}>

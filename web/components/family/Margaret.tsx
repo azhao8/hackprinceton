@@ -1,7 +1,7 @@
 "use client";
 
 // Margaret, as an illustrated portrait for the check-in view: white hair, round glasses,
-// her yellow cardigan, the lounge armchair. She blinks and, while "talking", her mouth moves.
+// her yellow cardigan, her armchair at home. She blinks and, while "talking", her mouth moves.
 
 import { useEffect, useState } from "react";
 
@@ -42,7 +42,7 @@ export function Margaret({ talking = false, className = "" }: { talking?: boolea
   const open = talking ? 1.5 + mouth * 5 : 0;
 
   return (
-    <svg viewBox="0 0 300 360" className={className} role="img" aria-label="Margaret, in the lounge armchair">
+    <svg viewBox="0 0 300 360" className={className} role="img" aria-label="Margaret, in her armchair at home">
       {/* Room */}
       <rect width="300" height="360" fill="#f3e6c9" />
       <rect x="168" y="34" width="104" height="132" rx="6" fill="#dde7f4" stroke="#2a2630" strokeWidth="2.5" />

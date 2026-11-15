@@ -1,5 +1,5 @@
-// The family app's data model. The demo source (demo-source.ts) and a future
-// server source both produce a FamilyState; screens only read this.
+// The family app's data model. The demo source (source.ts) and the server source
+// (server-source.ts) both produce a FamilyState; screens only read this.
 
 /** What Miguel is doing right now, as the family sees it. */
 export type MiguelMode =
@@ -48,9 +48,11 @@ export interface TimelineEvent {
   /** Something someone said, shown as a quote. */
   quote?: string;
   quoteBy?: string;
+  /** Photo URL, ready for an <img> (e.g. her with what Miguel brought). */
+  photo?: string;
 }
 
-export type DeliveryStage = "sent" | "loading" | "onTheWay" | "delivered";
+export type DeliveryStage = "sent" | "loading" | "onTheWay" | "delivered" | "failed";
 
 export interface Delivery {
   id: string;
@@ -60,22 +62,31 @@ export interface Delivery {
   message?: string;
   voiceNote?: boolean;
   stage: DeliveryStage;
+  /** Why it failed, in words ("Couldn't find her"). */
+  detail?: string;
+  /** Photo URL of her with it, once delivered. */
+  photo?: string;
 }
 
+/** `id` is the server's call id (matches `frame.call`); the demo leaves it out. */
 export type CheckIn =
-  | { phase: "idle" }
-  | { phase: "asking" }
-  | { phase: "live"; startedAt: number }
-  | { phase: "declined" };
+  | { phase: "idle"; id?: string }
+  | { phase: "asking"; id?: string }
+  | { phase: "live"; id?: string; startedAt: number }
+  | { phase: "declined"; id?: string };
 
 export interface Alert {
   id: string;
   at: number;
-  place: string;
+  place?: string;
   saw: string;
-  heard: string;
+  /** What she said when Miguel asked if she was okay, if anything. */
+  heard?: string;
   did: string[];
   status: "active" | "handled";
+  /** Who answered it. */
+  handledBy?: string;
+  photo?: string;
 }
 
 export interface Routine {
@@ -100,11 +111,25 @@ export interface Member {
   invited?: boolean;
 }
 
+/** Requests the app makes; the latest of each kind is tracked in FamilyState.requests. */
+export type RequestKind = "send" | "ask" | "checkIn" | "alert" | "routine" | "invite";
+
+export interface RequestStatus {
+  ref: string;
+  status: "waiting" | "ok" | "error";
+  /** What the request created (a delivery id), once it worked. */
+  id?: string;
+  /** Why it didn't work: the server's code ("busy") and a line for people. */
+  code?: string;
+  message?: string;
+}
+
 export interface FamilyState {
   resident: { name: string; short: string; home: string };
-  viewer: { name: string };
+  /** The family member using this app (circle member id). */
+  viewer: { id: string; name: string };
   mode: MiguelMode;
-  /** One short line under the mode ("In the lounge with Ruth"). */
+  /** One short line under the mode ("In the living room with Ruth"). */
   modeNote: string;
   /** Demo clock: minutes since midnight at `clockSetAt` (epoch ms). */
   clock: number;
@@ -120,4 +145,6 @@ export interface FamilyState {
   members: Member[];
   /** Walking pace over the last 7 days, m/s, oldest first. */
   pace: number[];
+  /** The latest request of each kind and how it went. */
+  requests: Partial<Record<RequestKind, RequestStatus>>;
 }

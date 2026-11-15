@@ -14,7 +14,7 @@ export function AlertLayer() {
   const s = useFamily();
   const actions = useFamilyActions();
   const [confirm911, setConfirm911] = useState(false);
-  const [deskSheet, setDeskSheet] = useState(false);
+  const [neighborSheet, setNeighborSheet] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const alert = s.alert;
 
@@ -25,6 +25,12 @@ export function AlertLayer() {
   if (!alert || dismissed === alert.id) return null;
   const handled = alert.status === "handled";
   const mom = s.resident.short;
+  // Someone nearby who can get there fast: the circle's neighbor, if there is one.
+  const neighbor = s.members.find((m) => /neighbo/i.test(m.relation));
+  const byOther = alert.handledBy && alert.handledBy !== s.viewer.name ? alert.handledBy : null;
+  const request = s.requests.alert;
+  const waiting = request?.status === "waiting";
+  const failed = request?.status === "error" ? request.message : null;
 
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto bg-paper" role="alertdialog" aria-modal aria-labelledby="alert-title">
@@ -41,15 +47,15 @@ export function AlertLayer() {
         </div>
 
         <h1 id="alert-title" className="mt-5 text-[34px] font-[750] leading-[1.05] tracking-[-0.02em] text-ink">
-          {handled ? `Lin is with ${mom} now.` : `${mom} may have fallen.`}
+          {handled ? (byOther ? `${byOther} is on it.` : "You're on it.") : `${mom} may have fallen.`}
         </h1>
-        <p className="mt-2 text-[15px] text-ink-2">{alert.place}</p>
+        {alert.place && <p className="mt-2 text-[15px] text-ink-2">{alert.place}</p>}
 
         <div className="mt-6 flex items-center gap-3.5 rounded-2xl border-[1.5px] border-ink bg-[#fffaf1] p-3.5">
           <FaceBadge expression="concerned" width={50} />
           <div>
             <p className="text-[15px] font-semibold leading-snug">Miguel is staying beside her.</p>
-            <p className="mt-0.5 text-[13px] leading-snug text-ink-2">He told the front desk at {clockLabel(alert.at)}.</p>
+            <p className="mt-0.5 text-[13px] leading-snug text-ink-2">He told the family at {clockLabel(alert.at)}.</p>
           </div>
         </div>
 
@@ -57,11 +63,19 @@ export function AlertLayer() {
           <div>
             <dt className="fg-label">What Miguel saw</dt>
             <dd className="mt-1.5 text-[16px] leading-snug">{alert.saw}</dd>
+            {alert.photo && (
+              <dd className="mt-3">
+                {/* eslint-disable-next-line @next/next/no-img-element -- a snapshot from Miguel's server, not a page asset */}
+                <img src={alert.photo} alt="What Miguel's camera saw" className="w-full rounded-2xl border-[1.5px] border-ink object-cover" />
+              </dd>
+            )}
           </div>
-          <div>
-            <dt className="fg-label">What she said</dt>
-            <dd className="fg-display mt-1.5 text-[22px] italic leading-snug">“{alert.heard}”</dd>
-          </div>
+          {alert.heard && (
+            <div>
+              <dt className="fg-label">What she said</dt>
+              <dd className="fg-display mt-1.5 text-[22px] italic leading-snug">“{alert.heard}”</dd>
+            </div>
+          )}
           <div>
             <dt className="fg-label">What Miguel did</dt>
             <dd className="mt-2">
@@ -83,8 +97,8 @@ export function AlertLayer() {
         <div className="mt-8 space-y-3">
           {!handled && <HoldToTalk who={mom} tone="alarm" />}
           <div className="grid grid-cols-2 gap-3">
-            <PlainButton tone="paper" onClick={() => setDeskSheet(true)}>
-              Call front desk
+            <PlainButton tone="paper" onClick={() => setNeighborSheet(true)}>
+              Call {neighbor ? neighbor.name : "a neighbor"}
             </PlainButton>
             <button
               type="button"
@@ -99,19 +113,24 @@ export function AlertLayer() {
               Back to {mom}&rsquo;s day
             </PlainButton>
           ) : (
-            <PlainButton tone="ink" onClick={() => actions.handleAlert()}>
-              I&rsquo;m on it · tell David and Lin
+            <PlainButton tone="ink" onClick={() => actions.handleAlert()} disabled={waiting}>
+              {waiting ? "Telling the family…" : <>I&rsquo;m on it · tell the family</>}
             </PlainButton>
+          )}
+          {failed && !handled && (
+            <p className="text-center text-[14px] leading-snug text-alarm" role="status">
+              {failed}
+            </p>
           )}
         </div>
       </div>
 
-      <Sheet open={deskSheet} onClose={() => setDeskSheet(false)} label="Call the front desk">
-        <p className="fg-label">Sunrise Assisted Living</p>
-        <h2 className="fg-display mt-1 text-[26px] font-[540]">Front desk</h2>
-        <p className="mt-2 text-[15px] text-ink-2">Lin is on shift. She already has Miguel&rsquo;s alert.</p>
+      <Sheet open={neighborSheet} onClose={() => setNeighborSheet(false)} label={`Call ${neighbor ? neighbor.name : "a neighbor"}`}>
+        <p className="fg-label">{neighbor ? neighbor.relation : "Neighbor"}</p>
+        <h2 className="fg-display mt-1 text-[26px] font-[540]">{neighbor ? neighbor.name : "A neighbor"}</h2>
+        <p className="mt-2 text-[15px] text-ink-2">Close by, and already has Miguel&rsquo;s alert. They can be with {mom} in minutes.</p>
         <div className="mt-5">
-          <PlainButton tone="ink" onClick={() => setDeskSheet(false)}>
+          <PlainButton tone="ink" onClick={() => setNeighborSheet(false)}>
             Calling… (demo)
           </PlainButton>
         </div>
@@ -120,7 +139,7 @@ export function AlertLayer() {
       <Sheet open={confirm911} onClose={() => setConfirm911(false)} label="Call 911">
         <h2 className="text-[24px] font-[750] leading-tight">Call 911 for {mom}?</h2>
         <p className="mt-2 text-[15px] leading-relaxed text-ink-2">
-          Miguel will share her room and what he saw with the front desk, so they can meet the paramedics.
+          Have her address ready. Miguel stays beside her and keeps the family posted until help arrives.
         </p>
         <p className="fg-label mt-3 !text-alarm">Demo: this won&rsquo;t place a real call.</p>
         <div className="mt-5 space-y-3">

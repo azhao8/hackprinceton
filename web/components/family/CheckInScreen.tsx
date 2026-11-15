@@ -2,7 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useFamily, useFamilyActions } from "@/lib/family/store";
+import { useFamily, useFamilyActions, useLiveFrame } from "@/lib/family/store";
+import type { RequestStatus } from "@/lib/family/types";
 import { HoldToTalk } from "./HoldToTalk";
 import { Margaret } from "./Margaret";
 import { FaceBadge } from "./miguel/FaceBadge";
@@ -34,6 +35,12 @@ export function CheckInScreen() {
   const name = s.resident.name;
   const c = s.checkIn;
   const elapsed = useElapsed(c.phase === "live" ? c.startedAt : null);
+  // Miguel's camera, as JPEG frames from the server (the no-WebRTC fallback). Null in the demo.
+  const frame = useLiveFrame();
+  // The check-in request before you tapped "Ask" (undefined: none yet), so only this visit's error shows.
+  const [askedFrom, setAskedFrom] = useState<RequestStatus | undefined | null>(null);
+  const askRequest = s.requests.checkIn;
+  const askError = askedFrom !== null && askRequest !== askedFrom && askRequest?.status === "error" ? askRequest.message : null;
   const [momTalking, setMomTalking] = useState(false);
   const router = useRouter();
 
@@ -50,6 +57,7 @@ export function CheckInScreen() {
 
   // Leaving the screen ends a live check-in or a pending ask.
   useEffect(() => () => {
+    setAskedFrom(null);
     const phase = actions.getState().checkIn.phase;
     if (phase === "live" || phase === "asking" || phase === "declined") actions.endCheckIn();
   }, [actions]);
@@ -59,7 +67,12 @@ export function CheckInScreen() {
       <main className="family-page">
         <TopBar right={<span className="fg-label">Check-in · {elapsed}</span>} />
         <div className="fg-rise relative mt-4 overflow-hidden rounded-[26px] border-[1.5px] border-ink shadow-[0_0_0_5px_#fffdf8,0_0_0_6.5px_rgba(42,38,48,0.14)]">
-          <Margaret talking={momTalking} className="block h-auto w-full" />
+          {frame ? (
+            // eslint-disable-next-line @next/next/no-img-element -- live frames from Miguel's camera
+            <img src={frame} alt={`${name}, live through Miguel's camera`} className="block aspect-[3/4] w-full bg-ink object-cover" />
+          ) : (
+            <Margaret talking={momTalking} className="block h-auto w-full" />
+          )}
           <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-[#fffaf1]/90 px-3 py-1.5">
             <span className="h-2 w-2 rounded-full bg-alarm" />
             <span className="fg-label !text-ink">Live · via Miguel</span>
@@ -68,7 +81,9 @@ export function CheckInScreen() {
             <FaceBadge expression="happy" width={46} />
           </div>
         </div>
-        <p className="fg-label mt-3 text-center !text-[10px] text-ink-3">Fig. 3 — {name}, in the lounge armchair</p>
+        <p className="fg-label mt-3 text-center !text-[10px] text-ink-3">
+          Fig. 3 — {name}, {frame ? "through Miguel's camera" : "in her armchair at home"}
+        </p>
         <div className="fg-rise-2 mt-6 space-y-3">
           <HoldToTalk who={mom} tone="sky" />
           <PlainButton tone="paper" onClick={() => actions.endCheckIn()}>
@@ -155,11 +170,17 @@ export function CheckInScreen() {
           subtitle="She can always say not now"
           tilt={-0.6}
           onClick={() => {
+            setAskedFrom(s.requests.checkIn);
             actions.requestCheckIn();
             if (hasLine("asking")) speak("asking");
           }}
         />
       </div>
+      {askError && (
+        <p className="mt-5 text-center text-[14px] leading-snug text-alarm" role="status">
+          {askError}
+        </p>
+      )}
       <p className="mt-6 text-center text-[13px] leading-relaxed text-ink-2">Miguel never connects without her yes.</p>
     </main>
   );

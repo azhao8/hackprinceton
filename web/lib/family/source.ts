@@ -1,12 +1,13 @@
 // Where the family app's state comes from.
 //
 // DemoSource runs the whole day in the browser with seeded data and timers, so the
-// app demos without a robot. A server-backed source (the Python server's WebSocket,
-// see contract/web/) can implement the same FamilySource interface later; screens
-// don't change.
+// app demos without a robot. ServerSource (server-source.ts) runs it on the Python
+// server's family WebSocket (contract/web/family.md). Both implement FamilySource;
+// screens don't know which one they're on.
 
+import { clockLabel } from "./format";
 import { ALERT_AT, AFTERNOON, NIGHT, seedState } from "./seed";
-import type { Alert, Delivery, EventKind, FamilyState, ItemKind, MiguelMode, TimelineEvent } from "./types";
+import type { Alert, Delivery, EventKind, FamilyState, ItemKind, MiguelMode, RequestKind, RequestStatus, TimelineEvent } from "./types";
 
 export interface SendRequest {
   item: ItemKind;
@@ -18,7 +19,12 @@ export interface SendRequest {
 export interface FamilySource {
   getState(): FamilyState;
   subscribe(listener: () => void): () => void;
+  /** The latest check-in video frame (a data: URL), or null. Separate from the state so 5 fps video doesn't re-render every screen. */
+  getFrame(): string | null;
+  subscribeFrame(listener: () => void): () => void;
   send(request: SendRequest): void;
+  /** "Ask Miguel": a free-text question. His answer arrives as a "message" event titled "Miguel…". */
+  ask(text: string): void;
   requestCheckIn(): void;
   endCheckIn(): void;
   handleAlert(): void;
@@ -42,10 +48,11 @@ export const DEMO_TIMING = {
   delivered: 13000,
   settle: 2500,
   checkInAnswer: 3800,
+  answer: 1800,
 };
 
 const MODE_NOTES: Record<MiguelMode, string> = {
-  withMom: "In the lounge with Ruth",
+  withMom: "In the living room with her",
   delivering: "Bringing something to her",
   charging: "On the dock while she rests",
   listening: "She's telling Miguel something",
@@ -83,9 +90,17 @@ export class DemoSource implements FamilySource {
     return () => this.listeners.delete(listener);
   };
 
+  // The demo check-in shows the illustration, never camera frames.
+  getFrame = (): string | null => null;
+  subscribeFrame = (): (() => void) => () => {};
+
   private set(patch: Partial<FamilyState>) {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((l) => l());
+  }
+
+  private request(kind: RequestKind, status: Omit<RequestStatus, "ref">) {
+    this.set({ requests: { ...this.state.requests, [kind]: { ref: this.id("r"), ...status } } });
   }
 
   private later(ms: number, fn: () => void) {
@@ -118,6 +133,7 @@ export class DemoSource implements FamilySource {
   send(request: SendRequest) {
     const delivery: Delivery = { id: this.id("d"), ...request, stage: "sent" };
     this.set({ delivery });
+    this.request("send", { status: "ok", id: delivery.id });
     this.setMode("delivering", `Bringing ${request.label.toLowerCase()} to her`);
     const stage = (s: Delivery["stage"]) => {
       if (this.state.delivery?.id === delivery.id) this.set({ delivery: { ...this.state.delivery, stage: s } });
@@ -137,6 +153,22 @@ export class DemoSource implements FamilySource {
       this.setMode("withMom");
       this.later(DEMO_TIMING.settle, () => {
         if (this.state.delivery?.id === delivery.id) this.set({ delivery: null });
+      });
+    });
+  }
+
+  ask(text: string) {
+    const question = text.trim();
+    if (!question) return;
+    this.request("ask", { status: "ok" });
+    this.later(DEMO_TIMING.answer, () => {
+      const last = [...this.state.events].sort((a, b) => b.at - a.at)[0];
+      this.addEvent({
+        kind: "message",
+        title: "Miguel",
+        note: `She's doing well. ${this.state.modeNote}.${
+          last ? ` The last thing I noted was “${last.title}” at ${clockLabel(last.at)}.` : ""
+        }`,
       });
     });
   }
@@ -169,11 +201,11 @@ export class DemoSource implements FamilySource {
   handleAlert() {
     const alert = this.state.alert;
     if (!alert || alert.status === "handled") return;
-    this.set({ alert: { ...alert, status: "handled" } });
+    this.set({ alert: { ...alert, status: "handled", handledBy: this.state.viewer.name } });
     this.addEvent({
       kind: "alert",
       title: "Possible fall, handled",
-      note: `${this.state.viewer.name} responded. Lin from the front desk is with her.`,
+      note: `${this.state.viewer.name} responded. Ruth from next door is on her way over.`,
     });
   }
 
@@ -214,10 +246,10 @@ export class DemoSource implements FamilySource {
     const alert: Alert = {
       id: this.id("a"),
       at: ALERT_AT,
-      place: "Lounge, by the window",
+      place: "Living room, by the window",
       saw: "Margaret went from standing to the floor and hasn't gotten up.",
       heard: "I slipped. My hip hurts.",
-      did: ["Asked if she was okay", "Told the front desk", "Staying beside her"],
+      did: ["Asked if she was okay", "Told David", "Staying beside her"],
       status: "active",
     };
     this.set({ alert, clock: ALERT_AT, clockSetAt: this.now() });

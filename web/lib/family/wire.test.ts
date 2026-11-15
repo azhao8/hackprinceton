@@ -23,7 +23,7 @@ const SERVER = [
   "rtc-answer",
   "frame",
 ];
-const CLIENT = ["hello", "send", "check-in-request", "rtc-offer", "talk", "alert-handled", "routine", "invite"];
+const CLIENT = ["hello", "send", "check-in-request", "rtc-offer", "talk", "alert-handled", "routine", "invite", "ask"];
 
 describe("contract/web/samples/family", () => {
   it("has a direction for every sample file", () => {
@@ -69,6 +69,9 @@ describe("isFamilyClientMessage", () => {
     expect(isFamilyClientMessage({ t: "send", ref: "r1", item: "cake", label: "Cake" })).toBe(false);
     expect(isFamilyClientMessage({ t: "alert", ref: "r1", id: "a1", action: "ignore" })).toBe(false);
     expect(isFamilyClientMessage({ t: "rtc", call: "c1" })).toBe(false); // neither sdp nor candidate
+    expect(isFamilyClientMessage({ t: "ask", ref: "r1", text: "   " })).toBe(false);
+    expect(isFamilyClientMessage({ t: "ask", ref: "r1", text: "x".repeat(501) })).toBe(false);
+    expect(isFamilyClientMessage({ t: "ask", ref: "r1", text: "x".repeat(500) })).toBe(true);
   });
 
   it("makes request refs", () => {

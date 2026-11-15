@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useRef } from "react";
 import { clockLabel, partOfDay } from "@/lib/family/format";
-import { useFamily, useDemoMinutes } from "@/lib/family/store";
+import { useDemoControls, useFamily, useDemoMinutes } from "@/lib/family/store";
 import type { Delivery, FamilyState } from "@/lib/family/types";
+import { AskMiguel } from "./AskMiguel";
 import { openDemoPanel } from "./DemoPanel";
 import { Glyph } from "./Glyph";
 import { EVENT_GLYPH } from "./meta";
@@ -34,31 +35,45 @@ function headline(s: FamilyState, minutes: number | null): string {
 
 const STAGES: Delivery["stage"][] = ["sent", "loading", "onTheWay", "delivered"];
 const STAGE_TEXT: Record<Delivery["stage"], string> = {
-  sent: "Sent to the front desk",
-  loading: "Lin is putting it on the tray",
+  sent: "Miguel is heading to his station",
+  loading: "Waiting for it to go on his tray",
   onTheWay: "Miguel is on his way to her",
   delivered: "Delivered. She has it.",
+  failed: "Miguel couldn't finish this one.",
 };
 
 function DeliveryStrip({ delivery, name }: { delivery: Delivery; name: string }) {
   const at = STAGES.indexOf(delivery.stage);
+  const failed = delivery.stage === "failed";
   return (
-    <div className="fg-rise mt-6 flex items-center gap-3 rounded-2xl border-[1.5px] border-ink bg-[#fffaf1] px-4 py-3">
+    <div
+      className={`fg-rise mt-6 flex items-center gap-3 rounded-2xl border-[1.5px] px-4 py-3 ${
+        failed ? "border-alarm bg-alarm-soft" : "border-ink bg-[#fffaf1]"
+      }`}
+      role={failed ? "status" : undefined}
+    >
       <Glyph name={delivery.item === "water" ? "water" : delivery.item === "medication" ? "medication" : delivery.item === "note" ? "note" : "parcel"} size={30} />
       <div className="min-w-0 flex-1">
         <p className="text-[14.5px] font-semibold leading-tight">
           {delivery.label} for {name}
+          {failed && <span className="text-alarm"> · not delivered</span>}
         </p>
-        <p className="mt-0.5 text-[13px] leading-tight text-ink-2">{STAGE_TEXT[delivery.stage]}</p>
+        <p className={`mt-0.5 text-[13px] leading-tight ${failed ? "text-ink" : "text-ink-2"}`}>
+          {failed ? delivery.detail || STAGE_TEXT.failed : STAGE_TEXT[delivery.stage]}
+        </p>
       </div>
-      <ol className="flex gap-1.5" aria-label={`Step ${at + 1} of 4`}>
-        {STAGES.map((s, i) => (
-          <li
-            key={s}
-            className={`h-2 w-2 rounded-full border border-ink ${i <= at ? "bg-ember" : "bg-transparent"}`}
-          />
-        ))}
-      </ol>
+      {failed ? (
+        <QuietLink href="/family/send">Try again</QuietLink>
+      ) : (
+        <ol className="flex gap-1.5" aria-label={`Step ${at + 1} of 4`}>
+          {STAGES.map((s, i) => (
+            <li
+              key={s}
+              className={`h-2 w-2 rounded-full border border-ink ${i <= at ? "bg-ember" : "bg-transparent"}`}
+            />
+          ))}
+        </ol>
+      )}
     </div>
   );
 }
@@ -67,6 +82,7 @@ const GREETINGS: LineId[] = ["hello", "hello2"] as LineId[];
 
 export function HomeScreen() {
   const s = useFamily();
+  const demo = useDemoControls();
   const minutes = useDemoMinutes();
   const greetIndex = useRef(0);
   const recent = [...s.events].sort((a, b) => b.at - a.at).slice(0, 3);
@@ -87,7 +103,7 @@ export function HomeScreen() {
   return (
     <main className="family-page">
       <div className="fg-rise flex items-start justify-between gap-4">
-        <StatusNote mode={s.mode} note={s.modeNote} onLongPress={openDemoPanel} />
+        <StatusNote mode={s.mode} note={s.modeNote} onLongPress={demo ? openDemoPanel : undefined} />
         <Link
           href="/family/manage"
           aria-label="Care settings and family"
@@ -123,6 +139,8 @@ export function HomeScreen() {
 
       {s.delivery && <DeliveryStrip delivery={s.delivery} name={s.resident.short} />}
 
+      <AskMiguel />
+
       <section className="fg-rise-4 mt-11">
         <SectionLabel right={<QuietLink href="/family/day">See all</QuietLink>}>{s.resident.short}&rsquo;s day</SectionLabel>
         <ol className="mt-5 space-y-[18px]">
@@ -143,6 +161,9 @@ export function HomeScreen() {
             </li>
           ))}
         </ol>
+        {recent.length === 0 && (
+          <p className="mt-5 text-[14px] leading-relaxed text-ink-2">Nothing from Miguel yet today. What he notices will show up here.</p>
+        )}
       </section>
     </main>
   );
