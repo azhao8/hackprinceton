@@ -149,6 +149,7 @@ def test_ask_miguel_and_his_replies(tmp_path):
         await ws.send_json({"t": "ask", "ref": "a", "text": "Ask Mom if she wants a walk"})
         await until(ws, "ack")
         assert st.messages[-1] == ("guardian", "[family app, from Sarah] Ask Mom if she wants a walk")
+        h.on_agent_event({"kind": "reply", "text": "Got it, I'm on it.", "data": {"ack": True}})   # not an answer
         h.on_agent_event({"kind": "reply", "text": "She said yes!", "data": {"photo_url": "/agent/photo/3.jpg"}})
         ev = await until(ws, "event")
         assert ev["kind"] == "message" and ev["note"] == "She said yes!" and ev["photo"].startswith("/family/media/")

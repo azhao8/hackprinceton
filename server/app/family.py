@@ -219,6 +219,8 @@ class FamilyHub:
 
     def on_agent_event(self, ev: dict[str, Any]) -> None:
         kind, text, data = ev.get("kind"), str(ev.get("text", "")), ev.get("data") or {}
+        if data.get("ack"):
+            return   # the instant "Got it, I'm on it." / "On it!": not an answer, not something he did
         if kind == "reply":
             photo = None
             m = re.fullmatch(r"/agent/photo/(\d+)\.jpg", str(data.get("photo_url") or ""))
