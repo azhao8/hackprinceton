@@ -23,6 +23,10 @@ class FakeState:
         self.settings = {"camera": "back"}
         self.said, self.messages, self.follow = [], [], True
         self.agent_photos = {3: b"proof"}
+        self.working = False          # the agent's ApiState.agent_working
+
+    def agent_working(self):
+        return self.working
 
     def agent_message(self, text, source, channel):
         self.messages.append((source, text))
@@ -130,7 +134,7 @@ def test_check_in_sends_video_only_after_she_says_yes(tmp_path):
         assert frame["call"] == h.check_in["id"] and st.settings["camera"] == "front" and st.follow is False
         await ws.send_json({"t": "check_in", "ref": "e", "action": "end"})
         await until(ws, "state", lambda m: m["check_in"]["phase"] == "idle")
-        assert st.settings["camera"] == "back"
+        assert st.settings["camera"] == "back" and st.follow is True     # back to walking with her
         await client.close()
     asyncio.run(go())
 
@@ -237,5 +241,113 @@ def test_ending_a_check_in_while_he_asks_calls_it_off(tmp_path):
         await ws.send_json({"t": "check_in", "ref": "c2", "action": "request"})   # a new one starts fresh
         await until(ws, "ack", lambda m: m["ref"] == "c2")
         assert h.check_in["phase"] == "asking" and "check_in_result" in st.messages[-1][1]
+        await client.close()
+    asyncio.run(go())
+
+
+def nulls(v, path="") -> list[str]:
+    """Every place a message carries null (the app's parser drops the whole message for one)."""
+    if v is None:
+        return [path or "."]
+    if isinstance(v, dict):
+        return [p for k, x in v.items() for p in nulls(x, f"{path}.{k}")]
+    if isinstance(v, list):
+        return [p for i, x in enumerate(v) for p in nulls(x, f"{path}[{i}]")]
+    return []
+
+
+def test_an_alert_before_the_first_camera_frame_has_no_null_photo(tmp_path):
+    async def go():
+        st = FakeState()
+        h = FamilyHub(st, Memory(tmp_path / "m.db"), snapshot=lambda: None, token="secret")
+        client, ws = await connect(h)
+        await until(ws, "events")
+        h.raise_alert("She may be on the floor.")
+        s = await until(ws, "state", lambda m: m["alert"] is not None)
+        assert "photo" not in s["alert"] and nulls({**s, "delivery": 0}) == []
+        await client.close()
+    asyncio.run(go())
+
+
+def test_what_she_said_and_handled_reach_the_app_without_a_mode_change(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await until(ws, "events")
+        alert = h.raise_alert("She may be on the floor.")
+        await until(ws, "state", lambda m: m["alert"] is not None)
+        h.on_agent_event({"kind": "heard", "text": "I slipped. My hip hurts.", "data": {"source": "senior"}})
+        s = await until(ws, "state", lambda m: (m["alert"] or {}).get("heard") == "I slipped. My hip hurts.")
+        assert s["mode"] == "with_mom"
+        h.on_agent_event({"kind": "reply", "text": "She fell; photo attached.", "data": {}})
+        h.on_agent_event({"kind": "reply", "text": "She's sitting up now.", "data": {}})
+        assert h.alert["did"].count("Told the family") == 1
+        st.phone_frames = types.SimpleNamespace(age=lambda: None)   # link down: the mode stays offline
+        await until(ws, "state", lambda m: m["mode"] == "offline")
+        await ws.send_json({"t": "alert", "ref": "h", "id": alert["id"], "action": "handled"})
+        s = await until(ws, "state", lambda m: (m["alert"] or {}).get("status") == "handled")
+        assert s["alert"]["handled_by"] == "Sarah" and s["mode"] == "offline"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_another_task_ending_does_not_fail_a_delivery_still_queued(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "send", "ref": "r1", "item": "water", "label": "Water"})
+        await until(ws, "ack")
+        st.working = True    # Mom's chat ends; the family's request is next in line
+        h.on_agent_event({"kind": "task", "text": "chatted", "data": {"id": "task-1", "status": "done"}})
+        await asyncio.sleep(0.5)
+        assert h.delivery["stage"] == "sent"
+        st.working = False   # he finished everything without calling bring
+        h.on_agent_event({"kind": "reply", "text": "I couldn't find the tray.", "data": {}})
+        h.on_agent_event({"kind": "task", "text": "done", "data": {"id": "task-2", "status": "done"}})
+        s = await until(ws, "state", lambda m: (m["delivery"] or {}).get("stage") == "failed")
+        assert s["delivery"]["detail"] == "I couldn't find the tray."
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_check_in_he_never_answers_is_declined(tmp_path):
+    async def go():
+        h, st = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
+        await until(ws, "ack")
+        h.on_agent_event({"kind": "error", "text": "Claude API error", "data": {}})   # no check_in_result
+        s = await until(ws, "state", lambda m: m["check_in"]["phase"] == "declined")
+        assert s["mode"] != "listening"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_check_in_times_out_while_he_is_busy(tmp_path, monkeypatch):
+    import app.family as family
+
+    monkeypatch.setattr(family, "ASK_TIMEOUT_S", 0.2)
+
+    async def go():
+        h, st = hub(tmp_path)
+        st.working = True    # busy with something else: the request waits behind it
+        client, ws = await connect(h)
+        await ws.send_json({"t": "check_in", "ref": "c", "action": "request"})
+        await until(ws, "ack")
+        ev = await until(ws, "event", lambda m: m["kind"] == "check_in")     # sent just before the state
+        assert ev["note"] == "Miguel was busy and couldn't ask her."
+        await until(ws, "state", lambda m: m["check_in"]["phase"] == "declined")
+        assert "Nobody answered" in st.messages[-1][1]
+        await client.close()
+    asyncio.run(go())
+
+
+def test_an_error_without_a_ref_has_no_null_ref(tmp_path):
+    async def go():
+        h, _ = hub(tmp_path)
+        client, ws = await connect(h)
+        await ws.send_json({"t": "dance"})
+        m = await until(ws, "error")
+        assert "ref" not in m and m["code"] == "bad_request"
         await client.close()
     asyncio.run(go())

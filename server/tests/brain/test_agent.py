@@ -405,3 +405,28 @@ def test_task_requests_are_acknowledged_at_once_before_claude_answers():
         return evs
 
     assert asyncio.run(senior()) == [("say", ACK_SPOKEN, "senior")]
+
+
+def test_working_covers_the_running_task_and_messages_waiting_for_one():
+    """app/family.py decides a family request was dropped only when `working` is False."""
+    class SlowClient:
+        class beta:
+            class messages:
+                @staticmethod
+                async def create(**kw):
+                    await asyncio.sleep(3600)
+
+    async def scenario():
+        agent = Agent(ToolBox(), client=SlowClient(), ack=False)
+        seen = [agent.working]                                     # idle
+        agent.inbox.put_nowait(Utterance("guardian", "Bring Mom water"))
+        seen.append(agent.working)                                 # waiting in the inbox
+        await agent.handle(agent.inbox.get_nowait())
+        await agent.handle(Utterance("guardian", "Then ask her about lunch"))
+        seen.append(agent.working)                                 # a task runs, one more queued
+        agent.stop("test over")
+        await asyncio.sleep(0.05)
+        seen.append(agent.working)                                 # stopped: nothing runs or waits
+        return seen
+
+    assert asyncio.run(scenario()) == [False, True, True, False]
