@@ -6,8 +6,8 @@ definitions is fixed at construction (all built-in tools are always declared, so
 prefix stays cacheable); a tool whose backing piece is missing (no skill factory, no camera)
 answers with an error that says it's unavailable.
 
-Physical tools (`follow`, `find_person`, `go_to`, `bring`) build a skill with an injected
-factory and run it through the `SkillRunner` (one body: starting one cancels the other).
+Physical tools (`follow`, `find_person`, `go_to`, `bring`, `move`) build a skill with an
+injected factory and run it through the `SkillRunner` (one body: starting one cancels the other).
 Factories are called with keyword arguments:
 
     skill_factories = {
@@ -15,7 +15,13 @@ Factories are called with keyword arguments:
         "find_person": lambda name, description: ...,   # name / description may be None
         "go_to": lambda place: ...,
         "bring": lambda item, person: ...,
+        "move": lambda direction, seconds, meters, degrees, speed: Move(...),   # all but direction may be None
     }
+
+Claude picks skills; it doesn't drive the wheels. `move` may take a speed, but only when the
+person asked for one, and the skill and the arbiter clamp it to the robot's limits.
+`set_follow_settings` changes the follow speed and closeness through `set_settings=`; the words
+("slower", "closer"...) map to numbers here, in code, not in the model.
 
 The agent binds itself as the `ToolHost` (events, waiting for the senior's reply, the
 "someone spoke while you were working" signal) with `ToolBox.bind(agent)`.
@@ -32,6 +38,7 @@ import asyncio
 import inspect
 import itertools
 import logging
+import math
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -44,13 +51,20 @@ from app.skills import Skill, SkillResult, SkillRunner
 
 log = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = ("follow", "find_person", "go_to", "bring")
+PHYSICAL_TOOLS = ("follow", "find_person", "go_to", "bring", "move")
 MAX_PHOTOS = 20
 
 # this_is (#62)
 NAME_MAX = 40            # characters in a person's name
 LOOK_MAX_AGE_S = 2.0     # a camera result older than this is stale: the person may have walked off (guess)
 SIMILAR_WIDTH = 0.8      # a 2nd centered person at least this wide (vs the widest) = "who do you mean?" (guess)
+
+MAX_STRICT_TOOLS = 20   # the Claude API's limits for strict tools in one request: how many,
+MAX_STRICT_UNIONS = 16  # and how many nullable / union-typed parameters they have in all
+
+# set_follow_settings: words -> values (the server clamps: speed 0.05..3.2 m/s, closeness 0.1..1.0)
+SPEED_WORDS = {"slower": 0.5, "slow": 0.5, "faster": 1.0, "fast": 1.0, "default": 0.8, "normal": 0.8}
+CLOSENESS_WORDS = {"closer": 1.0, "farther": 0.6, "further": 0.6, "default": 0.8, "normal": 0.8}
 
 
 @dataclass(frozen=True)
@@ -82,6 +96,7 @@ class _Tool:
     properties: dict[str, Any]
     handler: Handler
     stepped: bool = True   # gets the optional "step" (plan step index) field
+    strict: bool = True    # the API allows at most MAX_STRICT_TOOLS strict tools per request
 
     def definition(self) -> dict[str, Any]:
         props = dict(self.properties)
@@ -93,7 +108,7 @@ class _Tool:
         return {
             "name": self.name,
             "description": self.description,
-            "strict": True,
+            "strict": self.strict,
             "input_schema": {
                 "type": "object",
                 "properties": props,
@@ -109,6 +124,14 @@ def _str(desc: str) -> dict[str, Any]:
 
 def _nullable_str(desc: str) -> dict[str, Any]:
     return {"anyOf": [{"type": "string"}, {"type": "null"}], "description": desc}
+
+
+def _nullable_num(desc: str) -> dict[str, Any]:
+    return {"anyOf": [{"type": "number"}, {"type": "null"}], "description": desc}
+
+
+def _word_or_num(desc: str) -> dict[str, Any]:
+    return {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}], "description": desc}
 
 
 class ToolBox:
@@ -127,6 +150,8 @@ class ToolBox:
         perception: Callable[[], Any] | None = None,
         wait_tray: Callable[[], Awaitable[bool]] | None = None,
         places: Any = None,
+        set_settings: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        settings: Callable[[], dict[str, Any]] | None = None,
         skill_wait_s: float = 120.0,
         follow_check_s: float = 1.0,
         clip_frames: int = 3,
@@ -146,6 +171,9 @@ class ToolBox:
         wait_tray: waits until someone confirms the tray (Tray loaded button or voice); True if confirmed.
         places: the Memory (SQLite) that learn_place saves into (set_place, place_for).
         clip_frames, clip_gap_s: describe_scene(clip=true) sends this many frames this far apart.
+        set_settings: applies follow settings ({"speed": m/s} and/or {"distance": closeness}) and
+            returns the full settings dict; set_follow_settings uses it.
+        settings: returns the current settings dict (read only), for set_follow_settings with nothing to change.
         """
         self.runner = runner
         self.skill_factories: dict[str, Callable[..., Skill]] = dict(skill_factories or {})
@@ -157,6 +185,8 @@ class ToolBox:
         self.perception = perception
         self.wait_tray = wait_tray
         self.places = places
+        self.set_settings = set_settings
+        self.settings = settings
         self.photos: OrderedDict[int, bytes] = OrderedDict()
         self.skill_wait_s = skill_wait_s
         self.follow_check_s = follow_check_s
@@ -174,14 +204,30 @@ class ToolBox:
         self.host = host
 
     def register(self, name: str, description: str, properties: dict[str, Any], handler: Handler,
-                 *, stepped: bool = True) -> None:
+                 *, stepped: bool = True, strict: bool = True) -> None:
         """Add (or replace) a tool. Do it before the agent's first call: the tool list is part of
         the cached prompt prefix. `properties` are JSON-schema properties; all become required
         (use anyOf with null for optional ones)."""
-        self._tools[name] = _Tool(name, description, properties, handler, stepped)
+        self._tools[name] = _Tool(name, description, properties, handler, stepped, strict)
 
     def definitions(self) -> list[dict[str, Any]]:
-        return [t.definition() for t in self._tools.values()]
+        """The tools for the API. Past the API's strict limits (MAX_STRICT_TOOLS, MAX_STRICT_UNIONS) it
+        refuses every request (Sun 3:40 am, #79), so tools that don't fit go out non-strict, with a warning."""
+        defs = [t.definition() for t in self._tools.values()]
+        tools = unions = 0
+        demoted = []
+        for d in defs:
+            if not d["strict"]:
+                continue
+            n = sum("anyOf" in p or isinstance(p.get("type"), list) for p in d["input_schema"]["properties"].values())
+            if tools + 1 > MAX_STRICT_TOOLS or unions + n > MAX_STRICT_UNIONS:
+                d["strict"] = False
+                demoted.append(d["name"])
+            else:
+                tools, unions = tools + 1, unions + n
+        if demoted:
+            log.warning("over the API's strict-tool limits: %s sent non-strict", ", ".join(demoted))
+        return defs
 
     @property
     def names(self) -> list[str]:
@@ -201,6 +247,38 @@ class ToolBox:
         """Stop the body right away (the senior's stop). Safe to call from sync code."""
         if self.runner is not None:
             self.runner.cancel()
+
+    def people_in_view(self, max_people: int = 4, stale_s: float = 2.0) -> str | None:
+        """Who the camera sees right now, by saved look (#78): "Alex (center, near); someone I don't
+        recognize (left, far)". None when there is no camera. The mic gives words, not a speaker, so this
+        is the agent's only clue to who is talking; it knows clothes, not faces."""
+        if self.perception is None:
+            return None
+        try:
+            p = self.perception()
+        except Exception:  # noqa: BLE001 - a broken camera must not break every request
+            return None
+        if p is None or time.monotonic() - float(getattr(p, "published_at", 0.0)) > stale_s:
+            return "the camera isn't seeing anything right now"
+        people = list(getattr(p.detections, "people", []) or [])
+        if not people:
+            return "nobody"
+        people.sort(key=lambda q: q.box.x2 - q.box.x1, reverse=True)   # closest (widest) first
+        out = []
+        for person in people[:max_people]:
+            name = None
+            if self.registry is not None:
+                try:
+                    hit = self.registry.match_person(p.frame.image, person, people)
+                    name = hit[0] if hit else None
+                except Exception:  # noqa: BLE001
+                    name = None
+            cx, h = (person.box.x1 + person.box.x2) / 2, person.box.y2 - person.box.y1
+            side = "left" if cx < 0.35 else "right" if cx > 0.65 else "center"
+            dist = "near" if h > 0.6 else "middle distance" if h > 0.3 else "far"
+            out.append(f"{name or 'someone I don\'t recognize'} ({side}, {dist})")
+        extra = len(people) - max_people
+        return "; ".join(out) + (f"; and {extra} more" if extra > 0 else "")
 
     def memory_summary(self, max_items: int = 12, max_chars: int = 600) -> str:
         parts = [f"{k}: {v}" for k, v in list(self.memory.items())[-max_items:]]
@@ -297,6 +375,36 @@ class ToolBox:
           "Bring an item to a person: fetch it and deliver it (for example item 'medication', person 'Mom').",
           {"item": _str("What to bring."), "person": _str("Who it is for.")},
           self._physical("bring", lambda a: {"item": a["item"], "person": a["person"]}))
+        move = self._physical("move", lambda a: {k: a.get(k) for k in ("direction", "seconds", "meters", "degrees", "speed")})
+
+        async def _move(a: dict[str, Any]) -> ToolOutcome:
+            problem = _move_problem(a)
+            return ToolOutcome(False, problem) if problem else await move(a)
+
+        r("move",
+          "Drive straight or turn in place, for a short time, a distance or an angle. forward and backward "
+          "drive straight; left and right turn in place. By default it uses the drive speed (or turn rate) set "
+          "on the control page, for 1 second. Give at most one of seconds, meters (forward/backward only) or "
+          "degrees (left/right only); null for the others. Give speed only when the person asked for a specific "
+          "speed (m/s straight, rad/s turning), else null; the robot clamps it to safe limits. Examples: 'go "
+          "forward' -> move(forward); 'go back 2 meters' -> move(backward, meters=2); 'turn left 90 degrees' -> "
+          "move(left, degrees=90); 'go forward for 3 seconds at 0.5' -> move(forward, seconds=3, speed=0.5).",
+          {"direction": {"type": "string", "enum": ["forward", "backward", "left", "right"],
+                         "description": "Which way: forward, backward, or turn left / right in place."},
+           "seconds": _nullable_num("How long to move, 0.1 to 10 seconds, or null."),
+           "meters": _nullable_num("How far to drive (forward/backward), 0.05 to 5 m, or null."),
+           "degrees": _nullable_num("How far to turn (left/right), 5 to 720 degrees, or null."),
+           "speed": _nullable_num("Only if the person asked for a speed: m/s straight, rad/s turning. Else null.")},
+          _move, strict=False)   # 5 nullable params: strict would pass the API's union limit (_move_problem checks)
+        r("set_follow_settings",
+          "Change how you follow people: speed and closeness. Each is a word, a number, or null to leave it "
+          "unchanged. speed words: slower or slow = 0.5 m/s, faster or fast = 1.0 m/s, default or normal = "
+          "0.8 m/s. closeness words: closer = 1.0, farther or further = 0.6, default or normal = 0.8 (bigger "
+          "stops closer, 0.1 to 1.0). A specific number is fine too ('follow at 0.6 meters per second' -> "
+          "speed=0.6). It applies right away, also while following.",
+          {"speed": _word_or_num("A speed word or m/s, or null to keep it."),
+           "closeness": _word_or_num("A closeness word or a number 0.1 to 1.0, or null to keep it.")},
+          self._set_follow_settings, stepped=False, strict=False)   # string-or-number params
         r("wait_for_action",
           "Keep waiting for the physical action that is still running (after a tool said it is still "
           "running, or after you were interrupted). Returns its result, or 'still running'.",
@@ -339,11 +447,11 @@ class ToolBox:
         r("recall",
           "Look up a fact in world memory by key. Returns the value, or the known keys if it's missing.",
           {"key": _str("The key to look up.")},
-          self._recall, stepped=False)
+          self._recall, stepped=False, strict=False)   # one plain string: strict buys nothing
         r("forget",
           "Delete a fact from world memory (when someone says it's wrong or asks you to forget it).",
           {"key": _str("The key to delete.")},
-          self._forget, stepped=False)
+          self._forget, stepped=False, strict=False)
 
     def _emit(self, kind: EventKind, text: str = "", *, to: Source | None = None,
               data: dict[str, Any] | None = None) -> None:
@@ -444,6 +552,25 @@ class ToolBox:
         why = "Someone spoke while you were working (see below)" if waiter in done else f"Still going after {timeout:.0f} s"
         return ToolOutcome(True, f"{why}. {name} is still running. Call wait_for_action to keep waiting, start "
                                  f"another action to replace it, or stop().", {"skill": name, "running": True})
+
+    async def _set_follow_settings(self, a: dict[str, Any]) -> ToolOutcome:
+        if self.set_settings is None:
+            return ToolOutcome(False, "set_follow_settings is unavailable right now (no settings on this server).")
+        changes: dict[str, float] = {}
+        for arg, key, words in (("speed", "speed", SPEED_WORDS), ("closeness", "distance", CLOSENESS_WORDS)):
+            value = _setting_value(a.get(arg), words)
+            if isinstance(value, str):   # an unknown word or a bad value
+                return ToolOutcome(False, f"{arg} {value}")
+            if value is not None:
+                changes[key] = value
+        if not changes:
+            now = self.settings() if self.settings is not None else None
+            return ToolOutcome(False, "Nothing to change: give speed, closeness or both."
+                               + (f" Now: {_follow_settings_text(now)}." if now else ""))
+        result = self.set_settings(changes) or {}
+        log.info("agent: follow settings %s -> %s", changes, _follow_settings_text(result))
+        return ToolOutcome(True, f"{_follow_settings_text(result)}. It applies right away if I'm following.",
+                           {k: result.get(k) for k in ("speed", "distance")})
 
     async def _wait_for_action(self, a: dict[str, Any]) -> ToolOutcome:
         task = self._skill_task
@@ -627,6 +754,56 @@ async def grab_clip(snap: Callable[[], Awaitable[bytes | None]], frames: int, ga
         if jpeg is not None and (not out or jpeg != out[-1]):
             out.append(jpeg)
     return out
+def _move_problem(a: dict[str, Any]) -> str | None:
+    """Why a move call can't run (before it stops whatever is running), or None. move isn't strict
+    (the API's union limit), so the types are checked here too."""
+    if a.get("direction") not in ("forward", "backward", "left", "right"):
+        return "direction must be forward, backward, left or right."
+    for k in ("seconds", "meters", "degrees", "speed"):
+        v = a.get(k)
+        if v is None:
+            continue
+        try:
+            ok = not isinstance(v, bool) and math.isfinite(float(v))
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            return f"{k} must be a number or null."
+    turning = a.get("direction") in ("left", "right")
+    if sum(a.get(k) is not None for k in ("seconds", "meters", "degrees")) > 1:
+        return "Give only one of seconds, meters or degrees (null for the others)."
+    if turning and a.get("meters") is not None:
+        return "meters is for forward or backward. To turn, use degrees."
+    if not turning and a.get("degrees") is not None:
+        return "degrees is for left or right. To drive straight, use meters."
+    return None
+
+
+def _setting_value(value: Any, words: dict[str, float]) -> float | str | None:
+    """A follow setting from the tool call: None (unchanged), a number, or an error text."""
+    allowed = f"must be a number or one of: {', '.join(words)}."
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return allowed
+    if isinstance(value, (int, float)):
+        return float(value)
+    word = str(value).strip().lower()
+    if word in words:
+        return words[word]
+    try:
+        return float(word)   # "0.6" as a string
+    except ValueError:
+        return f"{value!r} isn't known: it {allowed}"
+
+
+def _follow_settings_text(s: dict[str, Any]) -> str:
+    parts = []
+    if isinstance(s.get("speed"), (int, float)):
+        parts.append(f"Follow speed {s['speed']:.2f} m/s")
+    if isinstance(s.get("distance"), (int, float)):
+        parts.append(f"closeness {s['distance']:.2f}")
+    return ", ".join(parts) or "Follow settings updated"
 
 
 def _from_result(name: str, r: SkillResult) -> ToolOutcome:

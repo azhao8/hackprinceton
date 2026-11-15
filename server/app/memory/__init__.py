@@ -69,12 +69,24 @@ class Memory:
         with self._lock, self._db:
             self._db.executescript(SCHEMA)
         self.facts = Facts(self)
+        self._seed = (dict(seed_places or {}), dict(seed_aliases or {}))
         if seed_places and not self.places():
-            aliases: dict[str, list[str]] = {}
-            for alias, name in (seed_aliases or {}).items():
-                aliases.setdefault(name, []).append(alias)
-            for name, marker in seed_places.items():
-                self.set_place(name, marker=marker, aliases=aliases.get(name, []))
+            self._plant_seed()
+
+    def _plant_seed(self) -> None:
+        seed_places, seed_aliases = self._seed
+        aliases: dict[str, list[str]] = {}
+        for alias, name in seed_aliases.items():
+            aliases.setdefault(name, []).append(alias)
+        for name, marker in seed_places.items():
+            self.set_place(name, marker=marker, aliases=aliases.get(name, []))
+
+    def reset(self) -> None:
+        """Erase everything (#79, the control page's Erase memory): facts, places and events. The
+        places go back to the seed (the demo's printed sign cards), so go_to and bring still work."""
+        with self._lock, self._db:
+            self._db.executescript("DELETE FROM facts; DELETE FROM places; DELETE FROM events;")
+        self._plant_seed()
 
     def close(self) -> None:
         with self._lock:

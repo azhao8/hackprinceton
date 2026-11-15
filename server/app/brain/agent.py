@@ -16,7 +16,10 @@ How it works (docs/03-software.md, "How an instruction becomes motion"):
   on its skill returns early so Claude sees the new message quickly.
 - "stop" (and "wait", "halt"...) is checked first, without the LLM: it cancels the skill and
   the task immediately.
-- The LLM never sends speeds: tools start skills, skills drive through the arbiter.
+- The LLM picks skills, and skills drive through the arbiter. Only `move` takes a speed, and
+  only when the person asked for one; the skill and the arbiter clamp it.
+- `reset_conversation()` (the control page's reset) stops the task and forgets the conversation;
+  world memory stays. `clear_events()` empties the event log.
 
 Conversation memory keeps the last `history_exchanges` tasks. Thinking blocks are dropped from
 a task once it finishes (they are only needed inside its own tool loop), so trimming old tasks
@@ -298,6 +301,7 @@ class Agent:
         self._reply_waiter: asyncio.Future[Utterance | None] | None = None
         self._stop_note: str | None = None
         self._ctx_tokens = 0   # local model: the last call's prompt + output tokens (for trimming)
+        self._generation = 0   # bumped by reset_conversation: older tasks don't write history back
         tools.bind(self)
 
     # --- public API -----------------------------------------------------------------------------
@@ -392,6 +396,33 @@ class Agent:
         if moving or had_task:
             self.emit("say", "Okay, stopping.", to="senior")
 
+    def reset_conversation(self) -> None:
+        """Forget the conversation: stop the body and the running task like stop(), drop queued
+        messages and clear the history. World memory stays. Says nothing. Sync."""
+        self._generation += 1   # the cancelled task, still unwinding, must not write its exchange back
+        self.tools.cancel_physical()
+        if self._reply_waiter is not None and not self._reply_waiter.done():
+            self._reply_waiter.set_result(None)
+        dropped = len(self._pending)
+        self._pending.clear()
+        self._interject.clear()
+        while not self.inbox.empty():
+            self.inbox.get_nowait()
+            dropped += 1
+        if self.busy:
+            assert self._task is not None
+            self._task.cancel()
+        self._stop_note = None
+        forgot = len(self._history)
+        self._history.clear()
+        self._ctx_tokens = 0
+        log.info("agent: conversation reset (forgot %d exchanges, dropped %d queued messages)",
+                 forgot, dropped)
+
+    def clear_events(self) -> None:
+        """Empty the event log. New events keep counting up from the last id."""
+        self._events.clear()
+
     async def idle(self) -> None:
         """Wait until no task is running (including tasks started for queued messages)."""
         while self._task is not None and not self._task.done():
@@ -454,9 +485,11 @@ class Agent:
 
     def _start(self, utterances: list[Utterance]) -> None:
         prev = self._task if self.busy else None   # e.g. still unwinding from a stop
-        self._task = asyncio.create_task(self._run_task(utterances, prev), name="agent-task")
+        self._task = asyncio.create_task(self._run_task(utterances, prev, self._generation), name="agent-task")
 
-    async def _run_task(self, utterances: list[Utterance], after: asyncio.Task[None] | None = None) -> None:
+    async def _run_task(self, utterances: list[Utterance], after: asyncio.Task[None] | None = None,
+                        generation: int | None = None) -> None:
+        gen = self._generation if generation is None else generation
         if after is not None:
             await asyncio.wait({after})   # let it finish and write its history first
         last = utterances[-1]
@@ -468,6 +501,9 @@ class Agent:
         effort = EFFORT_TASK if EFFORT_TASK in efforts else EFFORT_CHAT
         content: list[dict[str, Any]] = [{"type": "text", "text": _label(u)} for u in utterances]
         content.append({"type": "text", "text": f"World memory: {self.tools.memory_summary()}"})
+        in_view = self.tools.people_in_view() if hasattr(self.tools, "people_in_view") else None
+        if in_view is not None:   # who might be talking (#78): the mic doesn't say
+            content.append({"type": "text", "text": f"People in view now: {in_view}."})
         ex: list[dict[str, Any]] = [{"role": "user", "content": content}]
         if self.per_message_effort:   # this task's effort, without touching the cached prefix
             ex.append({"role": "system", "content": [], "output_config": {"effort": effort}})
@@ -540,8 +576,9 @@ class Agent:
             self.emit("error", f"the agent crashed: {type(e).__name__}: {e}")
             self._close_dangling(ex, "Not run: the agent crashed.")
         finally:
-            self._finish(st, ex, status, summary, keep)
-        if self._pending:   # arrived after Claude's last look: run them as the next task
+            # after a reset_conversation this task belongs to the forgotten conversation: keep nothing
+            self._finish(st, ex, status, summary, keep and gen == self._generation)
+        if self._pending and gen == self._generation:   # arrived after Claude's last look: run them as the next task
             pending, self._pending = self._pending, []
             self._interject.clear()
             self._start(pending)
