@@ -14,7 +14,9 @@ so the first bytes can't go out before the last sentence is done (and the phone 
 the whole body anyway). Kokoro is fast enough that it doesn't matter: measured on the M5 Pro, about
 0.06 s for "Here is your water, Mom." and about 0.17 s for three sentences.
 
-Model calls run in a worker thread (asyncio.to_thread) holding app.mlx_lock.MLX_LOCK, one sentence at
+Model calls run on the voice's own single worker thread (MLX streams belong to the thread that made
+them: Qwen's streaming generator fails if its next step runs on another thread), holding
+app.mlx_lock.MLX_LOCK, one sentence at
 a time (split on . ! ?), so local hearing gets a turn between sentences and the event loop never
 blocks. Lines are made one at a time, in order. `prewarm()` (run in the background at startup)
 loads the model and warms it up first: the first line otherwise takes about 3 s (spaCy loading).
@@ -39,6 +41,8 @@ skip oddly), then `normalize_text` collapses whitespace and caps the length, as 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import importlib.util
 import io
 import logging
@@ -303,6 +307,7 @@ class KokoroTTS:
         self._load: asyncio.Task[None] | None = None
         self._one_line: asyncio.Lock | None = None   # made lazily, inside the running loop
         self.label = "Kokoro"
+        self._model_thread: concurrent.futures.ThreadPoolExecutor | None = None
 
     def __repr__(self) -> str:
         return f"KokoroTTS(voice={self.voice!r}, speed={self.speed!r})"
@@ -384,6 +389,9 @@ class KokoroTTS:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self._model_thread is not None:
+            self._model_thread.shutdown(wait=False, cancel_futures=True)
+            self._model_thread = None
 
     # --- internals ------------------------------------------------------------
 
@@ -426,7 +434,7 @@ class KokoroTTS:
     async def _load_and_warm(self) -> None:
         t0 = time.perf_counter()
         try:
-            await asyncio.to_thread(self._locked, self._engine.load)
+            await self._on_model_thread(self._locked, self._engine.load)
             await asyncio.to_thread(self._engine.prepare)            # CPU only: hearing can run meanwhile
             await self._make(WARMUP_LINE)
         except TTSError:
@@ -435,6 +443,12 @@ class KokoroTTS:
             log.exception("local voice: loading %s failed", self.label)
             raise TTSError(f"the local voice failed to load: {type(e).__name__}: {e}") from None
         log.info("local voice: %s loaded and warm in %.1f s", self.label, time.perf_counter() - t0)
+
+    async def _on_model_thread(self, fn, *args):
+        """Run fn on this voice's one model thread (every MLX call for the model happens there)."""
+        if self._model_thread is None:
+            self._model_thread = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="local-voice")
+        return await asyncio.get_running_loop().run_in_executor(self._model_thread, functools.partial(fn, *args))
 
     def _locked(self, fn, *args):
         with self._lock:
@@ -448,7 +462,7 @@ class KokoroTTS:
             segments = self._engine.segments(text, self.voice, self.speed)
             parts: list[bytes] = []
             while True:
-                chunk = await asyncio.to_thread(self._locked, self._next_pcm, segments)
+                chunk = await self._on_model_thread(self._locked, self._next_pcm, segments)
                 if chunk is None:
                     break
                 parts.append(chunk)
