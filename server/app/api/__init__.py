@@ -1150,12 +1150,25 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <h3>Ask Miguel (voice agent)</h3><form id=af><input id=at style='font:inherit;width:70%;padding:10px' placeholder='Ask Miguel to do something'>
 <button style='font:inherit;padding:10px 14px'>Send</button></form>
 <div id=al style='background:#222;padding:10px;white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px'></div>
+<h3>Family phones (texting Miguel on iMessage)</h3>
+<p style='color:#999;margin:4px 0'>A linked phone's texts reach Miguel as that person, and alerts reach them (server/bridge, docs/photon.md).</p>
+<form id=pf><select id=pm style='font:inherit;padding:8px'></select>
+<input id=pn type=tel placeholder='+1 215 555 0123' style='font:inherit;width:11em;padding:10px'>
+<button style='font:inherit;padding:10px 14px'>Link</button>
+<button type=button id=fallT style='font:inherit;padding:10px 14px'>Test fall alert</button></form>
+<div id=pl style='margin:6px 0'></div>
 <p style='color:#999'>The robot only moves after someone at the robot starts it balancing (g). Follow uses the phone page's tracking.</p>
 <script>
 const $=id=>document.getElementById(id);   // not bare ids: `stop` is the browser's window.stop()
 const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
 $('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon').onclick=()=>act('follow-on');$('foff').onclick=()=>act('follow-off');
 $('loaded').onclick=()=>fetch('/control/loaded',{method:'POST'});
+async function phones(o){const r=await fetch('/family/phones',o?{method:'POST',body:JSON.stringify(o)}:undefined);if(r.status===404){$('pl').textContent='(family app side is off)';return}
+const d=await r.json();if(!d.ok){$('pl').textContent=d.error;return}const pm=$('pm');if(!pm.options.length)for(const[id,n]of Object.entries(d.members)){const op=document.createElement('option');op.value=id;op.textContent=n;pm.append(op)}
+const pl=$('pl');pl.textContent=d.items.length?'':'No phones linked yet.';for(const it of d.items){const row=document.createElement('div');row.textContent=(d.members[it.member]||it.member)+': '+it.phone+' ';
+const b=document.createElement('button');b.textContent='Remove';b.style.font='inherit';b.onclick=()=>phones({member:it.member,phone:''});row.append(b);pl.append(row)}}
+$('pf').onsubmit=e=>{e.preventDefault();phones({member:$('pm').value,phone:$('pn').value}).then(()=>{$('pn').value=''})};
+$('fallT').onclick=()=>{if(confirm('Send a test fall alert to the family?'))fetch('/control/fall',{method:'POST'})};phones();
 // NEW (#62) "This is: [name] [Save look]": save the clothes of the person in front of the camera.
 $('saveLook').onclick=async()=>{const name=$('who').value.trim(),o=$('lookSt');if(!name){o.textContent='Type a name first.';return}
 o.textContent='Looking...';try{const d=await (await fetch('/control/this-is',{method:'POST',body:JSON.stringify({name})})).json();

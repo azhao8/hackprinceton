@@ -112,7 +112,13 @@ export interface Member {
 }
 
 /** Requests the app makes; the latest of each kind is tracked in FamilyState.requests. */
-export type RequestKind = "send" | "ask" | "checkIn" | "alert" | "routine" | "invite";
+export type RequestKind = "send" | "ask" | "checkIn" | "alert" | "routine" | "invite" | "phone";
+
+/** A phone linked to a family member for texting Miguel (iMessage). `phone` is E.164. */
+export interface LinkedPhone {
+  member: string;
+  phone: string;
+}
 
 export interface RequestStatus {
   ref: string;
@@ -143,6 +149,8 @@ export interface FamilyState {
   alert: Alert | null;
   routines: Routine[];
   members: Member[];
+  /** Phones linked for texting Miguel, one per member at most. */
+  phones: LinkedPhone[];
   /** Walking pace over the last 7 days, m/s, oldest first. */
   pace: number[];
   /** The latest request of each kind and how it went. */

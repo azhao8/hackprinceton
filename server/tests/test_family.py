@@ -545,3 +545,40 @@ def test_a_yes_needs_her_spoken_yes(tmp_path):
     assert h.check_in["phase"] == "declined"
     assert said_yes("Yeah, go ahead") and said_yes("okay sure") and not said_yes("no, not now")
     assert not said_yes("wait") and not said_yes("")
+
+
+def test_linking_a_phone_reaches_every_app_and_is_saved(tmp_path):
+    async def go():
+        h, _ = hub(tmp_path)
+        client, ws = await connect(h, viewer="m2")
+        assert (await until(ws, "phones"))["items"] == []
+        await ws.send_json({"t": "phone", "ref": "p1", "member": "m2", "phone": "(215) 555-0123"})
+        assert (await until(ws, "ack"))["ref"] == "p1"
+        m = await until(ws, "phones")
+        assert m["items"] == [{"member": "m2", "phone": "+12155550123"}]
+        await ws.send_json({"t": "phone", "ref": "p2", "member": "m2", "phone": "call me"})
+        assert (await until(ws, "error"))["code"] == "bad_request"
+        await client.close()
+        again, _ = hub(tmp_path)   # saved: a restarted server still knows it
+        assert again.phones == {"+12155550123": "m2"}
+        assert again.link_phone("m1", "+12155550123") is None   # the same phone moves to Sarah
+        assert again.phones == {"+12155550123": "m1"}
+        assert again.link_phone("m1", "") is None and again.phones == {}
+    asyncio.run(go())
+
+
+def test_control_page_links_phones_from_this_laptop_only(tmp_path):
+    async def go():
+        h, _ = hub(tmp_path)
+        app = web.Application()
+        app.add_routes(h.routes())
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        r = await client.post("/family/phones", json={"member": "m1", "phone": "6095550188"})
+        d = await r.json()
+        assert r.status == 200 and d["items"] == [{"member": "m1", "phone": "+16095550188"}]
+        assert d["members"]["m1"] == "Sarah"
+        r = await client.post("/family/phones", json={"member": "m9", "phone": "6095550188"})
+        assert r.status == 400
+        await client.close()
+    asyncio.run(go())

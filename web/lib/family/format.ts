@@ -28,3 +28,19 @@ export function sinceLabel(from: number, to: number): string {
   const r = d % 60;
   return r ? `${h} hr ${r} min` : `${h} hr`;
 }
+
+/**
+ * A typed phone number in E.164 ("+12155550123"), or null if it doesn't look like one.
+ * Spaces, dashes, dots and parentheses are dropped; a bare 10-digit number is taken as US.
+ */
+export function normalizePhone(typed: string): string | null {
+  const s = typed.trim().replace(/[\s().-]/g, "");
+  if (/^\d{10}$/.test(s)) return `+1${s}`;
+  if (/^1\d{10}$/.test(s)) return `+${s}`;
+  return /^\+[1-9]\d{7,14}$/.test(s) ? s : null;
+}
+
+/** A phone number with all but the last four digits hidden: "•••• 0123". */
+export function maskPhone(phone: string): string {
+  return `•••• ${phone.slice(-4)}`;
+}

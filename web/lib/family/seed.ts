@@ -113,6 +113,7 @@ export function seedState(now: number): FamilyState {
     alert: null,
     routines: seedRoutines,
     members: seedMembers,
+    phones: [],
     pace: [0.71, 0.74, 0.69, 0.73, 0.72, 0.75, 0.74],
     requests: {},
   };
