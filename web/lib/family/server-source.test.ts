@@ -261,6 +261,33 @@ describe("ServerSource", () => {
     expect(source.getFrame()).toBeNull();
   });
 
+  it("check-in call (#118): the phone's offer waits for the call screen; your answer goes back", () => {
+    connect("state-with-mom");
+    source.requestCheckIn();
+    // the phone's offer can come before the `live` state: kept until the screen listens
+    socket().receive(sample("rtc-offer"));
+    socket().receive(sample("rtc-candidate"));
+    socket().receive(sample("state-check-in"));
+    const got = vi.fn();
+    const off = source.subscribeRtc(got);
+    expect(got.mock.calls.map((c) => c[0])).toEqual([
+      { call: "c3", sdp: sample("rtc-offer").sdp },
+      { call: "c3", candidate: sample("rtc-candidate").candidate },
+    ]);
+    socket().receive({ t: "rtc", call: "c3", candidate: { candidate: "later" } }); // listening: straight through
+    expect(got).toHaveBeenCalledTimes(3);
+    source.sendRtc({ call: "c3", sdp: sample("rtc-answer").sdp });
+    expect(socket().last()).toEqual(sample("rtc-answer"));
+    expect(isFamilyClientMessage(socket().last())).toBe(true);
+    off();
+    // a call that ended drops what it left behind, so the next call starts clean
+    socket().receive({ t: "rtc", call: "c3", candidate: { candidate: "stale" } });
+    socket().receive(sample("state-with-mom"));
+    const next = vi.fn();
+    source.subscribeRtc(next);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("ending a check-in goes back to idle right away and tells the server", () => {
     connect("state-check-in");
     source.endCheckIn();

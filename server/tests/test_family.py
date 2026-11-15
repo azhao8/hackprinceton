@@ -582,3 +582,119 @@ def test_control_page_links_phones_from_this_laptop_only(tmp_path):
         assert r.status == 400
         await client.close()
     asyncio.run(go())
+
+
+# --- the two-way video call (#118) ------------------------------------------------------------
+
+class FakeMicHub:
+    """The phone's mic socket (app.speech.mic.MicHub), as the family hub uses it for the call."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.call = None
+        self.on_call_message = None
+        self.connected = True
+
+    def send(self, msg):
+        if not self.connected:
+            return False
+        self.sent.append(msg)
+        return True
+
+    def set_call(self, msg):
+        if msg is None:
+            self.sent.append({"type": "call", "call": self.call["call"], "on": False})
+        else:
+            self.sent.append(msg)
+        self.call = msg
+
+    def listening(self):
+        return False
+
+
+def with_phone(tmp_path):
+    h, st = hub(tmp_path)
+    st.mic = types.SimpleNamespace(hub=FakeMicHub())
+    return h, st, st.mic.hub
+
+
+OFFER = {"type": "offer", "sdp": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n"}
+ANSWER = {"type": "answer", "sdp": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\n"}
+
+
+def test_the_video_call_setup_is_relayed_both_ways_only_for_the_live_call(tmp_path):
+    async def go():
+        h, st, phone = with_phone(tmp_path)
+        client, ws = await connect(h)
+        david = await client.ws_connect("/family/ws")
+        await david.send_json({"t": "hello", "v": 1, "token": "secret", "viewer": "m2"})
+        await until(david, "phones")
+        await go_live(h, ws)
+        cid = h.check_in["id"]
+        assert phone.call == {"type": "call", "call": cid, "on": True, "by": "Sarah"}
+        assert phone.on_call_message == h.on_phone_call
+        # the phone's offer and candidates reach the caller, in order
+        h.on_phone_call({"type": "rtc", "call": cid, "sdp": OFFER})
+        h.on_phone_call({"type": "rtc", "call": cid, "candidate": {"candidate": "c1", "sdpMid": "0"}})
+        h.on_phone_call({"type": "rtc", "call": "old", "candidate": {"candidate": "stale"}})   # another call: dropped
+        h.on_phone_call({"type": "rtc", "call": cid, "candidate": {"candidate": "c2"}})
+        assert (await until(ws, "rtc")) == {"t": "rtc", "call": cid, "sdp": OFFER}
+        assert (await until(ws, "rtc"))["candidate"] == {"candidate": "c1", "sdpMid": "0"}
+        assert (await until(ws, "rtc"))["candidate"] == {"candidate": "c2"}    # the stale one never came
+        assert await nothing(david, "rtc")                                     # only the caller gets it
+        # the caller's answer reaches the phone; nobody else's does, nor one for another call
+        await ws.send_json({"t": "rtc", "call": cid, "sdp": ANSWER})
+        await ws.send_json({"t": "rtc", "call": cid, "candidate": {"candidate": "a1"}})
+        for _ in range(50):
+            if len([m for m in phone.sent if m["type"] == "rtc"]) == 2:
+                break
+            await asyncio.sleep(0.02)
+        assert [m for m in phone.sent if m["type"] == "rtc"] == [
+            {"type": "rtc", "call": cid, "sdp": ANSWER}, {"type": "rtc", "call": cid, "candidate": {"candidate": "a1"}}]
+        await david.send_json({"t": "rtc", "call": cid, "sdp": ANSWER})
+        assert (await until(david, "error"))["code"] == "no_consent"
+        await ws.send_json({"t": "rtc", "call": "c999", "sdp": ANSWER})
+        assert (await until(ws, "error"))["code"] == "no_consent"
+        await ws.send_json({"t": "rtc", "call": cid, "sdp": {"type": "answer", "sdp": ""}})
+        assert (await until(ws, "error"))["code"] == "bad_request"
+        phone.connected = False
+        await ws.send_json({"t": "rtc", "call": cid, "sdp": ANSWER})
+        assert (await until(ws, "error"))["code"] == "unavailable"
+        await david.close()
+        await client.close()
+    asyncio.run(go())
+
+
+def test_either_side_ends_the_call_for_both(tmp_path):
+    async def go():
+        h, st, phone = with_phone(tmp_path)
+        client, ws = await connect(h)
+        await go_live(h, ws)
+        cid = h.check_in["id"]
+        h.on_phone_call({"type": "hangup", "call": "someone-else"})        # not this call: ignored
+        assert h.check_in["phase"] == "live"
+        h.on_phone_call({"type": "hangup", "call": cid})                    # her End button on Miguel's screen
+        await until(ws, "state", lambda m: m["check_in"]["phase"] == "idle")
+        assert phone.call is None and phone.sent[-1] == {"type": "call", "call": cid, "on": False}
+        assert st.settings["camera"] == "back" and st.follow is True
+        await go_live(h, ws)                                                # the app's End button
+        cid = h.check_in["id"]
+        await ws.send_json({"t": "check_in", "ref": "e", "action": "end"})
+        await until(ws, "state", lambda m: m["check_in"]["phase"] == "idle")
+        assert phone.call is None and phone.sent[-1] == {"type": "call", "call": cid, "on": False}
+        await go_live(h, ws)                                                # the caller closing the app
+        await ws.close()
+        for _ in range(50):
+            if phone.call is None:
+                break
+            await asyncio.sleep(0.02)
+        assert phone.call is None and h.check_in["phase"] == "idle"
+        await client.close()
+    asyncio.run(go())
+
+
+def test_a_declined_check_in_never_opens_the_call_on_the_phone(tmp_path):
+    h, _, phone = with_phone(tmp_path)
+    h.check_in = {"phase": "asking", "id": "c1", "by": "Sarah"}
+    h.on_agent_event({"kind": "check_in", "text": "yes", "data": {"answer": "yes"}})   # no spoken yes from her
+    assert h.check_in["phase"] == "declined" and phone.call is None and phone.sent == []

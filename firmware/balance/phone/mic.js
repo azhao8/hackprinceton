@@ -17,6 +17,10 @@
 // if set, gets each one ({type: 'listen', on, why} and {type: 'say', id, text}). Mic.send(obj) sends
 // one (tap-to-talk: {type: 'listen'}; tapped again while listening: {type: 'listen_off'}).
 //
+// Family video call (#118): Mic.hold(true) sends zeros until Mic.hold(false), so nothing said on the call
+// reaches Miguel (the server drops it too); Mic.track is the microphone's audio track, which the call
+// sends to the family (call.js), so the phone keeps one capture.
+//
 // window.onMicLevel(level, state), if set, gets the input level (0..1, RMS) about 25 times a second,
 // with state = { sending, muted, connected }.
 (function (root) {
@@ -78,6 +82,7 @@ registerProcessor('mic-tap', MicTap);`;
     let ctx = null, stream = null, src = null, node = null, sink = null, ws = null;
     let running = false, down = null, frame = new Int16Array(FRAME_SAMPLES), fill = 0;
     let quietUntil = 0, lastVoice = '', retry = 0, retryTimer = null, level = 0, frameLevel = 0, frameN = 0;
+    let held = false;                                         // a family video call is on: send zeros
 
     function voiceBusy() {
       try {
@@ -138,7 +143,7 @@ registerProcessor('mic-tap', MicTap);`;
       if (!running) return;
       level = rms(input);
       const pcm = down(input);
-      const quiet = muted();
+      const quiet = muted() || held;
       for (let i = 0; i < pcm.length; i++) {
         frame[fill++] = quiet ? 0 : pcm[i];
         if (fill === FRAME_SAMPLES) {
@@ -218,6 +223,8 @@ registerProcessor('mic-tap', MicTap);`;
         ctx = stream = src = node = sink = null; fill = 0;
       },
       send(obj) { if (!ws || ws.readyState !== 1) return false; sendJSON(obj); return true; },   // e.g. tap-to-talk
+      hold(on) { held = !!on; },                              // the family video call: zeros to the server
+      get track() { return stream ? stream.getAudioTracks()[0] || null : null; },
       get running() { return running; },
       get connected() { return !!ws && ws.readyState === 1; },
       get level() { return level; },

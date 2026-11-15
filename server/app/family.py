@@ -9,9 +9,15 @@ server already knows: the robot link, the bring behavior's stages, the agent's e
 - send:     one delivery at a time -> agent ("bring <item> to <resident>") -> stages from bring's
             on_step -> on `delivered` the family's note is read out WORD FOR WORD (not by Claude) and
             a photo is taken -> event in Mom's day. Honest failures show as stage `failed`.
-- check_in: the agent asks her first and calls check_in_result. Only on yes does the server send
-            camera frames (`frame`, JPEG relay, ~5 fps; consent enforced here). The phone switches to
-            the front camera for the call and back after.
+- check_in: the agent asks her first and calls check_in_result. Only on yes does the call start
+            (consent enforced here): a two-way WebRTC video call (#118) between the robot's phone page
+            and whoever asked. The server only relays the setup (`rtc`): the phone's offer and
+            candidates come over its mic socket (app/speech/mic.py) and go to the caller; the app's
+            answer and candidates go back the same way. Miguel doesn't hear or talk during the call
+            (MicHub.set_call). Either side ends it: the app's `end`, or the phone's End button
+            ({"type": "hangup"}). Camera frames (`frame`, JPEG relay, ~5 fps) still go to the caller
+            as the fallback until the video plays. The phone switches to the front camera for the
+            call and back after.
 - ask:      free text to the agent ("Ask Miguel"); his replies arrive as `event` kind `message`.
 - alert:    raise_alert() (the control page's test button, or vision later) -> the agent asks if she's
             okay and tells the family; `alert` handled by any family member clears it for everyone.
@@ -59,6 +65,7 @@ MEDIA_TTL_S = 24 * 3600
 LINK_DOWN_S = 3.0
 MEMBERS = {"m1": "Sarah", "m2": "David", "m3": "Lin"}   # the app's demo circle (seed.ts); names for messages
 PHONES_PATH = Path(__file__).resolve().parents[1] / "family-phones.json"   # personal data: git-ignored
+RTC_MAX = 64_000                # characters in one sdp or candidate (a real one is a few kB)
 EVENT_KIND = {"water": "water", "medication": "medication", "note": "message", "other": "delivery"}
 
 
@@ -74,6 +81,19 @@ _NO = re.compile(r"\b(no|nope|not|don't|do not|later|busy|stop|wait)\b", re.IGNO
 def said_yes(text: str) -> bool:
     """Her words sound like agreeing (and not like refusing): the code's half of check-in consent."""
     return bool(text and _YES.search(text) and not _NO.search(text))
+
+
+def rtc_payload(m: dict[str, Any]) -> dict[str, Any] | None:
+    """The WebRTC part of an `rtc` message, checked: {"sdp": {type, sdp}} or {"candidate": {...}}."""
+    sdp, cand = m.get("sdp"), m.get("candidate")
+    if isinstance(sdp, dict):
+        if sdp.get("type") in ("offer", "answer") and isinstance(sdp.get("sdp"), str) \
+                and 0 < len(sdp["sdp"]) <= RTC_MAX:
+            return {"sdp": {"type": sdp["type"], "sdp": sdp["sdp"]}}
+        return None
+    if isinstance(cand, dict) and len(json.dumps(cand)) <= RTC_MAX:
+        return {"candidate": cand}
+    return None
 
 
 def normalize_phone(raw: Any) -> str | None:
@@ -125,6 +145,8 @@ class FamilyHub:
         self._last_words = ""            # Miguel's last reply to the family: why a delivery failed
         self._caller: web.WebSocketResponse | None = None   # who asked for the check-in: only they see it
         self._called_off_at: float | None = None             # a check-in was called off while he asked
+        self._to_caller_q: list[dict[str, Any]] = []         # the phone's call setup, in order, to the caller
+        self._to_caller_task: asyncio.Task | None = None
         self.phones_path = Path(os.environ.get("FAMILY_PHONES") or PHONES_PATH)
         self.phones: dict[str, str] = self._load_phones()     # E.164 phone -> member id
 
@@ -482,7 +504,7 @@ class FamilyHub:
                 status, why = self.state.agent_message(
                     f"[check-in request, family app] {name} would like to check in on {self.short} by video. Ask "
                     f"her by name if now is a good time, wait_for_reply(15), then call check_in_result. If she "
-                    f"later says she wants to end the video call, call check_in_result('no').",
+                    f"says yes, the video call opens on your screen and you stay quiet until it ends.",
                     "guardian", "family app")
                 if status != 200:
                     self.check_in = {"phase": "declined", "id": cid}
@@ -520,8 +542,16 @@ class FamilyHub:
         elif t == "talk":
             await err("unsupported", "Voice clips to her aren't ready yet. Use Ask Miguel instead.")
         elif t == "rtc":
-            await err("no_consent" if self.check_in.get("phase") != "live" else "unsupported",
-                      "Video goes through the server's picture relay for now.")
+            c = self.check_in
+            if c.get("phase") != "live" or ws is not self._caller or m.get("call") != c.get("id"):
+                return await err("no_consent", "There's no video call to connect.")
+            payload = rtc_payload(m)
+            if payload is None:
+                return await err("bad_request", "That isn't a WebRTC offer, answer or candidate.")
+            hub = self._mic_hub()
+            if hub is None or not hub.send({"type": "rtc", "call": c["id"], **payload}):
+                return await err("unavailable", "Miguel's phone isn't connected.")
+            return   # relayed; no ack (call setup has no ref) and nothing in `state` changed
         else:
             await err("bad_request", f"Unknown message {t!r}.")
         await self.push_state()
@@ -554,6 +584,11 @@ class FamilyHub:
             except Exception:  # noqa: BLE001
                 log.exception("family: switching to the front camera failed")
             self._call_task = asyncio.get_running_loop().create_task(self._relay(self.check_in["id"]))
+            hub = self._mic_hub()
+            if hub is not None and hasattr(hub, "set_call"):   # the phone shows the call; Miguel stops hearing
+                hub.on_call_message = self.on_phone_call
+                hub.set_call({"type": "call", "call": self.check_in["id"], "on": True,
+                              "by": self.check_in.get("by", "Family")})
         else:
             self._decline("Not a good time." if answer == "no" else "No answer.")
 
@@ -597,10 +632,50 @@ class FamilyHub:
         if self._call_task is not None:
             self._call_task.cancel()
             self._call_task = None
+        hub = self._mic_hub()
+        if hub is not None and getattr(hub, "call", None) is not None:   # the phone's call ends too
+            hub.set_call(None)
         self.check_in = {"phase": "idle"}
         self._caller = None
+        self._to_caller_q.clear()
         log.info("family: check-in %s", why)
         self.changed()
+
+    # --- the video call (#118) --------------------------------------------------------------------
+
+    def _mic_hub(self) -> Any:
+        """The phone's mic socket (app/speech/mic.py MicHub): the phone page's channel for the call."""
+        return getattr(getattr(self.state, "mic", None), "hub", None)
+
+    def on_phone_call(self, msg: dict[str, Any]) -> None:
+        """A call message from the robot's phone page (over its mic socket): its WebRTC setup goes to
+        the caller, only while that call is live; `hangup` (her End button) ends it for both."""
+        c = self.check_in
+        if c.get("phase") != "live" or msg.get("call") != c.get("id"):
+            return
+        if msg.get("type") == "hangup":
+            self._end_call("she hung up on Miguel's screen")
+            return
+        payload = rtc_payload(msg)
+        if payload is not None and self._caller is not None:
+            self._to_caller({"t": "rtc", "call": c["id"], **payload})
+
+    def _to_caller(self, msg: dict[str, Any]) -> None:
+        """Send to the caller in order (an offer before its candidates), from sync code."""
+        self._to_caller_q.append(msg)
+        if self._to_caller_task is None or self._to_caller_task.done():
+            self._to_caller_task = asyncio.get_running_loop().create_task(self._drain_to_caller())
+
+    async def _drain_to_caller(self) -> None:
+        while self._to_caller_q:
+            msg, caller = self._to_caller_q.pop(0), self._caller
+            live = self.check_in.get("phase") == "live" and self.check_in.get("id") == msg.get("call")
+            if caller is None or not live:
+                continue
+            try:
+                await caller.send_json(msg)
+            except Exception:  # noqa: BLE001 - their socket closing ends the call (handle)
+                pass
 
     def _following(self) -> bool:
         f = getattr(self.state, "following", None) or getattr(self.state, "follow_running", None)

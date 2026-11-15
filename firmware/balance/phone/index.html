@@ -21,7 +21,7 @@
      with the status line at the very bottom. The camera keeps running underneath (it streams to the server). */
   #face { position: absolute; top: 0; left: 0; right: 0; width: 100%; height: 50%; background: #05070a; display: none; }   /* drawn by face.js */
   #wrap.faceon { background: #05070a; }
-  #wrap.faceon video, #wrap.faceon #ov { opacity: 0; }
+  #wrap.faceon #v, #wrap.faceon #ov { opacity: 0; }   /* the camera only: the call's videos show (#118) */
   #face.on { display: block; }
   /* Miguel's suit fills the BOTTOM HALF under the face: navy jacket, white shirt, red tie (Face.drawSuit). */
   #suit { position: absolute; top: 50%; left: 0; right: 0; width: 100%; height: 50%; display: none; }
@@ -62,6 +62,30 @@
   #calMsg { font-size: 40px; font-weight: 700; }
   #calCancel { font-size: 22px; padding: 14px 36px; }
   #status.on, #drift.on { display: block; }
+  /* Family video call (#118, call.js): the caller fills the top half in the face's place; her own camera is a round
+     bubble in its corner (Loom-style, like the narrator in the showcase video, PR #116) with an amber ring that glows
+     while she talks; a big End button sits in the bottom half. The robot buttons at the bottom stay. */
+  #call, #endCall { display: none; }
+  #wrap.incall #face, #wrap.incall #quick { display: none; }
+  #wrap.incall #call { display: block; }
+  #wrap.incall #endCall { display: block; }
+  #call { position: absolute; top: 0; left: 0; right: 0; height: 50%; background: #05070a; overflow: hidden; }
+  #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #05070a; }
+  #callWho { position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 14px); transform: translateX(-50%);
+             max-width: 80%; padding: 8px 18px; border-radius: 22px; background: #000a; color: #fff; font-size: 22px;
+             font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #selfBubble { position: absolute; right: 16px; bottom: 16px; width: 28vw; height: 28vw; max-width: 150px; max-height: 150px;
+                border-radius: 50%; display: none; }
+  #selfBubble.on { display: block; }
+  #selfRing { position: absolute; inset: -9px; border-radius: 50%; border: 3px solid rgba(240, 178, 90, 0.15);
+              transition: border-color 0.12s, box-shadow 0.12s; }
+  #selfClip { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: #f3e9d8;
+              box-shadow: 0 0 0 4px #f4ecdd, 0 12px 30px rgba(0, 0, 0, 0.55); }
+  #selfView { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }   /* a mirror, like FaceTime */
+  #endCall { position: absolute; left: 50%; top: 62%; transform: translate(-50%, -50%); width: min(80vw, 440px);
+             padding: 30px 0; border-radius: 48px; background: #dc2626; color: #fff; font-size: 34px; font-weight: 700;
+             box-shadow: 0 10px 30px #0008; }
+  #endCall:active { background: #b91c1c; }
   #low.on, #cal.on { display: flex; }
 </style>
 </head>
@@ -71,6 +95,12 @@
   <canvas id="ov"></canvas>
   <canvas id="face"></canvas>   <!-- before #hud, so "#face.on ~ #hud" applies and the hud draws on top -->
   <canvas id="suit"></canvas>
+  <div id="call">   <!-- the family video call (#118): the caller, her own bubble -->
+    <video id="remote" playsinline autoplay></video>
+    <div id="callWho"></div>
+    <div id="selfBubble"><div id="selfRing"></div><div id="selfClip"><video id="selfView" playsinline muted autoplay></video></div></div>
+  </div>
+  <button id="endCall">End call</button>
   <div id="hud">Tap Start once and allow the camera, then mount the phone.
 Everything else is on the laptop's control page.</div>
   <button id="go">Start</button>
@@ -102,6 +132,7 @@ Everything else is on the laptop's control page.</div>
 <script src="track.js"></script>
 <script src="face.js"></script>   <!-- Miguel's face (global Face); the bench tool doesn't serve it, the page works without it -->
 <script src="mic.js"></script>
+<script src="call.js"></script>   <!-- the family video call (#118, global CallKit) -->
 <script>
 // Miguel's eye and voice. Runs on the robot's iPhone: picks the 0.5x back camera, finds the target here on the phone
 // (a person with MediaPipe, or something yellow), sends only speed and turn to the Mac, and talks through the phone's
@@ -341,6 +372,7 @@ const Voice = (() => {
       muted = !!m;
       if (muted) silence();
     },
+    isMuted() { return muted; },
     now(text, sid) { if (ready && !muted) { out(text, sid); lastT = Date.now(); } },    // from the server: say it
     event(key, lines, cooldown = 10) {                                                   // automatic lines, rate-limited
       if (!ready || muted) return;
@@ -411,6 +443,7 @@ async function openCam(deviceId) {
   v.srcObject = stream;
   await v.play();
   label = stream.getVideoTracks()[0].label || '';
+  if (typeof Call !== 'undefined' && Call) Call.cameraChanged();   // the family call sends the new camera
 }
 
 async function listCams() {
@@ -472,7 +505,8 @@ function applySettings(st) {
   appliedSettings = key;
   if (modeSel.value !== st.mode) { modeSel.value = st.mode; setMode(); }
   dist.value = st.distance; spd.value = st.speed; labels();
-  Voice.setMuted(!st.voice);
+  if (Call && Call.active) Call.voiceAfter(!st.voice);       // on a family call he stays quiet; this applies after
+  else Voice.setMuted(!st.voice);
   if (st.camera && st.camera !== wantCamera) switchCamera(st.camera);
 }
 $('stop').onclick = () => { sending = false; post('/auto', { v: 0, w: 0, found: false, cx: 0.5, h: 0 }).catch(() => {}); };
@@ -648,6 +682,7 @@ const Listen = (() => {
 // Tapping him again while the ring is on stops listening: the ring goes off and whatever he half-heard is dropped.
 function tapToTalk() {
   if (!window.Mic || !Mic.running) return;
+  if (Call && Call.active) return;                            // on a family call: the face isn't there, nobody to talk to
   if (Listen.on && !Voice.busy()) {
     Mic.send({ type: 'listen_off' });                         // the server closes every window and drops the turn
     Listen.set(false);                                        // at once; the server confirms
@@ -670,6 +705,7 @@ function hearSay(id, text) {
   sayAfter = id; Voice.now(text, id);
 }
 window.onMicMessage = msg => {
+  if (Call && Call.message(msg)) return;                      // the family video call (#118)
   if (msg.type === 'listen') Listen.set(msg.on, msg.why, true);
   else if (msg.type === 'say') hearSay(msg.id, String(msg.text || ''));
 };
@@ -680,6 +716,66 @@ setInterval(async () => {
     for (const m of d.msgs) hearSay(m.id, m.text);
   } catch (e) {}
 }, 600);
+
+// ---------- the family video call (#118): call.js does the signaling; this shows it and keeps Miguel quiet ----------
+// While the call is on: the caller's video replaces the face (top half), her own camera is a round bubble in its
+// corner, the End button ends it for both, Miguel says nothing (his voice is muted, so no ping or chime either) and
+// hears nothing (Mic.hold: zeros to the server). Vision keeps running on the same camera.
+const Call = (() => {
+  if (typeof CallKit === 'undefined') return null;
+  const remoteV = $('remote'), selfV = $('selfView');
+  let voiceWasMuted = false, inCall = false, shown = null, callStream = null;   // callStream: groups camera + mic for the app
+  const kit = CallKit.makeCall({
+    createPeer: () => new RTCPeerConnection({ iceServers: [] }),     // one Wi-Fi: no STUN/TURN needed
+    send: msg => !!(window.Mic && Mic.send(msg)),
+    tracks: () => {
+      if (!callStream && typeof MediaStream !== 'undefined') callStream = new MediaStream();
+      return { video: stream ? stream.getVideoTracks()[0] || null : null, audio: window.Mic ? Mic.track : null, stream: callStream };
+    },
+    onChange: render,
+    log,
+  });
+  function render(st) {
+    const on = !!st.call;
+    if (on !== inCall) {                                      // the call starts or ends
+      inCall = on;
+      if (on) { voiceWasMuted = Voice.isMuted(); Voice.setMuted(true); }   // stops any line now; no ping, no chime
+      else Voice.setMuted(voiceWasMuted);
+      if (window.Mic) Mic.hold(on);
+      if (face) { if (on) face.stop(); else if (serverVision) face.start(); }
+    }
+    if (remoteV.srcObject !== st.remote) remoteV.srcObject = st.remote;
+    if (st.remote) remoteV.play().catch(e => log({ event: 'call video would not play', error: String(e) }));
+    const selfStream = on && stream ? stream : null;
+    if (selfV.srcObject !== selfStream) { selfV.srcObject = selfStream; if (selfStream) selfV.play().catch(() => {}); }
+    const vw = CallKit.view({ call: st.call, remote: st.playing, self: !!selfStream, state: st.state });
+    $('wrap').classList.toggle('incall', on);
+    $('selfBubble').classList.toggle('on', vw.self);
+    $('callWho').textContent = vw.label;
+    if (!on) remoteV.srcObject = null;
+    shown = st;
+  }
+  remoteV.addEventListener('playing', () => kit.playing(true));
+  $('endCall').addEventListener('click', () => kit.hangup());
+  // her bubble's ring glows with her voice (mic.js reports the level ~25 times a second)
+  const prevLevel = window.onMicLevel;
+  window.onMicLevel = (level, st) => {
+    if (typeof prevLevel === 'function') { try { prevLevel(level, st); } catch (e) {} }
+    if (!inCall) return;
+    const r = Math.min(1, level * 2.5);
+    $('selfRing').style.borderColor = 'rgba(240, 178, 90, ' + (0.15 + 0.7 * r).toFixed(2) + ')';
+    $('selfRing').style.boxShadow = '0 0 ' + (10 + 22 * r).toFixed(0) + 'px rgba(240, 178, 90, ' + (0.3 * r).toFixed(2) + ')';
+  };
+  return {
+    message: msg => kit.message(msg),
+    get active() { return kit.active; },
+    voiceAfter(m) { voiceWasMuted = !!m; },                   // the control page's voice setting, for after the call
+    cameraChanged() {                                         // openCam made a new stream: send it, show it
+      kit.setVideoTrack(stream.getVideoTracks()[0]);
+      if (inCall && shown) render(shown);
+    },
+  };
+})();
 
 // ---------- quick rules (#101): when each pill below the face shows. controls.test.js reads this block. ----------
 // Tray: only while the bring skill waits for someone to load it. Recalibrate: only when the server would take it (he's

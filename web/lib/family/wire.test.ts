@@ -20,11 +20,12 @@ const SERVER = [
   "pace",
   "ack",
   "error",
-  "rtc-answer",
+  "rtc-offer",
+  "rtc-candidate",
   "frame",
   "phones",
 ];
-const CLIENT = ["hello", "send", "check-in-request", "rtc-offer", "talk", "alert-handled", "routine", "invite", "ask", "phone"];
+const CLIENT = ["hello", "send", "check-in-request", "rtc-answer", "talk", "alert-handled", "routine", "invite", "ask", "phone"];
 
 describe("contract/web/samples/family", () => {
   it("has a direction for every sample file", () => {

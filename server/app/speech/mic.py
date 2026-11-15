@@ -16,12 +16,20 @@ Wire protocol (firmware/balance/phone/mic.js):
   - {"type": "listen"}: tap-to-talk (the face was tapped): listen for one utterance, no wake word.
   - {"type": "listen_off"}: the face was tapped again while the ring is on: stop listening, and drop
     the turn being heard (it never reaches the agent). Older servers ignore it.
+  - {"type": "rtc", "call": str, "sdp"|"candidate": ...} and {"type": "hangup", "call": str}: the
+    family video call (#118), handed to app/family.py (`on_call_message`).
 - Server -> phone text frames are JSON:
   - {"type": "listen", "on": bool, "why": "wake"|"tap"|"question"|"reply"|null}: Miguel is (not)
     listening for a command: the face shows a glowing ring and pings when it turns on.
   - {"type": "say", "id": int, "text": str}: a line to speak (the same lines as GET /say, pushed
     at once instead of waiting for the page's next poll).
+  - {"type": "call", "call": str, "on": bool, "by"?: str}: a family video call started or ended
+    (#118); sent again when the phone reconnects mid-call. {"type": "rtc", "call", "sdp"|"candidate"}:
+    the family app's WebRTC answer and candidates (app/family.py).
 - One phone at a time: a new connection closes the previous one.
+
+During a family video call (#118, `set_call`) Miguel isn't listening at all: no ring, no windows,
+and every turn is dropped (the phone also sends zeros), so nothing said on the call reaches the agent.
 
 Turn-taking (Alex, Sat Nov 14): Miguel only takes speech that is meant for him.
 - The wake word ("Miguel") anywhere in the sentence. It is spotted in Cartesia's running
@@ -149,6 +157,8 @@ class MicHub:
         self._listen_sent: tuple[bool, str | None] | None = None
         self._warned_no_stt = False
         self.on_voice: Callable[[bool, str | None, int | None], None] | None = None   # timing hook (api)
+        self.call: dict[str, Any] | None = None      # a family video call is on (#118): not hearing
+        self.on_call_message: Callable[[dict[str, Any]], None] | None = None   # the call's messages (family)
         self.frames = 0
         self.bytes = 0
         self.ignored = 0                     # utterances dropped by the filter
@@ -157,6 +167,8 @@ class MicHub:
 
     def open_reason(self) -> str | None:
         """Why Miguel takes speech without the wake word right now, or None."""
+        if self.call is not None:
+            return None                      # on a family video call: what's said is for the family
         if self.voice_busy or self.clock() < self._speech_due_until:
             return None                      # he is talking (mic muted), or about to: his line is on its way
         if self.awaiting:
@@ -169,6 +181,8 @@ class MicHub:
         return None
 
     def listen_reason(self) -> str | None:
+        if self.call is not None:
+            return None
         if self._turn is not None and self._turn["wake"] and not self.voice_busy:
             return "wake"                    # the name was heard in this turn: listening to the rest
         return self.open_reason()
@@ -205,6 +219,20 @@ class MicHub:
                 turn["cancelled"] = True
                 turn["wake"] = False
         self._sync()
+
+    def set_call(self, msg: dict[str, Any] | None) -> None:
+        """A family video call started (msg = {"type": "call", "call": id, "on": True, "by": name}) or
+        ended (None). While it's on Miguel hears nothing: listening closes, no window opens, every
+        turn is dropped. The phone gets the message first (so it mutes before the ring goes off and
+        stays quiet: no chime), then the listening state."""
+        if msg is not None:
+            self.call = dict(msg)
+            self.send(self.call)
+            self.close_listening()
+        elif self.call is not None:
+            ended, self.call = self.call, None
+            self.send({"type": "call", "call": ended.get("call"), "on": False})
+            self._sync()
 
     def note_line(self, text: str) -> None:
         """A line was queued for the phone (fallback for which line he said last). Until the phone says it
@@ -249,6 +277,7 @@ class MicHub:
             "listening_without_wake_word": self.wake_word is None or self.open_reason() is not None,
             "frames": self.frames,
             "ignored": self.ignored,
+            "call": self.call is not None,
         }
 
     # --- the turn in progress (Cartesia's partial transcripts) ------------------
@@ -325,6 +354,9 @@ class MicHub:
     async def on_heard(self, u: Utterance) -> None:
         """STT callback: filter a finished turn and put it in the inbox."""
         turn, self._ending = self._ending, None
+        if self.call is not None:
+            self._reject(u.text, "on a family video call")
+            return
         if turn is not None and turn.get("cancelled"):
             self._reject(u.text, "tapped off while they talked")
             self._sync()
@@ -401,6 +433,8 @@ class MicHub:
             session = await self.stt.session(self.on_heard, sample_rate=rate, on_event=self.on_stt_event)
             log.info("mic: phone connected from %s, %d Hz", peer, rate)
         self._listen_sent = (False, None)     # a new page starts with the ring off
+        if self.call is not None:             # reconnected mid-call: the page shows the call again
+            out.put_nowait(self.call)
         self._sync()                          # ...so it hears only if Miguel is listening now
         sender = asyncio.ensure_future(self._send_loop(ws, out))
         ticker = asyncio.ensure_future(self._tick(ws))
@@ -468,6 +502,11 @@ class MicHub:
         elif kind == "listen_off":            # tapped again while listening: stop
             log.info("mic: tapped off: not listening")
             self.close_listening()
+        elif kind in ("rtc", "hangup") and self.on_call_message is not None:   # the family video call
+            try:
+                self.on_call_message(msg)
+            except Exception:  # noqa: BLE001 - a bad call message must not drop the mic
+                log.exception("mic: call message failed")
 
 
 def _rate(raw: str | None) -> int | None:

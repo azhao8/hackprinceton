@@ -8,6 +8,10 @@
 import { clockLabel } from "./format";
 import { ALERT_AT, AFTERNOON, NIGHT, seedState } from "./seed";
 import type { Alert, Delivery, EventKind, FamilyState, ItemKind, MiguelMode, RequestKind, RequestStatus, TimelineEvent } from "./types";
+import type { RtcPayload } from "./wire";
+
+/** One piece of the check-in video call's setup, for call `call` (contract/web/family.md `rtc`). */
+export type RtcMessage = { call: string } & RtcPayload;
 
 export interface SendRequest {
   item: ItemKind;
@@ -22,6 +26,10 @@ export interface FamilySource {
   /** The latest check-in video frame (a data: URL), or null. Separate from the state so 5 fps video doesn't re-render every screen. */
   getFrame(): string | null;
   subscribeFrame(listener: () => void): () => void;
+  /** The video call's setup from Miguel's phone (#118). Messages that came before anyone listened are replayed. */
+  subscribeRtc(listener: (m: RtcMessage) => void): () => void;
+  /** Send the video call's setup (your answer, your candidates) to Miguel's phone. */
+  sendRtc(m: RtcMessage): void;
   send(request: SendRequest): void;
   /** "Ask Miguel": a free-text question. His answer arrives as a "message" event titled "Miguel…". */
   ask(text: string): void;
@@ -95,6 +103,9 @@ export class DemoSource implements FamilySource {
   // The demo check-in shows the illustration, never camera frames.
   getFrame = (): string | null => null;
   subscribeFrame = (): (() => void) => () => {};
+  // The demo's check-in shows the illustration: no real call.
+  subscribeRtc = (): (() => void) => () => {};
+  sendRtc() {}
 
   private set(patch: Partial<FamilyState>) {
     this.state = { ...this.state, ...patch };

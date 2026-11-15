@@ -9,7 +9,7 @@
 
 import { mediaOrigin, resolveMedia } from "./config";
 import { seedState } from "./seed";
-import type { FamilySource, SendRequest } from "./source";
+import type { FamilySource, RtcMessage, SendRequest } from "./source";
 import type {
   Alert,
   CheckIn,
@@ -165,6 +165,9 @@ export class ServerSource implements FamilySource {
   private listeners = new Set<() => void>();
   private frameListeners = new Set<() => void>();
   private frame: string | null = null;
+  private rtcListeners = new Set<(m: RtcMessage) => void>();
+  /** The phone's call setup that came before the screen listened (its offer can beat the `live` state). */
+  private rtcBacklog: RtcMessage[] = [];
   private ws: SocketLike | null = null;
   private signedIn = false;
   private started = false;
@@ -200,6 +203,21 @@ export class ServerSource implements FamilySource {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);
   };
+
+  subscribeRtc = (listener: (m: RtcMessage) => void): (() => void) => {
+    this.rtcListeners.add(listener);
+    const backlog = this.rtcBacklog;
+    this.rtcBacklog = [];
+    backlog.forEach((m) => listener(m));
+    return () => this.rtcListeners.delete(listener);
+  };
+
+  sendRtc(m: RtcMessage) {
+    const ws = this.ws;
+    const msg = { t: "rtc" as const, ...m };
+    if (!this.signedIn || !ws || ws.readyState !== OPEN || !isFamilyClientMessage(msg)) return;
+    ws.send(JSON.stringify(msg));
+  }
 
   start() {
     if (this.started || this.stopped) return;
@@ -293,7 +311,10 @@ export class ServerSource implements FamilySource {
           checkIn,
           alert: m.alert ? this.alert(m.alert) : null,
         });
-        if (checkIn.phase !== "live") this.setFrame(null);
+        if (checkIn.phase !== "live") {
+          this.setFrame(null);
+          if (checkIn.phase !== "asking") this.rtcBacklog = [];
+        }
         return;
       }
       case "events":
@@ -335,8 +356,14 @@ export class ServerSource implements FamilySource {
         if (c.phase === "live" && (!c.id || c.id === m.call)) this.setFrame(`data:image/jpeg;base64,${m.jpeg}`);
         return;
       }
-      case "rtc":
-        return; // WebRTC isn't wired up; the server uses the JPEG fallback (`frame`).
+      case "rtc": {
+        // The video call's setup from Miguel's phone (#118): to the call screen, or kept until it listens.
+        const { t: _t, ...rtc } = m;
+        void _t;
+        if (this.rtcListeners.size) this.rtcListeners.forEach((l) => l(rtc));
+        else this.rtcBacklog = [...this.rtcBacklog.filter((x) => x.call === rtc.call), rtc].slice(-50);
+        return;
+      }
     }
   }
 
@@ -427,6 +454,7 @@ export class ServerSource implements FamilySource {
     if (before.phase === "idle") return;
     this.set({ checkIn: { phase: "idle" } });
     this.setFrame(null);
+    this.rtcBacklog = [];
     this.request(
       "checkIn",
       (ref) => ({ t: "check_in", ref, action: "end" }),
