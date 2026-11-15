@@ -15,7 +15,7 @@ Sources: [on-site handbook](https://docs.google.com/document/d/1sifGjJ_WePpTG7Ea
 - Wi-Fi is the puvisitor guest network, which needs a sign-in page an ESP32 can't complete: use our own hotspot.
 - No ESP32/IMU rental here; the MLH kit has Raspberry Pis, Arduinos, webcams and Echo/Google Home devices.
 - AI coding tools are allowed if disclosed on Devpost; past events required about 85% of code to be written during the event.
-- Organizers OK'd pre-building the hardware (per John, Nov 9): keep the screenshot and disclose the pre-event hardware work on Devpost.
+- The hardware (3D-printed body, assembly) was built before the event. We have no organizer approval for that, so don't claim one: disclose it plainly on Devpost. The handbook has no hardware rule; it only requires a public repo created Nov 13-15.
 
 ## Prize strategy
 

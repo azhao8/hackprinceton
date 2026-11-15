@@ -116,7 +116,7 @@ Bring-up order for the robot: motors spin open-loop → the IMU reads sensible p
 
 - AI coding tools are allowed **if disclosed** on Devpost. Credit open-source libraries, for example FastAccelStepper.
 - Past events required most code (85 %) to be written during the event. Write all project code after hacking starts.
-- Per John's Nov 9 note, the organizers OK'd pre-building hardware and testing software at home. Save the screenshot, and disclose the pre-event hardware work on Devpost.
+- Correction (Nov 15): this note said the organizers OK'd pre-building hardware, but we never got that approval. Disclose the pre-event hardware work on Devpost and don't claim approval.
 - Inspiration: open-source balancing robots such as BracketBot. Don't reuse their code or CAD.
 
 ## 1.8 Status (Nov 13)
