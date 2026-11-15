@@ -30,6 +30,8 @@ export interface FamilySource {
   handleAlert(): void;
   toggleRoutine(id: string): void;
   invite(name: string, relation: string): void;
+  /** Link a phone (E.164) to a member for texting Miguel; "" unlinks. */
+  linkPhone(member: string, phone: string): void;
 }
 
 /** Demo-only controls, used by the hidden demo panel. */
@@ -230,6 +232,11 @@ export class DemoSource implements FamilySource {
         },
       ],
     });
+  }
+
+  linkPhone(member: string, phone: string) {
+    const others = this.state.phones.filter((p) => p.member !== member && p.phone !== phone);
+    this.set({ phones: phone ? [...others, { member, phone }] : others });
   }
 
   // ---- demo controls ----

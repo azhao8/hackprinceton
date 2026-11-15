@@ -43,9 +43,11 @@ reads them from `/tel` (decision 0053: the phone is the robot's eye, every contr
 
 Start (#79, decision 0059): the API sends `g` only after a person pressed Start (control page or the
 robot's phone) and the robot is then held upright and steady (app/robot_watch.py). Skills, the agent
-and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start|park|recalibrate}`
+and follow never can. NEW (#79): `POST /phone/action {action: start|cancel_start|park|recalibrate|tray_loaded}`
 (the hotspot only), `/ws` `cancel_start`, `reset_chat`, `clear_log`, `reset_memory`, and status fields
-`drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent` (contract/web/README.md).
+`drift`, `drift_rate`, `autostart`, `calibrating`, `phone`, `family`, `agent`, `tray_waiting` (#90:
+the bring skill waits for someone to load the tray; the phone's "I put items in his tray" button
+lights up) (contract/web/README.md).
 NEW (#88): after a fall (the firmware cut the motors past 30 deg) the server starts that wait by itself,
 stricter (app/robot_watch.py FallWatch), at most 3 times in a row; env MIGUEL_AUTO_RESTART (default on).
 Never after Cut motor power, Park or e-stop, never under the e-stop, never with a drifting tilt sensor.
@@ -91,6 +93,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -106,6 +109,30 @@ from app.robot_watch import FIRMWARE_TRIM, AutoStart, DriftWatch, FallWatch
 from app.speech.timing import TurnTimer
 
 log = logging.getLogger("app.api")
+
+# A say line with several sentences goes to the phone one sentence at a time when the voice makes each
+# line whole before sending any of it (the local voices, WAV): the first sentence plays after ~0.5 s
+# instead of the whole line after ~1.3 s (the cloned voice, Sun Nov 15), and the next ones are made
+# while it plays (prefetch). Cartesia streams its mp3, so its lines stay whole.
+_SENTENCE_END = re.compile(r"(?<=[.!?])([\"'”’)]*)\s+(?=[\"'“‘(]?[A-Z0-9])")
+_ABBREV = re.compile(r"(?:\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc|No)\.|\b[A-Z]\.)$")
+
+
+def split_sentences(text: str) -> list[str]:
+    """The sentences of a spoken line (abbreviations like "Dr." don't end one)."""
+    out: list[str] = []
+    start = 0
+    for m in _SENTENCE_END.finditer(text):
+        if _ABBREV.search(text[start:m.start()]):
+            continue
+        out.append(text[start:m.end(1)].strip())
+        start = m.end()
+    out.append(text[start:].strip())
+    return [s for s in out if s]
+
+
+def _whole_line_voice(tts: Any) -> bool:
+    return tts is not None and getattr(tts, "MEDIA_TYPE", "") == "audio/wav"
 
 PHONE_DIR = Path(__file__).resolve().parents[3] / "firmware" / "balance" / "phone"
 PHONE_FILES = {"/": "index.html", "/index.html": "index.html", "/track.js": "track.js", "/face.js": "face.js",
@@ -172,7 +199,7 @@ FORWARDED_HEADERS = ("X-Forwarded-For", "Forwarded", "CF-Connecting-IP", "X-Real
 CONTROL_ONLY = {"estop", "joystick", "follow", "say", "settings", "key", "recalibrate", "trim", "arm",
                 "tray_loaded", "test_fall", "this_is", "memory_get", "memory_set",
                 "cancel_start", "reset_chat", "clear_log", "reset_memory"}   # #79
-PHONE_ACTIONS = ("start", "cancel_start", "park", "recalibrate")   # POST /phone/action (#79)
+PHONE_ACTIONS = ("start", "cancel_start", "park", "recalibrate", "tray_loaded")   # POST /phone/action (#79)
 
 # The control page's preset buttons.
 CONTROL_PRESETS = ["Hi, I'm Miguel!", "Time for your medicine.", "Here is your water.", "Follow me!", "Hello, judges!"]
@@ -387,6 +414,17 @@ class ApiState:
 
     def add_say(self, text: str) -> None:
         text = text.strip()[:300]
+        if not text:
+            return
+        cached = getattr(self.tts, "cached", None)
+        whole = not _whole_line_voice(self.tts) or (cached is not None and cached(text) is not None)
+        pieces = [text] if whole else split_sentences(text)   # a line made ahead of time stays whole
+        if len(pieces) > 1:
+            self.timer.narrow(text, pieces[0])   # the timing log follows the first sentence
+        for piece in pieces:
+            self._add_line(piece)
+
+    def _add_line(self, text: str) -> None:
         if text:
             sid = (self.say[-1]["id"] + 1) if self.say else 1
             self.say.append({"id": sid, "text": text})
@@ -703,7 +741,8 @@ class ApiState:
                 "autostart": self.autostart.view(), "calibrating": now < self._calibrating_until,
                 "phone": self.phone_seen is not None and now - self.phone_seen < PHONE_SEEN_S,
                 "family": len(getattr(self.family, "clients", None) or ()),
-                "agent": self.agent is not None}
+                "agent": self.agent is not None,
+                "tray_waiting": any(not ev.is_set() for ev in self._tray_waiters)}   # NEW (#90)
 
 
 def _num(d: dict, key: str, lim: float) -> float:
@@ -815,6 +854,9 @@ def create_app(state: ApiState, ca_page: str = "") -> web.Application:
         elif action == "park":
             ok = state.key("P")
             note = "Parking" if ok else "Couldn't reach the robot"
+        elif action == "tray_loaded":   # NEW (#90): the phone's "I put items in his tray"
+            ok = state.mark_loaded()
+            note = "Thanks! Got it" if ok else "I wasn't waiting for the tray"
         else:
             ok = state.recalibrate()
             note = "Recalibrating: keep me still" if ok else "Can't recalibrate while balancing"
@@ -1191,12 +1233,25 @@ CONTROL_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content
 <h3>Ask Miguel (voice agent)</h3><form id=af><input id=at style='font:inherit;width:70%;padding:10px' placeholder='Ask Miguel to do something'>
 <button style='font:inherit;padding:10px 14px'>Send</button></form>
 <div id=al style='background:#222;padding:10px;white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px'></div>
+<h3>Family phones (texting Miguel on iMessage)</h3>
+<p style='color:#999;margin:4px 0'>A linked phone's texts reach Miguel as that person, and alerts reach them (server/bridge, docs/photon.md).</p>
+<form id=pf><select id=pm style='font:inherit;padding:8px'></select>
+<input id=pn type=tel placeholder='+1 215 555 0123' style='font:inherit;width:11em;padding:10px'>
+<button style='font:inherit;padding:10px 14px'>Link</button>
+<button type=button id=fallT style='font:inherit;padding:10px 14px'>Test fall alert</button></form>
+<div id=pl style='margin:6px 0'></div>
 <p style='color:#999'>The robot only moves after someone at the robot starts it balancing (g). Follow uses the phone page's tracking.</p>
 <script>
 const $=id=>document.getElementById(id);   // not bare ids: `stop` is the browser's window.stop()
 const act=w=>fetch('/control/'+w,{method:'POST'}).then(show);
 $('stop').onclick=()=>act('stop');$('release').onclick=()=>act('release');$('fon').onclick=()=>act('follow-on');$('foff').onclick=()=>act('follow-off');
 $('loaded').onclick=()=>fetch('/control/loaded',{method:'POST'});
+async function phones(o){const r=await fetch('/family/phones',o?{method:'POST',body:JSON.stringify(o)}:undefined);if(r.status===404){$('pl').textContent='(family app side is off)';return}
+const d=await r.json();if(!d.ok){$('pl').textContent=d.error;return}const pm=$('pm');if(!pm.options.length)for(const[id,n]of Object.entries(d.members)){const op=document.createElement('option');op.value=id;op.textContent=n;pm.append(op)}
+const pl=$('pl');pl.textContent=d.items.length?'':'No phones linked yet.';for(const it of d.items){const row=document.createElement('div');row.textContent=(d.members[it.member]||it.member)+': '+it.phone+' ';
+const b=document.createElement('button');b.textContent='Remove';b.style.font='inherit';b.onclick=()=>phones({member:it.member,phone:''});row.append(b);pl.append(row)}}
+$('pf').onsubmit=e=>{e.preventDefault();phones({member:$('pm').value,phone:$('pn').value}).then(()=>{$('pn').value=''})};
+$('fallT').onclick=()=>{if(confirm('Send a test fall alert to the family?'))fetch('/control/fall',{method:'POST'})};phones();
 // NEW (#62) "This is: [name] [Save look]": save the clothes of the person in front of the camera.
 $('saveLook').onclick=async()=>{const name=$('who').value.trim(),o=$('lookSt');if(!name){o.textContent='Type a name first.';return}
 o.textContent='Looking...';try{const d=await (await fetch('/control/this-is',{method:'POST',body:JSON.stringify({name})})).json();

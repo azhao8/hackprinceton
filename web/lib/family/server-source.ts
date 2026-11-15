@@ -312,6 +312,9 @@ export class ServerSource implements FamilySource {
       case "circle":
         this.set({ members: m.items.map((p, i) => this.member(p, i)) });
         return;
+      case "phones":
+        this.set({ phones: m.items.map((p) => ({ member: p.member, phone: p.phone })) });
+        return;
       case "pace":
         // The day screen needs at least two days to draw a trend; keep the seed until then.
         if (m.days.length >= 2) this.set({ pace: m.days.map((d) => d.mps) });
@@ -462,6 +465,14 @@ export class ServerSource implements FamilySource {
       (ref) => ({ t: "invite", ref, name: trimmed, relation: rel }),
       () => this.set({ members: this.state.members.filter((m) => m.id !== tempId) }),
     );
+  }
+
+  linkPhone(member: string, phone: string) {
+    const before = this.state.phones;
+    // Shown right away; the server's `phones` confirms it (or the error puts it back).
+    const others = before.filter((p) => p.member !== member && p.phone !== phone);
+    this.set({ phones: phone ? [...others, { member, phone }] : others });
+    this.request("phone", (ref) => ({ t: "phone", ref, member, phone }), () => this.set({ phones: before }));
   }
 
   /** Send one request with a fresh ref and track it until `ack` or `error`. */

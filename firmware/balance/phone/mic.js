@@ -15,7 +15,7 @@
 //
 // The same socket brings messages from the server (server/app/speech/mic.py): window.onMicMessage(msg),
 // if set, gets each one ({type: 'listen', on, why} and {type: 'say', id, text}). Mic.send(obj) sends
-// one (tap-to-talk: {type: 'listen'}).
+// one (tap-to-talk: {type: 'listen'}; tapped again while listening: {type: 'listen_off'}).
 //
 // window.onMicLevel(level, state), if set, gets the input level (0..1, RMS) about 25 times a second,
 // with state = { sending, muted, connected }.

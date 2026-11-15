@@ -12,3 +12,5 @@ miguel.db-*
 
 # Camera calibration (python -m app.vision.calibrate), per robot and camera
 calibration.json
+family-phones.json
+photon-threads.json

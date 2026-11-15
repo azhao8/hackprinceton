@@ -7,7 +7,8 @@ MIGUEL_KOKORO_VOICE picks the voice (default af_heart). Needs `uv sync --group l
 in the Hugging Face cache (`uv run hf download mlx-community/Kokoro-82M-bf16`).
 
 Audio: WAV, PCM 16-bit, 24 kHz, mono (MEDIA_TYPE audio/wav, so `/tts` sends that Content-Type).
-iOS Safari plays it in an <audio> element; no ffmpeg needed.
+iOS Safari plays it in an <audio> element; no ffmpeg needed. Each line gets 0.2 s of silence before and
+0.3 s after (#91): the phone clips the edges of a clip, and the models leave almost no silence there.
 
 Streaming: `stream()` yields the whole line once it is made. A WAV header carries the data length,
 so the first bytes can't go out before the last sentence is done (and the phone builds a blob from
@@ -70,6 +71,12 @@ WARMUP_LINE = "Hello there."
 CLONE_REPO = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
 CLONE_REF = Path(__file__).resolve().parents[2] / "models" / "miguel-voice" / "full.wav"
 CLONE_CHUNK_S = 0.32     # Qwen streaming step: the MLX lock is let go between chunks
+# Real silence around every line (#91). The phone's playback eats the first and last ~100-200 ms of a clip
+# (iOS: an <audio> element routed through Web Audio while the mic is open). Cartesia's mp3s carry
+# 160-230 ms of silence before the speech and 210-280 ms after, which absorbed that; the local models
+# often start speaking within 0-60 ms and stop 20-140 ms before the end, so real words were lost.
+LEAD_SILENCE_S = 0.2
+TAIL_SILENCE_S = 0.3
 ESPEAK_MAX_PATH = 159                # espeak-ng ignores a data path of 160+ characters (N_PATH_HOME)
 
 
@@ -122,6 +129,12 @@ def pcm16(samples: Any) -> bytes:
 
     a = np.asarray(samples, dtype=np.float32).reshape(-1)
     return (np.clip(a, -1.0, 1.0) * 32767.0).round().astype("<i2").tobytes()
+
+
+def padded(pcm: bytes, lead_s: float = LEAD_SILENCE_S, tail_s: float = TAIL_SILENCE_S,
+           sample_rate: int = SAMPLE_RATE) -> bytes:
+    """16-bit mono PCM with digital silence added before and after (see LEAD_SILENCE_S)."""
+    return bytes(2 * round(lead_s * sample_rate)) + pcm + bytes(2 * round(tail_s * sample_rate))
 
 
 def wav_bytes(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -468,7 +481,7 @@ class KokoroTTS:
                 parts.append(chunk)
         if not parts:
             raise TTSError("the local voice made no audio")
-        return wav_bytes(b"".join(parts))
+        return wav_bytes(padded(b"".join(parts)))
 
     @staticmethod
     def _next_pcm(segments: Iterator[Any]) -> bytes | None:

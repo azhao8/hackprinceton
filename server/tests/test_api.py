@@ -664,6 +664,14 @@ def test_phone_actions_from_the_hotspot_only():
             assert (await (await client.post("/phone/action", json={"action": "park"})).json())["ok"]
             assert (await (await client.post("/phone/action", json={"action": "recalibrate"})).json())["ok"]
             assert link.sent == ["P", "c"]
+            r = await (await client.post("/phone/action", json={"action": "tray_loaded"})).json()
+            assert r["ok"] is False and (await (await client.get("/tel")).json())["tray_waiting"] is False
+            waiter = asyncio.ensure_future(state.wait_loaded())
+            await asyncio.sleep(0)
+            assert (await (await client.get("/tel")).json())["tray_waiting"] is True
+            r = await (await client.post("/phone/action", json={"action": "tray_loaded"})).json()
+            assert r["ok"] and await asyncio.wait_for(waiter, 1) is True
+            assert (await (await client.get("/tel")).json())["tray_waiting"] is False
             assert (await client.post("/phone/action", json={"action": "g"})).status == 400
             tunnel = {"X-Forwarded-For": "203.0.113.9"}
             assert (await client.post("/phone/action", json={"action": "start"}, headers=tunnel)).status == 403
@@ -856,3 +864,53 @@ def test_with_the_mock_robot_end_to_end():
     robot.held = True                                             # someone picks him up and holds him
     run(3.0, t)
     assert robot.running and not state.autostart.waiting and link.sent == ["g"]
+
+
+class FakeWavTTS(FakeTTS):
+    """A voice that makes each line whole (the local voices): WAV, with a cache."""
+    MEDIA_TYPE = "audio/wav"
+
+    def __init__(self, cached_lines=()):
+        super().__init__()
+        self.ready = set(cached_lines)
+
+    def cached(self, text):
+        return b"RIFF" if text in self.ready else None
+
+
+def test_say_lines_go_to_the_phone_one_sentence_at_a_time_with_a_whole_line_voice():
+    from app.api import split_sentences
+
+    assert split_sentences("Okay, I'm following you now. Tell me if you want slower!") == \
+        ["Okay, I'm following you now.", "Tell me if you want slower!"]
+    assert split_sentences('Dr. Lee called. It costs 3.50, she said "fine." Then left.') == \
+        ["Dr. Lee called.", 'It costs 3.50, she said "fine."', "Then left."]
+    assert split_sentences("One line") == ["One line"]
+    tts = FakeWavTTS(cached_lines=["Hi! I'm Miguel."])
+
+    async def t(c, s):
+        s.add_say("Okay, I'm following you now. Tell me if you want slower or faster.")
+        await asyncio.sleep(0.01)
+        assert [m["text"] for m in s.say] == ["Okay, I'm following you now.", "Tell me if you want slower or faster."]
+        assert tts.asked == ["Okay, I'm following you now.", "Tell me if you want slower or faster."]   # both made now
+        s.add_say("Hi! I'm Miguel.")                          # made ahead of time: stays whole (a cache hit)
+        assert s.say[-1]["text"] == "Hi! I'm Miguel."
+    with_client(t, tts)
+
+    mp3 = FakeTTS()                                           # Cartesia streams: its lines stay whole
+
+    async def t2(c, s):
+        s.add_say("One. Two.")
+        assert [m["text"] for m in s.say] == ["One. Two."]
+    with_client(t2, mp3)
+
+
+def test_the_timing_log_follows_the_first_sentence():
+    from app.speech.timing import TurnTimer
+
+    timer = TurnTimer(clock=lambda: 5.0)
+    timer.start({"t_speech_end": 1.0, "say": 2.0}, "Okay. Coming now.")
+    timer.narrow("Okay. Coming now.", "Okay.")
+    timer.said(7, "Okay.")
+    timer.mark("tts_request", "Okay.")
+    assert timer._turn["id"] == 7 and "tts_request" in timer._turn["marks"]

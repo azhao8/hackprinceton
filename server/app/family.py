@@ -15,6 +15,9 @@ server already knows: the robot link, the bring behavior's stages, the agent's e
 - ask:      free text to the agent ("Ask Miguel"); his replies arrive as `event` kind `message`.
 - alert:    raise_alert() (the control page's test button, or vision later) -> the agent asks if she's
             okay and tells the family; `alert` handled by any family member clears it for everyone.
+- phone:    links a phone number to a family member (`phones` to every app; saved in FAMILY_PHONES,
+            default server/family-phones.json), so the iMessage bridge (server/bridge/) knows who texts.
+            The control page links them too (/family/phones, this laptop only).
 - routine / invite / talk: acknowledged; routines and the circle stay the app's demo data (cut for
             Sunday); talk (voice clips to her) isn't supported yet.
 """
@@ -25,6 +28,7 @@ import asyncio
 import base64
 import hmac
 import itertools
+import json
 import logging
 import os
 import re
@@ -33,6 +37,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -53,6 +58,7 @@ MEDIA_KEEP = 40
 MEDIA_TTL_S = 24 * 3600
 LINK_DOWN_S = 3.0
 MEMBERS = {"m1": "Sarah", "m2": "David", "m3": "Lin"}   # the app's demo circle (seed.ts); names for messages
+PHONES_PATH = Path(__file__).resolve().parents[1] / "family-phones.json"   # personal data: git-ignored
 EVENT_KIND = {"water": "water", "medication": "medication", "note": "message", "other": "delivery"}
 
 
@@ -68,6 +74,19 @@ _NO = re.compile(r"\b(no|nope|not|don't|do not|later|busy|stop|wait)\b", re.IGNO
 def said_yes(text: str) -> bool:
     """Her words sound like agreeing (and not like refusing): the code's half of check-in consent."""
     return bool(text and _YES.search(text) and not _NO.search(text))
+
+
+def normalize_phone(raw: Any) -> str | None:
+    """A phone number in E.164 (+12155550123), or None. Ten digits are a US number; anything else needs
+    its country code (a leading + and 8 to 15 digits)."""
+    if not isinstance(raw, str):
+        return None
+    s = re.sub(r"[\s\-().]", "", raw.strip())
+    if re.fullmatch(r"\d{10}", s):
+        return "+1" + s
+    if re.fullmatch(r"1\d{10}", s):
+        return "+" + s
+    return s if re.fullmatch(r"\+\d{8,15}", s) else None
 
 
 def wire_copy(d: dict[str, Any], drop: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -106,6 +125,45 @@ class FamilyHub:
         self._last_words = ""            # Miguel's last reply to the family: why a delivery failed
         self._caller: web.WebSocketResponse | None = None   # who asked for the check-in: only they see it
         self._called_off_at: float | None = None             # a check-in was called off while he asked
+        self.phones_path = Path(os.environ.get("FAMILY_PHONES") or PHONES_PATH)
+        self.phones: dict[str, str] = self._load_phones()     # E.164 phone -> member id
+
+    # --- linked phones (texting Miguel through the iMessage bridge) ------------------------------
+
+    def _load_phones(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self.phones_path.read_text())
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {p: m for p, m in raw.items() if normalize_phone(p) == p and m in MEMBERS}
+
+    def phones_msg(self) -> dict[str, Any]:
+        return {"t": "phones", "items": [{"member": m, "phone": p} for p, m in self.phones.items()]}
+
+    def link_phone(self, member: str, raw: Any) -> str | None:
+        """Link a phone to a member ("" unlinks that member's phones). Returns an error for people, or None.
+        A phone belongs to one member: linking it again moves it. One phone per member."""
+        if member not in MEMBERS:
+            return "Pick someone in the family."
+        unlink = isinstance(raw, str) and not raw.strip()
+        phone = None if unlink else normalize_phone(raw)
+        if phone is None and not unlink:
+            return "That doesn't look like a phone number. Try +1 215 555 0123."
+        self.phones = {p: m for p, m in self.phones.items() if m != member and p != phone}
+        if phone is not None:
+            self.phones[phone] = member
+        try:
+            self.phones_path.write_text(json.dumps(self.phones, indent=1))
+        except OSError:
+            log.exception("family: couldn't save the linked phones")
+        log.info("family: %s %s", MEMBERS[member], f"linked a phone ending {phone[-4:]}" if phone else "unlinked")
+        try:
+            asyncio.get_running_loop().create_task(self._broadcast(self.phones_msg()))
+        except RuntimeError:
+            pass
+        return None
 
     # --- state ----------------------------------------------------------------------------------
 
@@ -452,6 +510,11 @@ class FamilyHub:
             self.alert.update(status="handled", handled_by=name)
             self.add_event("alert", "Alert handled", f"{name} is on it.")
             await ok()
+        elif t == "phone":
+            problem = self.link_phone(str(m.get("member") or viewer), m.get("phone"))
+            if problem:
+                return await err("bad_request", problem)
+            await ok()
         elif t in ("routine", "invite"):
             await ok()   # routines and the circle stay the app's demo data for Sunday
         elif t == "talk":
@@ -612,6 +675,7 @@ class FamilyHub:
             today = self.memory.today() if self.memory is not None else []
             await ws.send_json({"t": "events", "day": datetime.now().astimezone().date().isoformat(),
                                 "items": [self._wire_event(e) for e in today]})
+            await ws.send_json(self.phones_msg())
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -636,5 +700,23 @@ class FamilyHub:
             raise web.HTTPNotFound()
         return web.Response(body=item[2], content_type=item[1], headers={"Cache-Control": "private, max-age=86400"})
 
+    async def control_phones(self, request: web.Request) -> web.Response:
+        """The control page's Family phones (this laptop only): GET the list, POST {member, phone}."""
+        from app.api import _local
+
+        if not _local(request):
+            raise web.HTTPForbidden()
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            problem = self.link_phone(str(body.get("member") or ""), body.get("phone")) if isinstance(body, dict) \
+                else "Bad request."
+            if problem:
+                return web.json_response({"ok": False, "error": problem}, status=400)
+        return web.json_response({"ok": True, "members": MEMBERS, **self.phones_msg()})
+
     def routes(self) -> list[web.RouteDef]:
-        return [web.get("/family/ws", self.handle), web.get("/family/media/{mid}", self.get_media)]
+        return [web.get("/family/ws", self.handle), web.get("/family/media/{mid}", self.get_media),
+                web.get("/family/phones", self.control_phones), web.post("/family/phones", self.control_phones)]

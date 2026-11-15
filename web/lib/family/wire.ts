@@ -111,7 +111,15 @@ export type FamilyServerMessage =
   | { t: "ack"; ref: string; ok: true; id?: string }
   | { t: "error"; ref?: string; code: string; message: string }
   | ({ t: "rtc"; call: string } & RtcPayload)
-  | { t: "frame"; call: string; jpeg: string };
+  | { t: "frame"; call: string; jpeg: string }
+  /** Phones linked for texting Miguel (iMessage through Photon). `phone` is E.164. */
+  | { t: "phones"; items: WirePhone[] };
+
+/** A phone linked to a family member, for texting Miguel. */
+export interface WirePhone {
+  member: string;
+  phone: string;
+}
 
 // ---- app → server ----
 
@@ -125,7 +133,9 @@ export type FamilyClientMessage =
   | { t: "routine"; ref: string; id: string; on: boolean }
   | { t: "invite"; ref: string; name: string; relation: string }
   /** "Ask Miguel": free text. Answers arrive as `event`s (kind "message", title "Miguel", note = his reply). */
-  | { t: "ask"; ref: string; text: string };
+  | { t: "ask"; ref: string; text: string }
+  /** Link `phone` (E.164) to `member`, or unlink with "". */
+  | { t: "phone"; ref: string; member: string; phone: string };
 
 /** Longest "Ask Miguel" question, in characters. */
 export const ASK_MAX = 500;
@@ -253,6 +263,8 @@ function validServer(m: Obj): boolean {
       return isRtc(m);
     case "frame":
       return str(m.call) && str(m.jpeg);
+    case "phones":
+      return Array.isArray(m.items) && m.items.every((p) => isObj(p) && str(p.member) && str(p.phone));
     default:
       return false;
   }
@@ -291,6 +303,8 @@ export function isFamilyClientMessage(v: unknown): v is FamilyClientMessage {
       return str(v.ref) && str(v.name) && str(v.relation);
     case "ask":
       return str(v.ref) && str(v.text) && v.text.trim().length > 0 && v.text.length <= ASK_MAX;
+    case "phone":
+      return str(v.ref) && str(v.member) && str(v.phone) && (v.phone === "" || /^\+[1-9]\d{7,14}$/.test(v.phone));
     default:
       return false;
   }
